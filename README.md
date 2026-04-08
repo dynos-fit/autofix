@@ -22,6 +22,20 @@ For a local wrapper install:
 ./install.sh
 ```
 
+## Cron
+
+Example hourly run:
+
+```cron
+0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
+```
+
+For safe debugging without opening real issues or PRs:
+
+```cron
+0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo --dry-run >> /var/log/autofix.log 2>&1
+```
+
 ## Model
 
 The workflow is:
