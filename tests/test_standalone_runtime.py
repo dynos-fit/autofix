@@ -1,13 +1,33 @@
 from pathlib import Path
 
 from autofix.dynos_backend import create_dynos_backend
-from autofix.platform import persistent_project_dir, runtime_state_dir
+from autofix.platform import aggregate_state_dir, current_state_dir, persistent_project_dir, runtime_state_dir, state_history_root
+from autofix.state import autofix_benchmarks_path, autofix_metrics_path, findings_path, load_findings, scan_coverage_path
 from autofix.runtime import dynos
 
 
 def test_runtime_dirs_are_local(tmp_path: Path) -> None:
     assert runtime_state_dir(tmp_path) == tmp_path / ".autofix"
     assert persistent_project_dir(tmp_path) == tmp_path / ".autofix"
+    assert aggregate_state_dir(tmp_path) == tmp_path / ".autofix" / "state"
+    assert current_state_dir(tmp_path) == tmp_path / ".autofix" / "state" / "current"
+    assert state_history_root(tmp_path) == tmp_path / ".autofix" / "state" / "history"
+    assert findings_path(tmp_path) == tmp_path / ".autofix" / "state" / "current" / "findings.json"
+    assert scan_coverage_path(tmp_path) == tmp_path / ".autofix" / "state" / "current" / "scan-coverage.json"
+    assert autofix_metrics_path(tmp_path) == tmp_path / ".autofix" / "state" / "current" / "metrics.json"
+    assert autofix_benchmarks_path(tmp_path) == tmp_path / ".autofix" / "state" / "current" / "benchmarks.json"
+
+
+def test_legacy_state_layout_migrates_forward(tmp_path: Path) -> None:
+    legacy = tmp_path / ".autofix" / "state" / "findings.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"findings": [{"finding_id": "f-1"}]}')
+
+    findings = load_findings(tmp_path)
+
+    assert findings == [{"finding_id": "f-1"}]
+    assert not legacy.exists()
+    assert findings_path(tmp_path).exists()
 
 
 def test_qtable_round_trip(tmp_path: Path) -> None:

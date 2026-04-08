@@ -36,6 +36,9 @@ For safe debugging without opening real issues or PRs:
 0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo --dry-run >> /var/log/autofix.log 2>&1
 ```
 
+Top-level `.autofix/` keeps control files like `autofix-policy.json`, `events.jsonl`, `scan.lock`, `state/`, and `scans/`.
+The current aggregate state lives under `.autofix/state/current/`, historical state snapshots live under `.autofix/state/history/<scan-id>/`, and per-scan execution artifacts live under `.autofix/scans/<scan-id>/`.
+
 ## Model
 
 The workflow is:

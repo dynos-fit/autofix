@@ -1,0 +1,14 @@
+# Example crontab entries for standalone autofix.
+#
+# Replace:
+# - /path/to/target-repo
+# - /var/log/autofix.log
+
+# Run every hour.
+0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
+
+# Run every hour in dry-run mode for debugging.
+0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo --dry-run >> /var/log/autofix.log 2>&1
+
+# Run every 15 minutes with explicit runtime directories.
+*/15 * * * * cd /home/hassam/autofix-standalone && AUTOFIX_RUNTIME_DIR=/path/to/target-repo/.autofix AUTOFIX_PERSISTENT_DIR=/path/to/target-repo/.autofix /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1

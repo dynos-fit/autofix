@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,62 +30,31 @@ from autofix.defaults import (
     LLM_INVOCATION_TIMEOUT,
     LLM_REVIEW_FILE_TRUNCATION,
     LLM_REVIEW_MAX_FILES,
+    LLM_REVIEW_TOTAL_TIMEOUT,
     MIN_FINDING_CONFIDENCE,
     NPM_AUDIT_TIMEOUT,
     PIP_AUDIT_TIMEOUT,
 )
+from autofix.crawler import build_crawl_plan, finalize_crawl_state
+from autofix.llm_io import (
+    build_review_prompt,
+    build_review_chunks_for_file,
+    build_review_prompt_for_file,
+    build_review_prompt_for_chunk,
+    extract_json_array,
+    regenerate_llm_output,
+    repair_llm_output,
+    validate_llm_issues,
+)
 from autofix.platform import (
     collect_retrospectives,
-    compute_scan_targets,
     is_generated_file,
     local_patterns_path,
     now_iso,
     persistent_project_dir,
+    write_scan_artifact,
 )
 from autofix.state import load_findings, load_scan_coverage, make_finding, save_scan_coverage
-
-HAIKU_REVIEW_PROMPT = """You are a thorough code auditor. Analyze the following source files for issues.
-
-Follow the evidence — read the actual code, trace actual values, follow actual execution paths.
-
-## ONLY report issues that would cause:
-- Runtime crashes or unhandled exceptions
-- Data corruption or data loss
-- Security vulnerabilities (injection, auth bypass, secrets exposure)
-- Logic errors that produce wrong results
-- Resource leaks (file handles, connections, memory)
-
-## Do NOT report:
-- Style preferences (formatting, whitespace, import order)
-- Naming conventions (variable names, function names, casing)
-- Missing documentation, docstrings, or comments
-- Framework-specific intentional patterns (e.g. Django conventions, React patterns)
-- Issues in generated files (*.g.dart, *.generated.*, *.pb.go, etc.)
-- Dead code or unused imports (handled by another scanner)
-- Anything that is clearly intentional and correct
-
-Look for:
-1. **Logic bugs** — incorrect conditions, off-by-one errors, wrong variable used, missing edge cases
-2. **Security issues** — injection risks, unvalidated input at system boundaries, secrets in code, unsafe deserialization
-3. **Error handling gaps** — swallowed exceptions, missing try/except around I/O, bare except clauses that hide bugs
-4. **Race conditions** — shared mutable state without locks, TOCTOU patterns, async gaps
-5. **Data integrity** — writes without validation, missing null checks at boundaries, type confusion
-6. **Anti-patterns** — God functions (>100 lines doing too much), circular dependencies, hidden side effects
-
-For each issue found, return ONLY a JSON array. Each item must have:
-- "description": one sentence describing the issue
-- "file": the filename
-- "line": approximate line number
-- "severity": "low", "medium", "high", or "critical"
-- "category_detail": which of the 6 categories above
-- "confidence": a float between 0.0 and 1.0 representing your confidence that this is a real bug (not a style preference or false positive)
-
-If no issues are found, return an empty array: []
-
-Return ONLY the JSON array, no other text.
-
-FILES TO REVIEW:
-"""
 
 
 def detect_recurring_audit(root: Path) -> list[dict]:
@@ -524,122 +494,151 @@ def compute_file_scores(root: Path, coverage: dict) -> list[tuple[Path, float]]:
 
 def detect_llm_review(root: Path, *, log) -> list[dict]:
     findings: list[dict] = []
-    if not shutil.which("claude"):
-        log("Skipping LLM review: claude CLI not available")
-        return findings
-
     coverage = load_scan_coverage(root)
     findings_list = load_findings(root)
-    scored_files = compute_scan_targets(root, max_files=LLM_REVIEW_MAX_FILES, coverage=coverage, findings=findings_list)
+    coverage, crawl_plan = build_crawl_plan(root, coverage, findings_list, max_files=LLM_REVIEW_MAX_FILES)
+    scored_files = crawl_plan.get("selected_files", [])
     if not scored_files:
-        scored_files = [
-            (str(path.relative_to(root)), score)
+        fallback_scores = [
+            {
+                "path": str(path.relative_to(root)),
+                "score": score,
+                "reasons": [{"rule": "fallback_score", "impact": round(score, 3), "detail": "Legacy file scoring fallback"}],
+            }
             for path, score in compute_file_scores(root, coverage)[:LLM_REVIEW_MAX_FILES]
         ]
+        scored_files = fallback_scores
+        crawl_plan["frontier"] = fallback_scores
+        crawl_plan["selected_files"] = fallback_scores
+        crawl_plan["review_files"] = [item["path"] for item in fallback_scores if item["score"] >= 0]
     if not scored_files:
         return findings
 
     review_files: list[Path] = []
-    for rel_path, score in scored_files:
+    for item in scored_files:
+        rel_path = item["path"]
+        score = float(item["score"])
         if score < 0:
             continue
         review_files.append(root / rel_path)
         if len(review_files) >= LLM_REVIEW_MAX_FILES:
             break
     if not review_files:
+        save_scan_coverage(root, coverage)
         log("All files recently scanned, skipping LLM review this cycle")
         return findings
 
-    log(f"File scores (top 10): {[(str(f), round(s, 1)) for f, s in scored_files[:10]]}")
-    prompt = HAIKU_REVIEW_PROMPT
+    write_scan_artifact(
+        root,
+        "selected-files.json",
+        {
+            "selected_files": scored_files[:LLM_REVIEW_MAX_FILES],
+            "frontier": crawl_plan.get("frontier", [])[:50],
+            "review_files": [str(path.relative_to(root)) for path in review_files],
+        },
+    )
+    save_scan_coverage(root, coverage)
 
-    try:
-        patterns_path = persistent_project_dir(root) / "dynos_patterns.md"
-        if patterns_path.exists():
-            prevention_text = ""
-            in_prevention = False
-            for line in patterns_path.read_text().splitlines():
-                if "## Prevention Rules" in line:
-                    in_prevention = True
-                    continue
-                if in_prevention and line.startswith("##"):
-                    break
-                if in_prevention:
-                    prevention_text += line + "\n"
-            prevention_text = prevention_text.strip()
-            if prevention_text:
-                prompt += f"\n## Project-specific patterns to watch for:\n{prevention_text}\n"
-    except OSError:
-        pass
+    if not shutil.which("claude"):
+        log("Skipping LLM review: claude CLI not available")
+        return findings
 
-    if findings_list:
-        known_descs = [f.get("description", "") for f in findings_list if f.get("description")]
-        if known_descs:
-            prompt += "\n## Already known issues (do NOT re-report these):\n" + "\n".join(f"- {d}" for d in known_descs[:50]) + "\n"
-
-    for path in review_files:
-        try:
-            content = path.read_text()
-            rel = str(path.relative_to(root))
-            lines = content.splitlines()
-            if len(lines) > LLM_REVIEW_FILE_TRUNCATION:
-                content = "\n".join(lines[:LLM_REVIEW_FILE_TRUNCATION]) + f"\n... (truncated, {len(lines)} total lines)"
-            prompt += f"\n--- {rel} ---\n{content}\n"
-        except OSError:
-            continue
-
+    log(f"File scores (top 10): {[(item['path'], round(float(item['score']), 1)) for item in scored_files[:10]]}")
     log(f"Running Haiku LLM review on {len(review_files)} files: {[str(f.relative_to(root)) for f in review_files]}")
-    try:
-        result = subprocess.run(
-            ["claude", "-p", prompt, "--model", "haiku"],
-            capture_output=True, text=True, timeout=LLM_INVOCATION_TIMEOUT, cwd=root,
-        )
-    except subprocess.TimeoutExpired:
-        log(f"Haiku review timed out after {LLM_INVOCATION_TIMEOUT}s")
-        return findings
-    except OSError as exc:
-        log(f"Haiku review failed: {exc}")
-        return findings
 
-    if result.returncode != 0:
-        log(f"Haiku review exited {result.returncode}")
-        return findings
-
-    output = result.stdout.strip()
-    if output.startswith("```"):
-        output = "\n".join(line for line in output.splitlines() if not line.startswith("```")).strip()
-    try:
-        issues = json.loads(output)
-    except json.JSONDecodeError:
-        start = output.find("[")
-        end = output.rfind("]")
-        if start >= 0 and end > start:
+    total_filtered: list[dict] = []
+    review_started_at = time.monotonic()
+    budget_exhausted = False
+    for path in review_files:
+        rel = str(path.relative_to(root))
+        elapsed = time.monotonic() - review_started_at
+        if elapsed >= LLM_REVIEW_TOTAL_TIMEOUT:
+            log(f"Stopping LLM review early after {round(elapsed, 1)}s; total review budget {LLM_REVIEW_TOTAL_TIMEOUT}s exhausted")
+            budget_exhausted = True
+            break
+        chunks = build_review_chunks_for_file(root, review_file=rel)
+        if len(chunks) > 1:
+            log(f"Chunking {rel} into {len(chunks)} review chunks")
+        for chunk in chunks:
+            elapsed = time.monotonic() - review_started_at
+            if elapsed >= LLM_REVIEW_TOTAL_TIMEOUT:
+                if not budget_exhausted:
+                    log(f"Stopping LLM review early after {round(elapsed, 1)}s; total review budget {LLM_REVIEW_TOTAL_TIMEOUT}s exhausted")
+                    budget_exhausted = True
+                break
+            if len(chunks) > 1:
+                prompt = build_review_prompt_for_chunk(root, review_file=rel, chunk=chunk)
+                log(f"Reviewing chunk {chunk['start_line']}-{chunk['end_line']} of {rel}")
+            else:
+                prompt = build_review_prompt_for_file(
+                    root,
+                    selected_files=scored_files,
+                    review_file=rel,
+                    findings_list=findings_list,
+                )
             try:
-                issues = json.loads(output[start:end + 1])
-            except json.JSONDecodeError:
-                log("Could not parse Haiku response as JSON")
-                return findings
-        else:
-            log("No JSON array found in Haiku response")
-            return findings
-    if not isinstance(issues, list):
-        return findings
+                result = subprocess.run(
+                    ["claude", "-p", prompt, "--model", "haiku"],
+                    capture_output=True, text=True, timeout=LLM_INVOCATION_TIMEOUT, cwd=root,
+                )
+            except subprocess.TimeoutExpired:
+                log(f"Haiku review timed out after {LLM_INVOCATION_TIMEOUT}s for {rel}")
+                continue
+            except OSError as exc:
+                log(f"Haiku review failed for {rel}: {exc}")
+                continue
 
-    filtered = []
-    for issue in issues:
-        if not isinstance(issue, dict):
-            continue
-        confidence = float(issue.get("confidence", 0.5))
-        if confidence < MIN_FINDING_CONFIDENCE:
-            log(f"Filtering low-confidence finding (confidence={confidence}): {issue.get('description', '')[:60]}")
-            continue
-        issue["_confidence_score"] = confidence
-        filtered.append(issue)
+            if result.returncode != 0:
+                log(f"Haiku review exited {result.returncode} for {rel}")
+                continue
 
-    if filtered and all(float(i.get("_confidence_score", i.get("confidence", 0))) >= HIGH_CONFIDENCE_THRESHOLD for i in filtered):
-        log(f"WARNING: All findings in this batch have confidence >= {HIGH_CONFIDENCE_THRESHOLD}. Possible confidence degeneration (model may be over-confident).")
+            allowed_files = {rel}
+            issues = extract_json_array(result.stdout)
+            if issues is None:
+                repaired = repair_llm_output(
+                    result.stdout,
+                    allowed_files=[rel],
+                    subprocess_module=subprocess,
+                    cwd=root,
+                )
+                if repaired is None:
+                    log(f"Could not parse or repair Haiku response as JSON for {rel}")
+                    continue
+                issues = extract_json_array(repaired)
+                if issues is None:
+                    regenerated = regenerate_llm_output(
+                        review_prompt=prompt,
+                        bad_output=repaired,
+                        allowed_files=[rel],
+                        subprocess_module=subprocess,
+                        cwd=root,
+                    )
+                    if regenerated is None:
+                        log(f"Repair pass failed and regenerate pass did not return output for {rel}")
+                        continue
+                    issues = extract_json_array(regenerated)
+                    if issues is None:
+                        log(f"Regenerate pass did not return a valid JSON array for {rel}")
+                        continue
 
-    for issue in filtered:
+            validated = validate_llm_issues(issues, allowed_files=allowed_files)
+            filtered: list[dict] = []
+            for issue in validated:
+                confidence = float(issue.get("confidence", 0.5))
+                if confidence < MIN_FINDING_CONFIDENCE:
+                    log(f"Filtering low-confidence finding (confidence={confidence}) for {rel}: {issue.get('description', '')[:60]}")
+                    continue
+                issue["_confidence_score"] = confidence
+                filtered.append(issue)
+
+            if filtered and all(float(i.get("_confidence_score", i.get("confidence", 0))) >= HIGH_CONFIDENCE_THRESHOLD for i in filtered):
+                log(f"WARNING: All findings for {rel} have confidence >= {HIGH_CONFIDENCE_THRESHOLD}. Possible confidence degeneration.")
+
+            total_filtered.extend(filtered)
+        if budget_exhausted:
+            break
+
+    for issue in total_filtered:
         desc = str(issue.get("description", ""))
         file_name = str(issue.get("file", ""))
         line_num = issue.get("line", 0)
@@ -663,12 +662,11 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
         findings.append(finding)
 
     log(f"Haiku review found {len(findings)} issues (after confidence filtering)")
-    file_coverage = coverage.get("files", {})
-    files_with_findings = {finding.get("evidence", {}).get("file", "") for finding in findings}
-    for path in review_files:
-        rel = str(path.relative_to(root))
-        file_coverage[rel] = {"last_scanned_at": now_iso(), "last_result": "findings" if rel in files_with_findings else "clean"}
-    coverage["files"] = file_coverage
+    coverage = finalize_crawl_state(
+        coverage,
+        [str(path.relative_to(root)) for path in review_files],
+        findings,
+    )
     coverage["last_scan_at"] = now_iso()
     save_scan_coverage(root, coverage)
     return findings

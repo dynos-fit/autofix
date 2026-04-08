@@ -61,6 +61,7 @@ from autofix.state import (
     write_autofix_metrics,
 )
 from autofix.runtime.core import build_import_graph, now_iso
+from autofix.platform import new_scan_id, write_scan_artifact
 
 
 def _log(msg: str) -> None:
@@ -192,12 +193,43 @@ def cmd_scan(args: argparse.Namespace) -> int:
         lock_fd.close()
         return 1
     try:
+        scan_id = new_scan_id()
+        started_at = now_iso()
+        os.environ["AUTOFIX_SCAN_ID"] = scan_id
+        write_scan_artifact(
+            root,
+            "manifest.json",
+            {
+                "scan_id": scan_id,
+                "root": str(root),
+                "started_at": started_at,
+                "completed": False,
+                "dry_run": bool(args.dry_run),
+                "max_findings": int(args.max_findings),
+            },
+        )
         if args.dry_run:
             os.environ["AUTOFIX_DRY_RUN"] = "1"
-        return standalone_scan(args, runtime_factory)
+        result = standalone_scan(args, runtime_factory)
+        write_scan_artifact(
+            root,
+            "manifest.json",
+            {
+                "scan_id": scan_id,
+                "root": str(root),
+                "started_at": started_at,
+                "completed": True,
+                "completed_at": now_iso(),
+                "dry_run": bool(args.dry_run),
+                "max_findings": int(args.max_findings),
+                "exit_code": result,
+            },
+        )
+        return result
     finally:
         if args.dry_run:
             os.environ.pop("AUTOFIX_DRY_RUN", None)
+        os.environ.pop("AUTOFIX_SCAN_ID", None)
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
 

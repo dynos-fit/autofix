@@ -597,8 +597,11 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
             category_health[category] = {"status": status, "reason": reason}
 
     try:
-        runtime.write_json(
-            runtime.findings_path(root),
+        from autofix.platform import write_state_snapshot
+
+        write_state_snapshot(
+            root,
+            "findings.json",
             {"findings": existing_findings, "category_health": category_health},
         )
     except OSError:
@@ -644,6 +647,18 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
         },
         "scan_duration_seconds": round(elapsed, 2),
     }
+
+    try:
+        from autofix.platform import write_scan_artifact
+
+        write_scan_artifact(
+            root,
+            "findings.json",
+            {"findings": all_scan_findings, "category_health": category_health},
+        )
+        write_scan_artifact(root, "summary.json", output)
+    except OSError:
+        pass
 
     runtime.log_event(
         root,
