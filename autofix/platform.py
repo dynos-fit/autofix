@@ -23,6 +23,10 @@ def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+def new_scan_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+
+
 def runtime_state_dir(root: Path) -> Path:
     explicit = os.environ.get("AUTOFIX_RUNTIME_DIR")
     if explicit:
@@ -34,6 +38,26 @@ def runtime_state_dir(root: Path) -> Path:
     if dynos_dir.exists():
         return dynos_dir
     return autofix_dir
+
+
+def scans_root(root: Path) -> Path:
+    return runtime_state_dir(root) / "scans"
+
+
+def current_scan_dir(root: Path) -> Path | None:
+    scan_id = os.environ.get("AUTOFIX_SCAN_ID", "").strip()
+    if not scan_id:
+        return None
+    return scans_root(root) / scan_id
+
+
+def write_scan_artifact(root: Path, name: str, data: object) -> Path | None:
+    scan_dir = current_scan_dir(root)
+    if scan_dir is None:
+        return None
+    path = scan_dir / name
+    write_json(path, data)
+    return path
 
 
 def persistent_project_dir(root: Path) -> Path:

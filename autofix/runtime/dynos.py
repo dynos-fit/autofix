@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from autofix.platform import load_json, now_iso, persistent_project_dir, write_json
+from autofix.platform import current_scan_dir, load_json, now_iso, persistent_project_dir, write_json
 
 
 def project_policy(root: Path) -> dict:
@@ -25,6 +25,12 @@ def log_event(root: Path, event: str, **kwargs) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(__import__("json").dumps(entry) + "\n")
+    scan_dir = current_scan_dir(root)
+    if scan_dir is not None:
+        scan_events = scan_dir / "events.jsonl"
+        scan_events.parent.mkdir(parents=True, exist_ok=True)
+        with scan_events.open("a", encoding="utf-8") as handle:
+            handle.write(__import__("json").dumps(entry) + "\n")
 
 
 def encode_autofix_state(category: str, file_ext: str, centrality_tier: str, severity: str) -> str:

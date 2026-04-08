@@ -40,6 +40,7 @@ from autofix.platform import (
     local_patterns_path,
     now_iso,
     persistent_project_dir,
+    write_scan_artifact,
 )
 from autofix.state import load_findings, load_scan_coverage, make_finding, save_scan_coverage
 
@@ -549,6 +550,15 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
     if not review_files:
         log("All files recently scanned, skipping LLM review this cycle")
         return findings
+
+    write_scan_artifact(
+        root,
+        "selected-files.json",
+        {
+            "scored_files": [{"path": rel, "score": score} for rel, score in scored_files[:LLM_REVIEW_MAX_FILES]],
+            "review_files": [str(path.relative_to(root)) for path in review_files],
+        },
+    )
 
     log(f"File scores (top 10): {[(str(f), round(s, 1)) for f, s in scored_files[:10]]}")
     prompt = HAIKU_REVIEW_PROMPT

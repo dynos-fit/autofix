@@ -27,6 +27,7 @@ from autofix.platform import (
     now_iso,
     persistent_project_dir,
     runtime_state_dir,
+    write_scan_artifact,
     write_json,
 )
 
@@ -184,6 +185,7 @@ def load_findings(root: Path, *, log: callable | None = None) -> list[dict]:
 
 def save_findings(root: Path, findings: list[dict]) -> None:
     write_json(findings_path(root), findings)
+    write_scan_artifact(root, "aggregate-findings.json", findings)
 
 
 def prune_findings(
@@ -272,6 +274,7 @@ def save_scan_coverage(root: Path, coverage: dict) -> None:
     path = scan_coverage_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, coverage)
+    write_scan_artifact(root, "scan-coverage.json", coverage)
 
 
 def dedup_finding(finding: dict, existing: list[dict]) -> str | None:
@@ -452,6 +455,7 @@ def build_autofix_benchmarks(root: Path, findings: list[dict], policy: dict) -> 
         },
     }
     write_json(autofix_benchmarks_path(root), benchmarks)
+    write_scan_artifact(root, "autofix-benchmarks.json", benchmarks)
     return benchmarks
 
 
@@ -492,4 +496,5 @@ def write_autofix_metrics(root: Path, findings: list[dict], policy: dict) -> dic
         "recent_prs": build_autofix_benchmarks(root, findings, policy).get("recent_prs", []),
     }
     write_json(autofix_metrics_path(root), metrics)
+    write_scan_artifact(root, "autofix-metrics.json", metrics)
     return metrics

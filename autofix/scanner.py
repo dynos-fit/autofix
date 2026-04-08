@@ -645,6 +645,18 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
         "scan_duration_seconds": round(elapsed, 2),
     }
 
+    try:
+        from autofix.platform import write_scan_artifact
+
+        write_scan_artifact(
+            root,
+            "findings.json",
+            {"findings": all_scan_findings, "category_health": category_health},
+        )
+        write_scan_artifact(root, "summary.json", output)
+    except OSError:
+        pass
+
     runtime.log_event(
         root,
         "autofix_scan",
