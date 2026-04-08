@@ -1,13 +1,19 @@
 from pathlib import Path
 
 from autofix.dynos_backend import create_dynos_backend
-from autofix.platform import persistent_project_dir, runtime_state_dir
+from autofix.platform import aggregate_state_dir, persistent_project_dir, runtime_state_dir
+from autofix.state import autofix_benchmarks_path, autofix_metrics_path, findings_path, scan_coverage_path
 from autofix.runtime import dynos
 
 
 def test_runtime_dirs_are_local(tmp_path: Path) -> None:
     assert runtime_state_dir(tmp_path) == tmp_path / ".autofix"
     assert persistent_project_dir(tmp_path) == tmp_path / ".autofix"
+    assert aggregate_state_dir(tmp_path) == tmp_path / ".autofix" / "state"
+    assert findings_path(tmp_path) == tmp_path / ".autofix" / "state" / "findings.json"
+    assert scan_coverage_path(tmp_path) == tmp_path / ".autofix" / "state" / "scan-coverage.json"
+    assert autofix_metrics_path(tmp_path) == tmp_path / ".autofix" / "state" / "metrics.json"
+    assert autofix_benchmarks_path(tmp_path) == tmp_path / ".autofix" / "state" / "benchmarks.json"
 
 
 def test_qtable_round_trip(tmp_path: Path) -> None:

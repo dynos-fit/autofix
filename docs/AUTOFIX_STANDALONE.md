@@ -74,3 +74,22 @@ You can override that with:
 
 - `AUTOFIX_RUNTIME_DIR`
 - `AUTOFIX_PERSISTENT_DIR`
+
+Top-level `.autofix/` keeps control files and indexes, for example:
+
+- `autofix-policy.json`
+- `events.jsonl`
+- `scan.lock`
+- `state/`
+- `scans/`
+
+Aggregate latest-state files live under:
+
+- `.autofix/state/findings.json`
+- `.autofix/state/scan-coverage.json`
+- `.autofix/state/metrics.json`
+- `.autofix/state/benchmarks.json`
+
+Historical per-scan artifacts live under:
+
+- `.autofix/scans/<scan-id>/`

@@ -23,6 +23,7 @@ from autofix.defaults import (
     RECENT_PRS_COUNT,
 )
 from autofix.platform import (
+    aggregate_state_dir,
     load_json,
     now_iso,
     persistent_project_dir,
@@ -42,7 +43,7 @@ VALID_CATEGORIES = {
 
 
 def findings_path(root: Path) -> Path:
-    return runtime_state_dir(root) / "proactive-findings.json"
+    return aggregate_state_dir(root) / "findings.json"
 
 
 def autofix_policy_path(root: Path) -> Path:
@@ -50,15 +51,15 @@ def autofix_policy_path(root: Path) -> Path:
 
 
 def autofix_metrics_path(root: Path) -> Path:
-    return persistent_project_dir(root) / "autofix-metrics.json"
+    return aggregate_state_dir(root) / "metrics.json"
 
 
 def autofix_benchmarks_path(root: Path) -> Path:
-    return persistent_project_dir(root) / "autofix-benchmarks.json"
+    return aggregate_state_dir(root) / "benchmarks.json"
 
 
 def scan_coverage_path(root: Path) -> Path:
-    return runtime_state_dir(root) / "scan-coverage.json"
+    return aggregate_state_dir(root) / "scan-coverage.json"
 
 
 def default_category_policy(category: str) -> dict:
@@ -184,7 +185,7 @@ def load_findings(root: Path, *, log: callable | None = None) -> list[dict]:
 
 
 def save_findings(root: Path, findings: list[dict]) -> None:
-    write_json(findings_path(root), findings)
+    write_json(findings_path(root), {"findings": findings})
     write_scan_artifact(root, "aggregate-findings.json", findings)
 
 

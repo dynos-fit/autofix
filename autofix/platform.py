@@ -40,6 +40,10 @@ def runtime_state_dir(root: Path) -> Path:
     return autofix_dir
 
 
+def aggregate_state_dir(root: Path) -> Path:
+    return runtime_state_dir(root) / "state"
+
+
 def scans_root(root: Path) -> Path:
     return runtime_state_dir(root) / "scans"
 
