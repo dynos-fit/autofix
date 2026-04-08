@@ -10,6 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autofix.defaults import (
+    CRAWL_TTL_DAYS_PRODUCTION,
+    CRAWL_TTL_DAYS_SUPPORT,
+    CRAWL_TTL_DAYS_TEST,
+    DETECTOR_TTL_DAYS,
     FILE_SCORE_CHURN_MAX,
     FILE_SCORE_CHURN_WEIGHT,
     FILE_SCORE_COMPLEXITY_DIVISOR,
@@ -18,12 +22,21 @@ from autofix.defaults import (
     FILE_SCORE_DETECTOR_CONFIDENCE_DIVISOR,
     FILE_SCORE_DETECTOR_FINDING_BONUS,
     FILE_SCORE_DETECTOR_RISK_BONUS,
+    FILE_SCORE_LARGE_FILE_PENALTY_CAP,
+    FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR,
+    FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD,
+    FILE_SCORE_NEIGHBOR_INVALIDATION_BONUS,
     FILE_SCORE_PENALTY_CLEAN_SCAN,
     FILE_SCORE_PENALTY_SCANNED_3DAYS,
     FILE_SCORE_PENALTY_SCANNED_7DAYS,
     FILE_SCORE_PENALTY_SCANNED_TODAY,
+    FILE_SCORE_STALE_DETECTOR_BONUS,
+    FILE_SCORE_STALE_ELIGIBILITY_BONUS,
+    FILE_SCORE_STALE_REVIEW_BONUS,
     GIT_LOG_CHURN_TIMEOUT,
     GIT_LSFILES_TIMEOUT,
+    MISSING_FILE_RETENTION_DAYS,
+    NEIGHBOR_INVALIDATION_WINDOW_DAYS,
 )
 from autofix.platform import is_generated_file, now_iso
 
@@ -119,6 +132,34 @@ def _load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _review_ttl_days(file_info: dict) -> int:
+    if file_info.get("is_test_file"):
+        return CRAWL_TTL_DAYS_TEST
+    if str(file_info.get("path", "")).startswith(("src/", "lib/", "app/", "pkg/")):
+        return CRAWL_TTL_DAYS_PRODUCTION
+    return CRAWL_TTL_DAYS_SUPPORT
+
+
+def _is_stale(timestamp: str | None, *, now: datetime, ttl_days: int) -> tuple[bool, float]:
+    dt = _parse_iso(timestamp)
+    if dt is None:
+        return True, float(ttl_days)
+    age_days = (now - dt).total_seconds() / 86400
+    return age_days >= ttl_days, age_days
+
+
+def _compute_neighbor_activity(previous_files: dict[str, dict], *, now: datetime) -> dict[str, bool]:
+    active_dirs: set[str] = set()
+    for rel, info in previous_files.items():
+        if not isinstance(info, dict):
+            continue
+        last_crawled = _parse_iso(str(info.get("last_crawled_at", "") or info.get("last_llm_reviewed_at", "") or ""))
+        age_days = (now - last_crawled).total_seconds() / 86400 if last_crawled else float("inf")
+        if info.get("changed_since_last_crawl") or age_days <= NEIGHBOR_INVALIDATION_WINDOW_DAYS:
+            active_dirs.add(str(Path(rel).parent))
+    return {directory: True for directory in active_dirs}
+
+
 def _detector_signal(rule: str, severity: str, confidence: float, detail: str, *, line: int | None = None) -> dict:
     signal = {
         "rule": rule,
@@ -204,6 +245,8 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             "max_severity": max_severity,
             "confidence": round(confidence, 3),
             "risk_score": round(risk_score, 3),
+            "analyzed_at": now_iso(),
+            "ttl_days": DETECTOR_TTL_DAYS,
         },
         "signals": signals[:25],
     }
@@ -330,6 +373,7 @@ def _compute_priority(
     file_info: dict,
     finding_summary: dict,
     now: datetime,
+    neighbor_activity: dict[str, bool],
 ) -> tuple[float, list[dict]]:
     score = 0.0
     reasons: list[dict] = []
@@ -341,6 +385,28 @@ def _compute_priority(
     if file_info.get("changed_since_last_crawl"):
         score += 20.0
         reasons.append(_reason("content_changed", 20.0, "Content changed since last crawl"))
+
+    ttl_days = _review_ttl_days(file_info)
+    stale_review, review_age_days = _is_stale(file_info.get("last_llm_reviewed_at"), now=now, ttl_days=ttl_days)
+    if file_info.get("last_llm_reviewed_at") and stale_review:
+        score += FILE_SCORE_STALE_REVIEW_BONUS
+        reasons.append(_reason("stale_review_ttl", FILE_SCORE_STALE_REVIEW_BONUS, f"Review is stale after {round(review_age_days, 1)} days; ttl={ttl_days}"))
+
+    detector_summary = file_info.get("detector_summary", {})
+    detector_stale, detector_age_days = _is_stale(detector_summary.get("analyzed_at"), now=now, ttl_days=DETECTOR_TTL_DAYS)
+    if detector_summary and detector_summary.get("analyzed_at") and detector_stale:
+        score += FILE_SCORE_STALE_DETECTOR_BONUS
+        reasons.append(_reason("stale_detector_state", FILE_SCORE_STALE_DETECTOR_BONUS, f"Detector state is stale after {round(detector_age_days, 1)} days"))
+
+    next_eligible = _parse_iso(str(file_info.get("next_eligible_at", "") or ""))
+    if next_eligible and now >= next_eligible:
+        score += FILE_SCORE_STALE_ELIGIBILITY_BONUS
+        reasons.append(_reason("eligibility_window_open", FILE_SCORE_STALE_ELIGIBILITY_BONUS, "File reached its forced re-review window"))
+
+    parent_dir = str(Path(rel).parent)
+    if neighbor_activity.get(parent_dir) and not file_info.get("changed_since_last_crawl"):
+        score += FILE_SCORE_NEIGHBOR_INVALIDATION_BONUS
+        reasons.append(_reason("neighbor_changed", FILE_SCORE_NEIGHBOR_INVALIDATION_BONUS, "Nearby file activity invalidates cached confidence"))
 
     unresolved = int(finding_summary.get("unresolved_count", 0) or 0)
     if unresolved:
@@ -372,6 +438,17 @@ def _compute_priority(
         impact = complexity * FILE_SCORE_COMPLEXITY_WEIGHT
         score += impact
         reasons.append(_reason("file_size", impact, f"{line_count} lines of code"))
+    if line_count > FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD:
+        oversize = line_count - FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD
+        penalty = min(oversize / FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR, FILE_SCORE_LARGE_FILE_PENALTY_CAP)
+        score -= penalty
+        reasons.append(
+            _reason(
+                "large_file_penalty",
+                -penalty,
+                f"{line_count} lines exceeds large-file threshold {FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD}",
+            )
+        )
 
     if str(rel).startswith(("src/", "lib/", "app/", "pkg/")):
         score += 2.0
@@ -402,7 +479,6 @@ def _compute_priority(
         score += 1.0
         reasons.append(_reason("test_file", 1.0, "Tests can expose harness and runtime bugs too"))
 
-    detector_summary = file_info.get("detector_summary", {})
     detector_signal_count = int(detector_summary.get("signal_count", 0) or 0)
     if detector_signal_count:
         impact = detector_signal_count * FILE_SCORE_DETECTOR_FINDING_BONUS
@@ -429,6 +505,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
     findings_by_file = _findings_by_file(findings)
     now_dt = datetime.now(timezone.utc)
     now = now_iso()
+    neighbor_activity = _compute_neighbor_activity(previous_files, now=now_dt)
 
     discovered = discover_repo_files(root)
     next_files: dict[str, dict] = {}
@@ -478,7 +555,16 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         else:
             changed_since_last_crawl = True
         file_info["changed_since_last_crawl"] = changed_since_last_crawl
-        score, reasons = _compute_priority(rel, file_info, findings_by_file.get(rel, {}), now_dt)
+        review_ttl_days = _review_ttl_days(file_info)
+        stale_review, review_age_days = _is_stale(file_info.get("last_llm_reviewed_at"), now=now_dt, ttl_days=review_ttl_days)
+        file_info["review_ttl_days"] = review_ttl_days
+        file_info["review_age_days"] = round(review_age_days, 3) if review_age_days != float("inf") else None
+        file_info["stale_review"] = stale_review
+        detector_stale, detector_age_days = _is_stale(file_info["detector_summary"].get("analyzed_at"), now=now_dt, ttl_days=DETECTOR_TTL_DAYS)
+        file_info["detector_ttl_days"] = DETECTOR_TTL_DAYS
+        file_info["detector_age_days"] = round(detector_age_days, 3) if detector_age_days != float("inf") else None
+        file_info["stale_detector_state"] = detector_stale
+        score, reasons = _compute_priority(rel, file_info, findings_by_file.get(rel, {}), now_dt, neighbor_activity)
         file_info["last_priority_score"] = score
         file_info["last_priority_reasons"] = reasons
         next_files[rel] = file_info
@@ -493,6 +579,10 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "unresolved_finding_count": file_info["unresolved_finding_count"],
             "changed_since_last_crawl": file_info["changed_since_last_crawl"],
             "last_llm_reviewed_at": file_info.get("last_llm_reviewed_at"),
+            "review_ttl_days": file_info["review_ttl_days"],
+            "stale_review": file_info["stale_review"],
+            "stale_detector_state": file_info["stale_detector_state"],
+            "next_eligible_at": file_info.get("next_eligible_at"),
             "detector_summary": file_info["detector_summary"],
             "detector_signals": file_info["detector_signals"][:10],
         })
@@ -505,7 +595,11 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         missing = dict(previous)
         missing["missing"] = True
         missing["last_missing_at"] = now
-        next_files[rel] = missing
+        missing_at = _parse_iso(now)
+        first_missing = _parse_iso(str(previous.get("last_missing_at", "") or ""))
+        age_days = ((missing_at - first_missing).total_seconds() / 86400) if (missing_at and first_missing) else 0
+        if age_days < MISSING_FILE_RETENTION_DAYS:
+            next_files[rel] = missing
 
     ranked.sort(key=lambda item: (item["score"], item["finding_count_total"], item["recent_churn"]), reverse=True)
     selected = ranked[:max_files]
@@ -555,8 +649,12 @@ def finalize_crawl_state(state: dict, selected_paths: list[str], findings: list[
         if file_info["last_finding_count"]:
             file_info["last_finding_at"] = now
             file_info["historical_max_severity"] = str(finding_summary.get("max_severity", file_info.get("historical_max_severity", "low")) or "low")
-        cooldown = timedelta(days=1 if file_info["last_finding_count"] else 7)
+        cooldown = timedelta(days=1 if file_info["last_finding_count"] else _review_ttl_days(file_info))
         file_info["next_eligible_at"] = (datetime.now(timezone.utc) + cooldown).isoformat().replace("+00:00", "Z")
+        file_info.setdefault("detector_summary", {})
+        file_info["detector_summary"]["analyzed_at"] = now
+        file_info["stale_review"] = False
+        file_info["stale_detector_state"] = False
     crawl_state["files"] = files
     crawl_state.setdefault("repo", {})["last_completed_crawl_at"] = now
     crawl_state["repo"]["last_reviewed_file_count"] = len(selected_paths)
