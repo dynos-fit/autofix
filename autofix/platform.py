@@ -1,9 +1,11 @@
-"""Portable platform helpers for the extracted autofix package."""
+"""Portable platform helpers for the standalone autofix package."""
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,51 +42,70 @@ def persistent_project_dir(root: Path) -> Path:
         path = Path(explicit)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    try:
-        from dynoslib_core import _persistent_project_dir  # type: ignore
-
-        return _persistent_project_dir(root)
-    except ImportError:
-        path = runtime_state_dir(root)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    path = runtime_state_dir(root)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def collect_retrospectives(root: Path) -> list[dict]:
-    try:
-        from dynoslib_core import collect_retrospectives as _collect_retrospectives  # type: ignore
-
-        result = _collect_retrospectives(root)
-        return result if isinstance(result, list) else []
-    except ImportError:
-        return []
+    retrospectives: list[dict] = []
+    for path in sorted(runtime_state_dir(root).glob("task-*/task-retrospective.json")):
+        try:
+            data = load_json(path)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict):
+            retrospectives.append(data)
+    return retrospectives
 
 
 def build_import_graph(root: Path) -> dict:
-    try:
-        from dynoslib_crawler import build_import_graph as _build_import_graph  # type: ignore
+    edges: list[dict] = []
+    pagerank: dict[str, float] = {}
+    py_files = sorted(root.rglob("*.py"))
+    module_to_path: dict[str, str] = {}
+    for path in py_files:
+        try:
+            rel = str(path.relative_to(root))
+        except ValueError:
+            continue
+        module_to_path[path.stem] = rel
+        pagerank[rel] = 0.0
 
-        result = _build_import_graph(root)
-        return result if isinstance(result, dict) else {"pagerank": {}}
-    except ImportError:
-        return {"pagerank": {}}
+    for path in py_files:
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(source)
+            rel = str(path.relative_to(root))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split(".")[0])
+        for imported in imports:
+            target = module_to_path.get(imported)
+            if not target:
+                continue
+            edges.append({"from": rel, "to": target})
+            pagerank[rel] = pagerank.get(rel, 0.0) + 1.0
+            pagerank[target] = pagerank.get(target, 0.0) + 1.0
+    return {"edges": edges, "pagerank": pagerank}
 
 
 def is_generated_file(path: str) -> bool:
-    try:
-        from dynoslib_crawler import _is_generated_file as _impl  # type: ignore
-
-        return bool(_impl(path))
-    except ImportError:
-        generated_markers = (
-            ".generated.",
-            ".g.",
-            ".pb.",
-            "node_modules/",
-            "dist/",
-            "build/",
-        )
-        return any(marker in path for marker in generated_markers)
+    generated_markers = (
+        ".generated.",
+        ".g.",
+        ".pb.",
+        "node_modules/",
+        "dist/",
+        "build/",
+    )
+    return any(marker in path for marker in generated_markers)
 
 
 def compute_scan_targets(
@@ -95,18 +116,51 @@ def compute_scan_targets(
     findings: list[dict],
 ) -> list[tuple[str, float]]:
     try:
-        from dynoslib_crawler import compute_scan_targets as _compute_scan_targets  # type: ignore
-
-        result = _compute_scan_targets(root, max_files=max_files, coverage=coverage, findings=findings)
-        return result if isinstance(result, list) else []
-    except ImportError:
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(root),
+        )
+    except (subprocess.TimeoutExpired, OSError):
         return []
+    if result.returncode != 0:
+        return []
+
+    finding_counts: dict[str, int] = {}
+    for finding in findings:
+        evidence_file = str(finding.get("evidence", {}).get("file", "") or "")
+        if evidence_file:
+            finding_counts[evidence_file] = finding_counts.get(evidence_file, 0) + 1
+
+    now = datetime.now(timezone.utc)
+    file_coverage = coverage.get("files", {})
+    scored: list[tuple[str, float]] = []
+    for line in result.stdout.splitlines():
+        rel = line.strip()
+        if not rel or is_generated_file(rel):
+            continue
+        full_path = root / rel
+        if not full_path.is_file():
+            continue
+        if full_path.suffix.lower() not in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java"}:
+            continue
+        score = float(finding_counts.get(rel, 0) * 3 + len(rel) / 100.0)
+        scan_info = file_coverage.get(rel, {})
+        last_scanned = str(scan_info.get("last_scanned_at", "") or "")
+        if last_scanned:
+            try:
+                scanned_dt = datetime.fromisoformat(last_scanned.replace("Z", "+00:00"))
+                age_hours = (now - scanned_dt).total_seconds() / 3600
+                if age_hours < 24:
+                    score -= 10
+            except ValueError:
+                pass
+        scored.append((rel, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored[:max_files]
 
 
 def local_patterns_path(root: Path) -> Path:
-    try:
-        from dynopatterns import local_patterns_path as _local_patterns_path  # type: ignore
-
-        return _local_patterns_path(root)
-    except ImportError:
-        return persistent_project_dir(root) / "patterns.md"
+    return persistent_project_dir(root) / "patterns.md"
