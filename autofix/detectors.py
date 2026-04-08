@@ -33,9 +33,9 @@ from autofix.defaults import (
     NPM_AUDIT_TIMEOUT,
     PIP_AUDIT_TIMEOUT,
 )
+from autofix.crawler import build_crawl_plan, finalize_crawl_state
 from autofix.platform import (
     collect_retrospectives,
-    compute_scan_targets,
     is_generated_file,
     local_patterns_path,
     now_iso,
@@ -525,29 +525,37 @@ def compute_file_scores(root: Path, coverage: dict) -> list[tuple[Path, float]]:
 
 def detect_llm_review(root: Path, *, log) -> list[dict]:
     findings: list[dict] = []
-    if not shutil.which("claude"):
-        log("Skipping LLM review: claude CLI not available")
-        return findings
-
     coverage = load_scan_coverage(root)
     findings_list = load_findings(root)
-    scored_files = compute_scan_targets(root, max_files=LLM_REVIEW_MAX_FILES, coverage=coverage, findings=findings_list)
+    coverage, crawl_plan = build_crawl_plan(root, coverage, findings_list, max_files=LLM_REVIEW_MAX_FILES)
+    scored_files = crawl_plan.get("selected_files", [])
     if not scored_files:
-        scored_files = [
-            (str(path.relative_to(root)), score)
+        fallback_scores = [
+            {
+                "path": str(path.relative_to(root)),
+                "score": score,
+                "reasons": [{"rule": "fallback_score", "impact": round(score, 3), "detail": "Legacy file scoring fallback"}],
+            }
             for path, score in compute_file_scores(root, coverage)[:LLM_REVIEW_MAX_FILES]
         ]
+        scored_files = fallback_scores
+        crawl_plan["frontier"] = fallback_scores
+        crawl_plan["selected_files"] = fallback_scores
+        crawl_plan["review_files"] = [item["path"] for item in fallback_scores if item["score"] >= 0]
     if not scored_files:
         return findings
 
     review_files: list[Path] = []
-    for rel_path, score in scored_files:
+    for item in scored_files:
+        rel_path = item["path"]
+        score = float(item["score"])
         if score < 0:
             continue
         review_files.append(root / rel_path)
         if len(review_files) >= LLM_REVIEW_MAX_FILES:
             break
     if not review_files:
+        save_scan_coverage(root, coverage)
         log("All files recently scanned, skipping LLM review this cycle")
         return findings
 
@@ -555,12 +563,18 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
         root,
         "selected-files.json",
         {
-            "scored_files": [{"path": rel, "score": score} for rel, score in scored_files[:LLM_REVIEW_MAX_FILES]],
+            "selected_files": scored_files[:LLM_REVIEW_MAX_FILES],
+            "frontier": crawl_plan.get("frontier", [])[:50],
             "review_files": [str(path.relative_to(root)) for path in review_files],
         },
     )
+    save_scan_coverage(root, coverage)
 
-    log(f"File scores (top 10): {[(str(f), round(s, 1)) for f, s in scored_files[:10]]}")
+    if not shutil.which("claude"):
+        log("Skipping LLM review: claude CLI not available")
+        return findings
+
+    log(f"File scores (top 10): {[(item['path'], round(float(item['score']), 1)) for item in scored_files[:10]]}")
     prompt = HAIKU_REVIEW_PROMPT
 
     try:
@@ -673,12 +687,11 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
         findings.append(finding)
 
     log(f"Haiku review found {len(findings)} issues (after confidence filtering)")
-    file_coverage = coverage.get("files", {})
-    files_with_findings = {finding.get("evidence", {}).get("file", "") for finding in findings}
-    for path in review_files:
-        rel = str(path.relative_to(root))
-        file_coverage[rel] = {"last_scanned_at": now_iso(), "last_result": "findings" if rel in files_with_findings else "clean"}
-    coverage["files"] = file_coverage
+    coverage = finalize_crawl_state(
+        coverage,
+        [str(path.relative_to(root)) for path in review_files],
+        findings,
+    )
     coverage["last_scan_at"] = now_iso()
     save_scan_coverage(root, coverage)
     return findings
