@@ -1,0 +1,15 @@
+[project]
+name = "autofix"
+version = "0.1.0"
+description = "Standalone codebase scanner and Dynos-backed autofix runner"
+requires-python = ">=3.11"
+
+[project.scripts]
+autofix = "autofix.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["autofix", "autofix.runtime"]
