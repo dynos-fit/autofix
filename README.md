@@ -37,7 +37,7 @@ For safe debugging without opening real issues or PRs:
 ```
 
 Top-level `.autofix/` keeps control files like `autofix-policy.json`, `events.jsonl`, `scan.lock`, `state/`, and `scans/`.
-Aggregate latest-state files live under `.autofix/state/`. Per-scan history lives under `.autofix/scans/<scan-id>/`.
+The current aggregate state lives under `.autofix/state/current/`, historical state snapshots live under `.autofix/state/history/<scan-id>/`, and per-scan execution artifacts live under `.autofix/scans/<scan-id>/`.
 
 ## Model
 

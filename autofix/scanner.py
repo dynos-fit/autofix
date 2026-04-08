@@ -597,8 +597,11 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
             category_health[category] = {"status": status, "reason": reason}
 
     try:
-        runtime.write_json(
-            runtime.findings_path(root),
+        from autofix.platform import write_state_snapshot
+
+        write_state_snapshot(
+            root,
+            "findings.json",
             {"findings": existing_findings, "category_health": category_health},
         )
     except OSError:

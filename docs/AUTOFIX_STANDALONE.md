@@ -83,12 +83,16 @@ Top-level `.autofix/` keeps control files and indexes, for example:
 - `state/`
 - `scans/`
 
-Aggregate latest-state files live under:
+Current aggregate state lives under:
 
-- `.autofix/state/findings.json`
-- `.autofix/state/scan-coverage.json`
-- `.autofix/state/metrics.json`
-- `.autofix/state/benchmarks.json`
+- `.autofix/state/current/findings.json`
+- `.autofix/state/current/scan-coverage.json`
+- `.autofix/state/current/metrics.json`
+- `.autofix/state/current/benchmarks.json`
+
+Historical state snapshots live under:
+
+- `.autofix/state/history/<scan-id>/`
 
 Historical per-scan artifacts live under:
 

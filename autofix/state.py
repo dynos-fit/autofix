@@ -24,11 +24,13 @@ from autofix.defaults import (
 )
 from autofix.platform import (
     aggregate_state_dir,
+    current_state_dir,
     load_json,
     now_iso,
     persistent_project_dir,
     runtime_state_dir,
     write_scan_artifact,
+    write_state_snapshot,
     write_json,
 )
 
@@ -43,7 +45,7 @@ VALID_CATEGORIES = {
 
 
 def findings_path(root: Path) -> Path:
-    return aggregate_state_dir(root) / "findings.json"
+    return current_state_dir(root) / "findings.json"
 
 
 def autofix_policy_path(root: Path) -> Path:
@@ -51,15 +53,55 @@ def autofix_policy_path(root: Path) -> Path:
 
 
 def autofix_metrics_path(root: Path) -> Path:
-    return aggregate_state_dir(root) / "metrics.json"
+    return current_state_dir(root) / "metrics.json"
 
 
 def autofix_benchmarks_path(root: Path) -> Path:
-    return aggregate_state_dir(root) / "benchmarks.json"
+    return current_state_dir(root) / "benchmarks.json"
 
 
 def scan_coverage_path(root: Path) -> Path:
-    return aggregate_state_dir(root) / "scan-coverage.json"
+    return current_state_dir(root) / "scan-coverage.json"
+
+
+def _migrate_legacy_state_layout(root: Path) -> None:
+    aggregate_dir = aggregate_state_dir(root)
+    current_dir = current_state_dir(root)
+    legacy_files = {
+        "findings.json": [
+            aggregate_dir / "findings.json",
+            runtime_state_dir(root) / "latest-findings.json",
+            runtime_state_dir(root) / "proactive-findings.json",
+        ],
+        "scan-coverage.json": [
+            aggregate_dir / "scan-coverage.json",
+            runtime_state_dir(root) / "latest-scan-coverage.json",
+        ],
+        "metrics.json": [
+            aggregate_dir / "metrics.json",
+            persistent_project_dir(root) / "latest-metrics.json",
+            persistent_project_dir(root) / "autofix-metrics.json",
+        ],
+        "benchmarks.json": [
+            aggregate_dir / "benchmarks.json",
+            persistent_project_dir(root) / "latest-benchmarks.json",
+            persistent_project_dir(root) / "autofix-benchmarks.json",
+        ],
+    }
+    current_dir.mkdir(parents=True, exist_ok=True)
+    for current_name, candidates in legacy_files.items():
+        current_path = current_dir / current_name
+        if current_path.exists():
+            continue
+        for legacy_path in candidates:
+            if legacy_path == current_path or not legacy_path.exists():
+                continue
+            current_path.write_text(legacy_path.read_text())
+            try:
+                legacy_path.unlink()
+            except OSError:
+                pass
+            break
 
 
 def default_category_policy(category: str) -> dict:
@@ -168,6 +210,7 @@ def save_autofix_policy(root: Path, policy: dict) -> None:
 
 
 def load_findings(root: Path, *, log: callable | None = None) -> list[dict]:
+    _migrate_legacy_state_layout(root)
     path = findings_path(root)
     if not path.exists():
         return []
@@ -185,7 +228,8 @@ def load_findings(root: Path, *, log: callable | None = None) -> list[dict]:
 
 
 def save_findings(root: Path, findings: list[dict]) -> None:
-    write_json(findings_path(root), {"findings": findings})
+    _migrate_legacy_state_layout(root)
+    write_state_snapshot(root, "findings.json", {"findings": findings})
     write_scan_artifact(root, "aggregate-findings.json", findings)
 
 
@@ -262,6 +306,7 @@ def make_finding(
 
 
 def load_scan_coverage(root: Path) -> dict:
+    _migrate_legacy_state_layout(root)
     path = scan_coverage_path(root)
     if path.exists():
         try:
@@ -272,9 +317,8 @@ def load_scan_coverage(root: Path) -> dict:
 
 
 def save_scan_coverage(root: Path, coverage: dict) -> None:
-    path = scan_coverage_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(path, coverage)
+    _migrate_legacy_state_layout(root)
+    write_state_snapshot(root, "scan-coverage.json", coverage)
     write_scan_artifact(root, "scan-coverage.json", coverage)
 
 
@@ -455,7 +499,8 @@ def build_autofix_benchmarks(root: Path, findings: list[dict], policy: dict) -> 
             "max_open_prs": policy.get("max_open_prs"),
         },
     }
-    write_json(autofix_benchmarks_path(root), benchmarks)
+    _migrate_legacy_state_layout(root)
+    write_state_snapshot(root, "benchmarks.json", benchmarks)
     write_scan_artifact(root, "autofix-benchmarks.json", benchmarks)
     return benchmarks
 
@@ -496,6 +541,7 @@ def write_autofix_metrics(root: Path, findings: list[dict], policy: dict) -> dic
         "categories": categories,
         "recent_prs": build_autofix_benchmarks(root, findings, policy).get("recent_prs", []),
     }
-    write_json(autofix_metrics_path(root), metrics)
+    _migrate_legacy_state_layout(root)
+    write_state_snapshot(root, "metrics.json", metrics)
     write_scan_artifact(root, "autofix-metrics.json", metrics)
     return metrics
