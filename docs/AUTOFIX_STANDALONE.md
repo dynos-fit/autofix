@@ -16,6 +16,12 @@ Or through the wrapper:
 bin/autofix scan --root /path/to/target-repo
 ```
 
+To install a user-local wrapper:
+
+```bash
+./install.sh
+```
+
 The target repo should have:
 
 - `git`
@@ -23,6 +29,14 @@ The target repo should have:
 - `claude` installed if you want automatic fixes
 
 If `claude` is unavailable, scans can still run, but automatic code fixes will fail closed.
+
+For debugger-friendly scans without side effects:
+
+```bash
+python3 -m autofix scan --root /path/to/target-repo --dry-run
+```
+
+`--dry-run` still scans, deduplicates, classifies, and routes findings, but it does not open real issues or PRs.
 
 ## Cron
 

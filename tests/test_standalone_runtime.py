@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from autofix.dynos_backend import create_dynos_backend
 from autofix.platform import persistent_project_dir, runtime_state_dir
 from autofix.runtime import dynos
 
@@ -25,3 +26,43 @@ def test_template_round_trip(tmp_path: Path) -> None:
     match = dynos.find_matching_template(tmp_path, finding)
     assert match is not None
     assert "diff" in match
+
+
+def test_backend_dry_run_issue(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTOFIX_DRY_RUN", "1")
+    backend = create_dynos_backend(
+        load_policy=lambda root: {"categories": {"llm-review": {"stats": {}}}},
+        log=lambda msg: None,
+        subprocess_module=__import__("subprocess"),
+        shutil_module=__import__("shutil"),
+        build_import_graph_fn=lambda root: {"edges": [], "pagerank": {}},
+        get_neighbor_file_contents_fn=lambda *args, **kwargs: [],
+        find_matching_template_fn=lambda root, finding: None,
+    )
+    finding = {"finding_id": "f-1", "description": "bug", "category": "llm-review", "severity": "medium", "evidence": {}}
+    result = backend.open_github_issue(finding, tmp_path, {"categories": {"llm-review": {"stats": {}}}})
+    assert result["dry_run"] is True
+    assert result["issue_url"] == "dry-run://issue"
+
+
+def test_backend_dry_run_fix(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTOFIX_DRY_RUN", "1")
+    backend = create_dynos_backend(
+        load_policy=lambda root: {"categories": {"dead-code": {"stats": {}}}},
+        log=lambda msg: None,
+        subprocess_module=__import__("subprocess"),
+        shutil_module=__import__("shutil"),
+        build_import_graph_fn=lambda root: {"edges": [], "pagerank": {}},
+        get_neighbor_file_contents_fn=lambda *args, **kwargs: [],
+        find_matching_template_fn=lambda root, finding: None,
+    )
+    finding = {
+        "finding_id": "f-2",
+        "description": "dead import",
+        "category": "dead-code",
+        "severity": "low",
+        "evidence": {"file": "sample.py"},
+    }
+    result = backend.autofix_finding(finding, tmp_path, {"categories": {"dead-code": {"stats": {}}}})
+    assert result["dry_run"] is True
+    assert result["pr_url"] == "dry-run://pr"

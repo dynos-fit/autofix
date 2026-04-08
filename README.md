@@ -16,6 +16,12 @@ Or:
 bin/autofix scan --root /path/to/target-repo
 ```
 
+For a local wrapper install:
+
+```bash
+./install.sh
+```
+
 ## Model
 
 The workflow is:

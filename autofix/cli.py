@@ -27,6 +27,7 @@ def build_parser(*, scan_handler, sync_handler, runtime_factory) -> argparse.Arg
     p_scan = sub.add_parser("scan", help="Run proactive scan")
     p_scan.add_argument("--root", default=".", help="Project root path")
     p_scan.add_argument("--max-findings", default=100, type=int, help="Max findings to process per cycle")
+    p_scan.add_argument("--dry-run", action="store_true", help="Scan and route findings without opening issues or PRs")
     p_scan.set_defaults(func=lambda args: scan_handler(args))
 
     p_list = sub.add_parser("list", help="List current findings")
@@ -166,4 +167,3 @@ def standalone_sync_outcomes(args: argparse.Namespace, sync_outcomes_fn, runtime
     write_json(findings_path(root), {"findings": findings})
     print(json.dumps({"synced": True, "count": len(findings), "metrics": metrics}, indent=2))
     return 0
-

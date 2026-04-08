@@ -46,6 +46,10 @@ class DynosAutofixBackend:
     get_neighbor_file_contents_fn: Callable[..., list[dict]]
     find_matching_template_fn: Callable[[Path, dict], dict | None]
 
+    @staticmethod
+    def _is_dry_run() -> bool:
+        return os.environ.get("AUTOFIX_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
+
     def check_existing_pr(self, finding_id: str, root: Path) -> bool:
         if not self.shutil_module.which("gh"):
             return False
@@ -93,7 +97,7 @@ class DynosAutofixBackend:
         return False
 
     def detect_test_command(self, root: Path) -> str | None:
-        cache_path = root / ".dynos" / "test-command.json"
+        cache_path = persistent_project_dir(root) / "test-command.json"
         valid_commands = frozenset({
             "npm test",
             "dart test",
@@ -450,6 +454,16 @@ class DynosAutofixBackend:
         category = str(finding.get("category", "") or "")
         category_stats = policy.get("categories", {}).get(category, {}).get("stats", {})
 
+        if self._is_dry_run():
+            finding["status"] = "issue-opened"
+            finding["issue_number"] = 0
+            finding["issue_url"] = "dry-run://issue"
+            finding["processed_at"] = now_iso()
+            finding["dry_run"] = True
+            category_stats["issues_opened"] = int(category_stats.get("issues_opened", 0) or 0) + 1
+            self.log(f"Dry-run issue for {finding_id}")
+            return finding
+
         if not self.shutil_module.which("gh"):
             finding["status"] = "failed"
             finding["fail_reason"] = "gh_not_available"
@@ -597,6 +611,26 @@ class DynosAutofixBackend:
         evidence_str = json.dumps(finding.get("evidence", {}), indent=2)
         category = str(finding.get("category", "") or "")
         category_stats = policy.get("categories", {}).get(category, {}).get("stats", {})
+
+        if self._is_dry_run():
+            finding["status"] = "fixed"
+            finding["pr_number"] = 0
+            finding["pr_url"] = "dry-run://pr"
+            finding["pr_state"] = "DRY_RUN"
+            finding["merge_outcome"] = "open"
+            finding["processed_at"] = now_iso()
+            finding["verification"] = {
+                "changed_files": [str(finding.get("evidence", {}).get("file", "") or "unknown")],
+                "python_files_checked": [],
+                "targeted_tests": [],
+                "total_changes": 0,
+                "dry_run": True,
+            }
+            finding["pr_quality_score"] = 1.0
+            finding["dry_run"] = True
+            category_stats["proposed"] = int(category_stats.get("proposed", 0) or 0) + 1
+            self.log(f"Dry-run fix for {finding_id}")
+            return finding
 
         if not self.shutil_module.which("claude"):
             finding["status"] = "failed"

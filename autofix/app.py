@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -178,7 +179,7 @@ def _classify_fixability(finding: dict) -> str:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    if not shutil.which("claude"):
+    if not args.dry_run and not shutil.which("claude"):
         print(json.dumps({"ok": False, "error": "claude CLI not found"}))
         return 1
     lock_path = root / ".autofix" / "scan.lock"
@@ -191,8 +192,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
         lock_fd.close()
         return 1
     try:
+        if args.dry_run:
+            os.environ["AUTOFIX_DRY_RUN"] = "1"
         return standalone_scan(args, runtime_factory)
     finally:
+        if args.dry_run:
+            os.environ.pop("AUTOFIX_DRY_RUN", None)
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
 
