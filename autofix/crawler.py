@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +15,9 @@ from autofix.defaults import (
     FILE_SCORE_COMPLEXITY_DIVISOR,
     FILE_SCORE_COMPLEXITY_MAX,
     FILE_SCORE_COMPLEXITY_WEIGHT,
+    FILE_SCORE_DETECTOR_CONFIDENCE_DIVISOR,
+    FILE_SCORE_DETECTOR_FINDING_BONUS,
+    FILE_SCORE_DETECTOR_RISK_BONUS,
     FILE_SCORE_PENALTY_CLEAN_SCAN,
     FILE_SCORE_PENALTY_SCANNED_3DAYS,
     FILE_SCORE_PENALTY_SCANNED_7DAYS,
@@ -34,6 +39,26 @@ SEVERITY_BONUS = {
     "high": 8.0,
     "critical": 12.0,
 }
+
+SECRET_PATTERNS = [
+    (re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"][^'\"]{8,}['\"]"), "possible hardcoded secret"),
+    (re.compile(r"-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----"), "embedded private key"),
+]
+
+RISK_PATTERNS = [
+    (re.compile(r"\beval\s*\("), "dynamic eval call"),
+    (re.compile(r"\bexec\s*\("), "dynamic exec call"),
+    (re.compile(r"subprocess\.(Popen|run)\("), "subprocess execution"),
+    (re.compile(r"os\.system\s*\("), "shell execution"),
+    (re.compile(r"innerHTML\s*="), "unsafe DOM assignment"),
+    (re.compile(r"Runtime\.exec\s*\("), "runtime process execution"),
+]
+
+DATA_FLOW_PATTERNS = [
+    (re.compile(r"\b(jsonDecode|json\.loads|yaml\.load|pickle\.loads|marshal\.loads)\b"), "deserialization boundary"),
+    (re.compile(r"\b(open|readAsString|read_text|write_text|writeAsString)\b"), "filesystem boundary"),
+    (re.compile(r"\b(http\.|requests\.|fetch\(|aiohttp|urllib)\b"), "network boundary"),
+]
 
 
 def _file_language(path: Path) -> str:
@@ -92,6 +117,96 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 def _load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _detector_signal(rule: str, severity: str, confidence: float, detail: str, *, line: int | None = None) -> dict:
+    signal = {
+        "rule": rule,
+        "severity": severity,
+        "confidence": round(confidence, 3),
+        "detail": detail,
+    }
+    if line is not None:
+        signal["line"] = int(line)
+    return signal
+
+
+def analyze_file_for_llm(root: Path, rel: str) -> dict:
+    path = root / rel
+    signals: list[dict] = []
+    try:
+        content = _load_text(path)
+    except OSError:
+        return {
+            "summary": {"signal_count": 0, "max_severity": "low", "confidence": 0.0, "risk_score": 0.0},
+            "signals": [],
+        }
+
+    lines = content.splitlines()
+    ext = path.suffix.lower()
+
+    if ext == ".py":
+        try:
+            tree = ast.parse(content, filename=rel)
+            func_count = sum(1 for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+            class_count = sum(1 for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
+            if func_count >= 12:
+                signals.append(_detector_signal("high_function_count", "medium", 0.72, f"{func_count} functions in one file"))
+            if class_count >= 6:
+                signals.append(_detector_signal("high_class_count", "medium", 0.66, f"{class_count} classes in one file"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Try) and not node.handlers:
+                    signals.append(_detector_signal("empty_try_handlers", "high", 0.82, "try block without handlers", line=getattr(node, "lineno", None)))
+                elif isinstance(node, ast.ExceptHandler) and node.type is None:
+                    signals.append(_detector_signal("bare_except", "high", 0.9, "bare except hides unexpected failures", line=getattr(node, "lineno", None)))
+                elif isinstance(node, ast.Call):
+                    func = getattr(node, "func", None)
+                    if isinstance(func, ast.Name) and func.id in {"eval", "exec"}:
+                        signals.append(_detector_signal("dynamic_execution", "high", 0.95, f"{func.id} call", line=getattr(node, "lineno", None)))
+        except SyntaxError as exc:
+            signals.append(_detector_signal("syntax_error", "critical", 0.99, exc.msg, line=exc.lineno or None))
+
+    if len(lines) >= 250:
+        signals.append(_detector_signal("large_file", "medium", 0.58, f"{len(lines)} lines; harder to reason about"))
+
+    for regex, detail in SECRET_PATTERNS:
+        match = regex.search(content)
+        if match:
+            line = content[: match.start()].count("\n") + 1
+            signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
+
+    for regex, detail in RISK_PATTERNS:
+        for match in regex.finditer(content):
+            line = content[: match.start()].count("\n") + 1
+            signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
+            if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+                break
+
+    for regex, detail in DATA_FLOW_PATTERNS:
+        matches = list(regex.finditer(content))
+        if matches:
+            signals.append(_detector_signal("data_boundary", "medium", 0.61, detail, line=content[: matches[0].start()].count("\n") + 1))
+
+    if "TODO" in content or "FIXME" in content:
+        todo_count = content.count("TODO") + content.count("FIXME")
+        if todo_count >= 3:
+            signals.append(_detector_signal("deferred_work", "low", 0.5, f"{todo_count} TODO/FIXME markers"))
+
+    max_severity = "low"
+    for signal in signals:
+        if SEVERITY_BONUS.get(signal["severity"], 0) > SEVERITY_BONUS.get(max_severity, 0):
+            max_severity = signal["severity"]
+    risk_score = sum(SEVERITY_BONUS.get(signal["severity"], 0) for signal in signals)
+    confidence = max((float(signal["confidence"]) for signal in signals), default=0.0)
+    return {
+        "summary": {
+            "signal_count": len(signals),
+            "max_severity": max_severity,
+            "confidence": round(confidence, 3),
+            "risk_score": round(risk_score, 3),
+        },
+        "signals": signals[:25],
+    }
 
 
 def normalize_crawl_state(state: dict | None) -> dict:
@@ -287,6 +402,23 @@ def _compute_priority(
         score += 1.0
         reasons.append(_reason("test_file", 1.0, "Tests can expose harness and runtime bugs too"))
 
+    detector_summary = file_info.get("detector_summary", {})
+    detector_signal_count = int(detector_summary.get("signal_count", 0) or 0)
+    if detector_signal_count:
+        impact = detector_signal_count * FILE_SCORE_DETECTOR_FINDING_BONUS
+        score += impact
+        reasons.append(_reason("detector_signals", impact, f"{detector_signal_count} pre-LLM detector signals"))
+    detector_risk = float(detector_summary.get("risk_score", 0.0) or 0.0)
+    if detector_risk:
+        impact = min(detector_risk, FILE_SCORE_DETECTOR_RISK_BONUS)
+        score += impact
+        reasons.append(_reason("detector_risk", impact, f"Detector risk score {round(detector_risk, 2)}"))
+    detector_conf = float(detector_summary.get("confidence", 0.0) or 0.0)
+    if detector_conf:
+        impact = detector_conf * FILE_SCORE_DETECTOR_CONFIDENCE_DIVISOR
+        score += impact
+        reasons.append(_reason("detector_confidence", impact, f"Detector confidence {round(detector_conf, 2)}"))
+
     return round(score, 3), reasons
 
 
@@ -330,6 +462,9 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "historical_max_severity": str(findings_by_file.get(rel, {}).get("max_severity", previous.get("historical_max_severity", "low")) or "low"),
             "last_known_finding_at": findings_by_file.get(rel, {}).get("last_finding_at") or previous.get("last_known_finding_at"),
         })
+        detector_analysis = analyze_file_for_llm(root, rel)
+        file_info["detector_summary"] = detector_analysis["summary"]
+        file_info["detector_signals"] = detector_analysis["signals"]
         last_crawl_hash = str(previous.get("last_crawl_hash", "") or "")
         last_review_marker = (
             previous.get("last_crawled_at")
@@ -358,6 +493,8 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "unresolved_finding_count": file_info["unresolved_finding_count"],
             "changed_since_last_crawl": file_info["changed_since_last_crawl"],
             "last_llm_reviewed_at": file_info.get("last_llm_reviewed_at"),
+            "detector_summary": file_info["detector_summary"],
+            "detector_signals": file_info["detector_signals"][:10],
         })
 
     for rel, previous in previous_files.items():

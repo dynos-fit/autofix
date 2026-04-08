@@ -605,9 +605,19 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
         try:
             content = path.read_text()
             rel = str(path.relative_to(root))
+            selected_item = next((item for item in scored_files if item["path"] == rel), None)
             lines = content.splitlines()
             if len(lines) > LLM_REVIEW_FILE_TRUNCATION:
                 content = "\n".join(lines[:LLM_REVIEW_FILE_TRUNCATION]) + f"\n... (truncated, {len(lines)} total lines)"
+            if selected_item:
+                detector_summary = selected_item.get("detector_summary", {})
+                detector_signals = selected_item.get("detector_signals", [])
+                if detector_summary or detector_signals:
+                    prompt += f"\n### Detector context for {rel}\n"
+                    if detector_summary:
+                        prompt += json.dumps({"summary": detector_summary}, indent=2) + "\n"
+                    if detector_signals:
+                        prompt += json.dumps({"signals": detector_signals[:10]}, indent=2) + "\n"
             prompt += f"\n--- {rel} ---\n{content}\n"
         except OSError:
             continue
