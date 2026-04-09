@@ -605,8 +605,8 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         file_info["selection_history"] = normalized_history[-RECENT_SELECTION_HISTORY_LIMIT:]
         file_info["recent_selection_count"] = _recent_selection_count(file_info, now=now_dt)
         detector_analysis = analyze_file_for_llm(root, rel)
-        file_info["detector_summary"] = detector_analysis["summary"]
-        file_info["detector_signals"] = detector_analysis["signals"]
+        file_info["detector_summary"] = detector_analysis.get("summary", {})
+        file_info["detector_signals"] = detector_analysis.get("signals", [])
         last_crawl_hash = str(previous.get("last_crawl_hash", "") or "")
         last_review_marker = (
             previous.get("last_crawled_at")
@@ -625,7 +625,8 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         file_info["review_ttl_days"] = review_ttl_days
         file_info["review_age_days"] = round(review_age_days, 3) if review_age_days != float("inf") else None
         file_info["stale_review"] = stale_review
-        detector_stale, detector_age_days = _is_stale(file_info["detector_summary"].get("analyzed_at"), now=now_dt, ttl_days=DETECTOR_TTL_DAYS)
+        ds = file_info["detector_summary"]
+        detector_stale, detector_age_days = _is_stale(ds.get("analyzed_at") if isinstance(ds, dict) else None, now=now_dt, ttl_days=DETECTOR_TTL_DAYS)
         file_info["detector_ttl_days"] = DETECTOR_TTL_DAYS
         file_info["detector_age_days"] = round(detector_age_days, 3) if detector_age_days != float("inf") else None
         file_info["stale_detector_state"] = detector_stale
@@ -733,7 +734,8 @@ def finalize_crawl_state(
 ) -> dict:
     crawl_state = normalize_crawl_state(state)
     files = crawl_state.get("files", {})
-    now = now_iso()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat().replace("+00:00", "Z")
     findings_by_file = _findings_by_file(findings)
     reviewed_chunks_by_file = reviewed_chunks_by_file or {}
     for rel in selected_paths:
@@ -754,7 +756,7 @@ def finalize_crawl_state(
             file_info["last_finding_at"] = now
             file_info["historical_max_severity"] = str(finding_summary.get("max_severity", file_info.get("historical_max_severity", "low")) or "low")
         cooldown = timedelta(days=1 if file_info["last_finding_count"] else _review_ttl_days(file_info))
-        file_info["next_eligible_at"] = (datetime.now(timezone.utc) + cooldown).isoformat().replace("+00:00", "Z")
+        file_info["next_eligible_at"] = (now_dt + cooldown).isoformat().replace("+00:00", "Z")
         file_info.setdefault("detector_summary", {})
         file_info["detector_summary"]["analyzed_at"] = now
         file_info["stale_review"] = False
