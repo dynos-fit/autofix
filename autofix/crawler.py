@@ -129,7 +129,10 @@ def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
@@ -250,11 +253,15 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
 
+    risky_api_limit_reached = False
     for regex, detail in RISK_PATTERNS:
+        if risky_api_limit_reached:
+            break
         for match in regex.finditer(content):
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
             if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+                risky_api_limit_reached = True
                 break
 
     for regex, detail in DATA_FLOW_PATTERNS:
@@ -463,13 +470,19 @@ def _compute_priority(
         score += severity_impact
         reasons.append(_reason("severity_history", severity_impact, f"Historical max severity is {max_severity}"))
 
-    churn = min(int(file_info.get("recent_churn", 0) or 0), FILE_SCORE_CHURN_MAX)
+    try:
+        churn = min(int(file_info.get("recent_churn", 0) or 0), FILE_SCORE_CHURN_MAX)
+    except (ValueError, TypeError):
+        churn = 0
     if churn:
         impact = churn * FILE_SCORE_CHURN_WEIGHT
         score += impact
         reasons.append(_reason("recent_churn", impact, f"File changed {churn} times in the last 30 days"))
 
-    line_count = int(file_info.get("line_count", 0) or 0)
+    try:
+        line_count = int(file_info.get("line_count", 0) or 0)
+    except (ValueError, TypeError):
+        line_count = 0
     complexity = min(line_count / FILE_SCORE_COMPLEXITY_DIVISOR, FILE_SCORE_COMPLEXITY_MAX)
     if complexity:
         impact = complexity * FILE_SCORE_COMPLEXITY_WEIGHT
@@ -487,7 +500,10 @@ def _compute_priority(
             )
         )
 
-    recent_selection_count = int(file_info.get("recent_selection_count", 0) or 0)
+    try:
+        recent_selection_count = int(file_info.get("recent_selection_count", 0) or 0)
+    except (ValueError, TypeError):
+        recent_selection_count = 0
     if selection_gini >= FILE_SCORE_GINI_CONCENTRATION_THRESHOLD and recent_selection_count > 1:
         penalty = min(
             (recent_selection_count - 1) * FILE_SCORE_GINI_REPEAT_PENALTY_WEIGHT * selection_gini,
@@ -616,7 +632,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         if last_crawl_hash:
             changed_since_last_crawl = last_crawl_hash != content_hash
         elif last_review_marker:
-            changed_since_last_crawl = False
+            changed_since_last_crawl = True
         else:
             changed_since_last_crawl = True
         file_info["changed_since_last_crawl"] = changed_since_last_crawl
