@@ -73,7 +73,7 @@ def cmd_init(
 
     # --- check if already initialized --------------------------------------
     autofix_dir = resolved_root / ".autofix"
-    policy_file = autofix_dir / "policy.json"
+    policy_file = autofix_dir / "autofix-policy.json"
     already_initialized = autofix_dir.is_dir() and policy_file.is_file()
     has_overrides = max_files is not None or interval is not None
 

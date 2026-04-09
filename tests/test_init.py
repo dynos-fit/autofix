@@ -92,7 +92,7 @@ class TestAutofixDirCreation:
         repo = _make_git_repo(tmp_path / "repo")
         with patch("autofix.init.shutil.which", return_value="/usr/bin/tool"):
             cmd_init(root=repo, home_dir=tmp_path / "home")
-        policy_file = repo / ".autofix" / "policy.json"
+        policy_file = repo / ".autofix" / "autofix-policy.json"
         assert policy_file.exists()
         policy = json.loads(policy_file.read_text())
         # Policy should be a non-empty dict (from default_category_policy)
@@ -141,7 +141,7 @@ class TestIdempotency:
         with patch("autofix.init.shutil.which", return_value="/usr/bin/tool"):
             cmd_init(root=repo, home_dir=home)
         # Modify the policy file manually
-        policy_file = repo / ".autofix" / "policy.json"
+        policy_file = repo / ".autofix" / "autofix-policy.json"
         custom_policy = {"custom": "policy"}
         policy_file.write_text(json.dumps(custom_policy))
         # Run init again
@@ -197,7 +197,7 @@ class TestConfigOverrides:
         with patch("autofix.init.shutil.which", return_value="/usr/bin/tool"):
             cmd_init(root=repo, home_dir=home, max_files=8)
         # Modify policy manually
-        policy_file = repo / ".autofix" / "policy.json"
+        policy_file = repo / ".autofix" / "autofix-policy.json"
         custom = {"my": "policy"}
         policy_file.write_text(json.dumps(custom))
         # Re-init with different flags
