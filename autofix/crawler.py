@@ -652,6 +652,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "detector_signals": file_info["detector_signals"][:10],
             "recent_selection_count": file_info["recent_selection_count"],
             "selection_count": int(file_info.get("selection_count", 0) or 0),
+            "last_selected_at": file_info.get("last_selected_at") or "",
         })
 
     for rel, previous in previous_files.items():
@@ -678,12 +679,19 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
     priority_paths = {item["path"] for item in priority_selected}
 
     # Build the diversity pool from files NOT already in the priority set.
-    # Sort by lifetime selection_count (fewest first), then by score as
-    # tiebreaker.  This guarantees never-selected files are chosen before
-    # any file that has ever been scanned, regardless of score.
+    # Sort by: unseen first (selection_count=0), then oldest last_selected_at,
+    # then score as final tiebreaker.  This is fully state-driven: each scan
+    # selects a file, which updates its selection_count and last_selected_at,
+    # pushing it to the back of the queue and letting the next-oldest file
+    # rotate in.  Guarantees eventual full coverage.
     remaining = [item for item in ranked if item["path"] not in priority_paths]
-    remaining.sort(key=lambda item: (item["selection_count"], -item["score"]))
+    remaining.sort(key=lambda item: (
+        0 if item["selection_count"] == 0 else 1,
+        item["last_selected_at"] or "",
+        -item["score"],
+    ))
     diversity_selected = remaining[:reserved]
+    diversity_paths = {item["path"] for item in diversity_selected}
 
     selected = priority_selected + diversity_selected
     selected_paths = {item["path"] for item in selected}
@@ -712,7 +720,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         "file_count": len(discovered),
         "selected_files": selected,
         "frontier": ranked,
-        "review_files": [item["path"] for item in selected if item["score"] >= 0],
+        "review_files": [item["path"] for item in selected if item["score"] >= 0 or item["path"] in diversity_paths],
     }
     return crawl_state, plan
 

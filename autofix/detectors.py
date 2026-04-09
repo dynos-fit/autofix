@@ -516,16 +516,13 @@ def detect_llm_review(
         scored_files = fallback_scores
         crawl_plan["frontier"] = fallback_scores
         crawl_plan["selected_files"] = fallback_scores
-        crawl_plan["review_files"] = [item["path"] for item in fallback_scores if item["score"] >= 0]
+        crawl_plan["review_files"] = [item["path"] for item in fallback_scores]
     if not scored_files:
         return findings
 
     review_files: list[Path] = []
     for item in scored_files:
         rel_path = item["path"]
-        score = float(item["score"])
-        if score < 0:
-            continue
         review_files.append(root / rel_path)
         if len(review_files) >= LLM_REVIEW_MAX_FILES:
             break
