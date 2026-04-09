@@ -71,11 +71,22 @@ def cmd_init(
     home_autofix_dir = home / ".autofix"
     repos_file = home_autofix_dir / "repos.json"
 
+    # --- check if already initialized --------------------------------------
+    autofix_dir = resolved_root / ".autofix"
+    policy_file = autofix_dir / "policy.json"
+    already_initialized = autofix_dir.is_dir() and policy_file.is_file()
+    has_overrides = max_files is not None or interval is not None
+
+    if already_initialized and not has_overrides:
+        return InitResult(
+            exit_code=0,
+            message="Already initialized. Use --max-files or --interval to update settings.",
+        )
+
     # --- create .autofix/ in repo ------------------------------------------
     autofix_dir.mkdir(parents=True, exist_ok=True)
 
     # --- write default policy (idempotent: skip if exists) -----------------
-    policy_file = autofix_dir / "policy.json"
     if not policy_file.exists():
         policy = default_autofix_policy()
         policy_file.write_text(json.dumps(policy, indent=2))
@@ -93,10 +104,8 @@ def cmd_init(
 
     # --- per-repo config overrides -----------------------------------------
     config_file = autofix_dir / "config.json"
-    has_overrides = max_files is not None or interval is not None
 
     if has_overrides:
-        # Load existing config to merge
         existing_config: dict = {}
         if config_file.exists():
             try:
@@ -112,5 +121,6 @@ def cmd_init(
             existing_config["interval"] = interval
 
         config_file.write_text(json.dumps(existing_config, indent=2))
+        return InitResult(exit_code=0, message="Updated autofix settings.")
 
     return InitResult(exit_code=0, message="Initialized autofix for this repository.")
