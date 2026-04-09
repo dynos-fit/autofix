@@ -1350,8 +1350,33 @@ class DynosAutofixBackend:
                     return finding
                 finding["pr_quality_score"] = self.compute_pr_quality_score(verify_report)
 
+                # Rebase onto latest remote base branch before pushing to
+                # avoid "tip of your current branch is behind" rejections.
+                self.subprocess_module.run(
+                    ["git", "fetch", "origin", base_branch],
+                    capture_output=True,
+                    timeout=GH_API_TIMEOUT,
+                    cwd=worktree_path,
+                )
+                rebase_result = self.subprocess_module.run(
+                    ["git", "rebase", f"origin/{base_branch}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=GH_API_TIMEOUT,
+                    cwd=worktree_path,
+                )
+                if rebase_result.returncode != 0:
+                    # Rebase conflict — abort and try force push instead
+                    self.subprocess_module.run(
+                        ["git", "rebase", "--abort"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=worktree_path,
+                    )
+                    self.log(f"Rebase failed for {finding_id}, attempting force push")
+
                 push_result = self.subprocess_module.run(
-                    ["git", "push", "-u", "origin", branch_name],
+                    ["git", "push", "-u", "origin", branch_name, "--force-with-lease"],
                     capture_output=True,
                     text=True,
                     timeout=GH_API_TIMEOUT,
