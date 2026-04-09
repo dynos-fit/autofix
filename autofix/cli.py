@@ -7,10 +7,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from autofix.output import (
+    format_benchmarks,
+    format_findings,
+    format_suppressions,
+)
 from autofix.platform import write_json
 from autofix.scanner import resolve_scan_args, scan_locked
 from autofix.state import (
-    autofix_policy_path,
     build_autofix_benchmarks,
     findings_path,
     load_autofix_policy,
@@ -20,36 +24,60 @@ from autofix.state import (
 )
 
 
-def build_parser(*, scan_handler, sync_handler, runtime_factory) -> argparse.ArgumentParser:
+def build_parser(
+    *,
+    scan_handler,
+    sync_handler,
+    runtime_factory,
+    init_handler=None,
+    daemon_start_handler=None,
+    daemon_stop_handler=None,
+    daemon_status_handler=None,
+    repo_add_handler=None,
+    repo_remove_handler=None,
+    repo_list_handler=None,
+    config_show_handler=None,
+    config_set_handler=None,
+    scan_all_handler=None,
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone autofix scanner")
     sub = parser.add_subparsers(dest="subcommand")
 
+    # --- scan ---
     p_scan = sub.add_parser("scan", help="Run proactive scan")
     p_scan.add_argument("--root", default=".", help="Project root path")
     p_scan.add_argument("--max-findings", default=100, type=int, help="Max findings to process per cycle")
     p_scan.add_argument("--dry-run", action="store_true", help="Scan and route findings without opening issues or PRs")
     p_scan.set_defaults(func=lambda args: scan_handler(args))
 
+    # --- list ---
     p_list = sub.add_parser("list", help="List current findings")
     p_list.add_argument("--root", default=".", help="Project root path")
+    p_list.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
     p_list.set_defaults(func=cmd_list)
 
+    # --- clear ---
     p_clear = sub.add_parser("clear", help="Clear findings file")
     p_clear.add_argument("--root", default=".", help="Project root path")
     p_clear.set_defaults(func=cmd_clear)
 
+    # --- policy ---
     p_policy = sub.add_parser("policy", help="Show current autofix policy")
     p_policy.add_argument("--root", default=".", help="Project root path")
     p_policy.set_defaults(func=cmd_policy)
 
+    # --- sync-outcomes ---
     p_sync = sub.add_parser("sync-outcomes", help="Refresh PR/issue outcomes and metrics")
     p_sync.add_argument("--root", default=".", help="Project root path")
     p_sync.set_defaults(func=lambda args: sync_handler(args))
 
+    # --- benchmark ---
     p_benchmark = sub.add_parser("benchmark", help="Build autofix benchmark summary from findings")
     p_benchmark.add_argument("--root", default=".", help="Project root path")
+    p_benchmark.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
     p_benchmark.set_defaults(func=cmd_benchmark)
 
+    # --- suppress ---
     p_suppress = sub.add_parser("suppress", help="Manage autofix suppressions")
     suppress_sub = p_suppress.add_subparsers(dest="suppress_command", required=True)
 
@@ -64,6 +92,7 @@ def build_parser(*, scan_handler, sync_handler, runtime_factory) -> argparse.Arg
 
     p_suppress_list = suppress_sub.add_parser("list", help="List suppressions")
     p_suppress_list.add_argument("--root", default=".", help="Project root path")
+    p_suppress_list.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
     p_suppress_list.set_defaults(func=cmd_suppress_list)
 
     p_suppress_remove = suppress_sub.add_parser("remove", help="Remove suppressions")
@@ -73,13 +102,80 @@ def build_parser(*, scan_handler, sync_handler, runtime_factory) -> argparse.Arg
     p_suppress_remove.add_argument("--path-prefix", default=None, help="Path prefix suppression to remove")
     p_suppress_remove.set_defaults(func=cmd_suppress_remove)
 
+    # --- init ---
+    if init_handler is not None:
+        p_init = sub.add_parser("init", help="Initialize autofix for a repository")
+        p_init.add_argument("--root", default=".", help="Project root path")
+        p_init.add_argument("--max-files", type=int, default=None, help="Per-repo max files override")
+        p_init.add_argument("--interval", default=None, help="Per-repo scan interval (e.g. 15m, 2h)")
+        p_init.set_defaults(func=init_handler)
+
+    # --- daemon ---
+    if daemon_start_handler is not None:
+        p_daemon = sub.add_parser("daemon", help="Manage the autofix background daemon")
+        daemon_sub = p_daemon.add_subparsers(dest="daemon_command", required=True)
+
+        p_daemon_start = daemon_sub.add_parser("start", help="Start the daemon")
+        p_daemon_start.add_argument("--root", default=".", help="Project root path")
+        p_daemon_start.add_argument("--interval", default=None, help="Scan interval (e.g. 15m, 2h)")
+        p_daemon_start.set_defaults(func=daemon_start_handler)
+
+        p_daemon_stop = daemon_sub.add_parser("stop", help="Stop the daemon")
+        p_daemon_stop.add_argument("--root", default=".", help="Project root path")
+        p_daemon_stop.set_defaults(func=daemon_stop_handler)
+
+        p_daemon_status = daemon_sub.add_parser("status", help="Show daemon status")
+        p_daemon_status.add_argument("--root", default=".", help="Project root path")
+        p_daemon_status.set_defaults(func=daemon_status_handler)
+
+    # --- repo ---
+    if repo_add_handler is not None:
+        p_repo = sub.add_parser("repo", help="Manage registered repositories")
+        repo_sub = p_repo.add_subparsers(dest="repo_command", required=True)
+
+        p_repo_add = repo_sub.add_parser("add", help="Register a repository")
+        p_repo_add.add_argument("path", help="Path to the repository")
+        p_repo_add.set_defaults(func=repo_add_handler)
+
+        p_repo_remove = repo_sub.add_parser("remove", help="Remove a repository")
+        p_repo_remove.add_argument("path", help="Path to the repository")
+        p_repo_remove.set_defaults(func=repo_remove_handler)
+
+        p_repo_list = repo_sub.add_parser("list", help="List registered repositories")
+        p_repo_list.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
+        p_repo_list.set_defaults(func=repo_list_handler)
+
+    # --- config ---
+    if config_show_handler is not None:
+        p_config = sub.add_parser("config", help="Manage configuration")
+        config_sub = p_config.add_subparsers(dest="config_command", required=True)
+
+        p_config_show = config_sub.add_parser("show", help="Show resolved configuration")
+        p_config_show.add_argument("--root", default=".", help="Project root path")
+        p_config_show.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
+        p_config_show.set_defaults(func=config_show_handler)
+
+        p_config_set = config_sub.add_parser("set", help="Set a configuration key")
+        p_config_set.add_argument("--root", default=".", help="Project root path")
+        p_config_set.add_argument("key", help="Configuration key")
+        p_config_set.add_argument("value", help="Configuration value")
+        p_config_set.set_defaults(func=config_set_handler)
+
+    # --- scan-all ---
+    if scan_all_handler is not None:
+        p_scan_all = sub.add_parser("scan-all", help="Scan all registered repositories")
+        p_scan_all.add_argument("--json", dest="as_json", action="store_true", default=False, help="Output as JSON")
+        p_scan_all.set_defaults(func=scan_all_handler)
+
     parser.set_defaults(runtime_factory=runtime_factory)
     return parser
 
 
 def cmd_list(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    print(json.dumps(load_findings(root), indent=2))
+    findings = load_findings(root)
+    as_json = getattr(args, "as_json", False)
+    print(format_findings(findings, as_json=as_json))
     return 0
 
 
@@ -106,7 +202,9 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     findings = load_findings(root)
     policy = load_autofix_policy(root)
-    print(json.dumps(build_autofix_benchmarks(root, findings, policy), indent=2))
+    benchmarks = build_autofix_benchmarks(root, findings, policy)
+    as_json = getattr(args, "as_json", False)
+    print(format_benchmarks(benchmarks, as_json=as_json))
     return 0
 
 
@@ -130,7 +228,9 @@ def cmd_suppress_add(args: argparse.Namespace) -> int:
 
 def cmd_suppress_list(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    print(json.dumps(load_autofix_policy(root).get("suppressions", []), indent=2))
+    suppressions = load_autofix_policy(root).get("suppressions", [])
+    as_json = getattr(args, "as_json", False)
+    print(format_suppressions(suppressions, as_json=as_json))
     return 0
 
 

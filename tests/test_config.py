@@ -61,7 +61,7 @@ class TestParseInterval:
         """Zero interval should either raise or return 0 -- either is acceptable."""
         # Implementation may choose to reject 0 as invalid
         result = parse_interval("0m")
-        assert result == 0 or pytest.raises(ValueError)
+        assert result == 0
 
     def test_negative_raises(self) -> None:
         with pytest.raises(ValueError):

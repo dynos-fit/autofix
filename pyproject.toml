@@ -1,8 +1,13 @@
 [project]
-name = "autofix"
+name = "autofix-scanner"
 version = "0.1.0"
 description = "Standalone codebase scanner and Dynos-backed autofix runner"
 requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+authors = [
+    { name = "Hassam Sheikh", email = "hassamsheikh1@gmail.com" },
+]
 
 [project.scripts]
 autofix = "autofix.app:main"
@@ -11,5 +16,8 @@ autofix = "autofix.app:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["autofix", "autofix.runtime"]
+[tool.setuptools.packages.find]
+include = ["autofix*"]
+
+[tool.setuptools.package-data]
+"autofix.llm_io" = ["prompts/*.md"]
