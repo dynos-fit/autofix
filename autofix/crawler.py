@@ -251,6 +251,8 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
 
     for regex, detail in RISK_PATTERNS:
+        if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+            break
         for match in regex.finditer(content):
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
@@ -379,7 +381,7 @@ def collect_recent_churn(root: Path) -> dict[str, int]:
 def _findings_by_file(findings: list[dict]) -> dict[str, dict]:
     summary: dict[str, dict] = {}
     for finding in findings:
-        rel = str(finding.get("evidence", {}).get("file", "") or "")
+        rel = str((finding.get("evidence") or {}).get("file", "") or "")
         if not rel:
             continue
         bucket = summary.setdefault(rel, {
@@ -754,7 +756,7 @@ def finalize_crawl_state(
             file_info["last_finding_at"] = now
             file_info["historical_max_severity"] = str(finding_summary.get("max_severity", file_info.get("historical_max_severity", "low")) or "low")
         cooldown = timedelta(days=1 if file_info["last_finding_count"] else _review_ttl_days(file_info))
-        file_info["next_eligible_at"] = (datetime.now(timezone.utc) + cooldown).isoformat().replace("+00:00", "Z")
+        file_info["next_eligible_at"] = (_parse_iso(now) + cooldown).isoformat().replace("+00:00", "Z")
         file_info.setdefault("detector_summary", {})
         file_info["detector_summary"]["analyzed_at"] = now
         file_info["stale_review"] = False
