@@ -213,7 +213,7 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
         content = _load_text(path)
     except OSError:
         return {
-            "summary": {"signal_count": 0, "max_severity": "low", "confidence": 0.0, "risk_score": 0.0},
+            "summary": {"signal_count": 0, "max_severity": "low", "confidence": 0.0, "risk_score": 0.0, "analyzed_at": now_iso(), "ttl_days": DETECTOR_TTL_DAYS},
             "signals": [],
         }
 
@@ -250,11 +250,15 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
 
+    risky_api_count = 0
     for regex, detail in RISK_PATTERNS:
+        if risky_api_count >= 3:
+            break
         for match in regex.finditer(content):
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
-            if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+            risky_api_count += 1
+            if risky_api_count >= 3:
                 break
 
     for regex, detail in DATA_FLOW_PATTERNS:
@@ -429,7 +433,7 @@ def _compute_priority(
         score += FILE_SCORE_STALE_REVIEW_BONUS
         reasons.append(_reason("stale_review_ttl", FILE_SCORE_STALE_REVIEW_BONUS, f"Review is stale after {round(review_age_days, 1)} days; ttl={ttl_days}"))
 
-    detector_summary = file_info.get("detector_summary", {})
+    detector_summary = file_info.get("detector_summary") or {}
     detector_stale, detector_age_days = _is_stale(detector_summary.get("analyzed_at"), now=now, ttl_days=DETECTOR_TTL_DAYS)
     if detector_summary and detector_summary.get("analyzed_at") and detector_stale:
         score += FILE_SCORE_STALE_DETECTOR_BONUS
@@ -576,7 +580,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             content = _load_text(path)
             line_count = len(content.splitlines())
             content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
-        except OSError:
+        except (OSError, ValueError, UnicodeDecodeError):
             continue
         file_info = dict(previous)
         file_info.update({
@@ -615,8 +619,6 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         )
         if last_crawl_hash:
             changed_since_last_crawl = last_crawl_hash != content_hash
-        elif last_review_marker:
-            changed_since_last_crawl = False
         else:
             changed_since_last_crawl = True
         file_info["changed_since_last_crawl"] = changed_since_last_crawl
