@@ -602,21 +602,29 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
             f"Processing {len(to_process)} findings (max={max_findings}, skipped_dedup={skipped_dedup})"
         )
 
-        # Group findings by file — all findings for the same file are
-        # batched into a single fix invocation regardless of count.
-        # The on_findings callback fires per-file, so typically all
-        # findings here share the same file already.
-        by_file: dict[str, list[dict]] = {}
-        for finding in to_process:
-            file_key = str(finding.get("evidence", {}).get("file", "") or "unknown")
-            by_file.setdefault(file_key, []).append(finding)
+        # Use existing group_similar_findings to batch by file (for
+        # llm-review) or by (category, detail).  All same-file findings
+        # become a single fix invocation via autofix_batch.
+        groups = group_similar_findings(to_process, batch_min_group_size=1)
+        batches: list[list[dict]] = []
+        individual_findings: list[dict] = []
+        for group in groups:
+            if len(group) > 1:
+                batches.append(group)
+            else:
+                individual_findings.extend(group)
 
-        for file_key, file_findings in by_file.items():
+        if batches:
+            runtime.log(
+                f"Batch grouping: {len(batches)} batches, {len(individual_findings)} individual findings"
+            )
+
+        for batch in batches:
             elapsed = time.monotonic() - start_time
             remaining = runtime.scan_timeout_seconds - elapsed
             if remaining < 120:
-                runtime.log(f"Time budget low ({remaining:.0f}s), skipping remaining files")
-                for finding in file_findings:
+                runtime.log(f"Time budget low ({remaining:.0f}s), skipping remaining batches")
+                for finding in batch:
                     finding["status"] = "new"
                     finding["fail_reason"] = "timeout_budget_exhausted"
                     finding["processed_at"] = runtime.now_iso()
@@ -625,17 +633,28 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
                     summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
                 continue
 
-            if len(file_findings) > 1:
-                runtime.log(f"Batching {len(file_findings)} findings for {file_key} into single fix")
-                for result in autofix_batch(file_findings, root, policy or {}, runtime):
-                    _record_result(result)
-            else:
-                processed = process_finding(file_findings[0], root, policy, existing_findings, runtime)
-                if processed["status"] == "failed" and processed["attempt_count"] < runtime.max_attempts:
-                    runtime.log(
-                        f"Finding {processed['finding_id']} failed attempt {processed['attempt_count']}, will retry next cycle"
-                    )
-                _record_result(processed)
+            for result in autofix_batch(batch, root, policy or {}, runtime):
+                _record_result(result)
+
+        for finding in individual_findings:
+            elapsed = time.monotonic() - start_time
+            remaining = runtime.scan_timeout_seconds - elapsed
+            if remaining < 60:
+                runtime.log(f"Time budget low ({remaining:.0f}s remaining), stopping processing")
+                finding["status"] = "new"
+                finding["fail_reason"] = "timeout_budget_exhausted"
+                finding["processed_at"] = runtime.now_iso()
+                existing_findings.append(finding)
+                all_scan_findings.append(finding)
+                summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
+                continue
+
+            processed = process_finding(finding, root, policy, existing_findings, runtime)
+            if processed["status"] == "failed" and processed["attempt_count"] < runtime.max_attempts:
+                runtime.log(
+                    f"Finding {processed['finding_id']} failed attempt {processed['attempt_count']}, will retry next cycle"
+                )
+            _record_result(processed)
 
     _process_incoming_findings(runtime.detect_syntax_errors(root))
     _process_incoming_findings(runtime.detect_recurring_audit(root))
