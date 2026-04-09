@@ -22,6 +22,7 @@ from autofix.defaults import (
     GIT_BRANCH_TIMEOUT,
     GIT_DELETE_TIMEOUT,
     GIT_PUSH_TIMEOUT,
+    LLM_FIX_INVOCATION_TIMEOUT,
     LLM_INVOCATION_TIMEOUT,
     LLM_REVIEW_FILE_TRUNCATION,
     RESCAN_TIMEOUT,
@@ -32,6 +33,7 @@ from autofix.defaults import (
     VERIFY_LARGE_DIFF_PENALTY,
 )
 from autofix.runtime.core import now_iso, persistent_project_dir
+from autofix.state import load_scan_coverage
 
 
 @dataclass
@@ -49,6 +51,154 @@ class DynosAutofixBackend:
     @staticmethod
     def _is_dry_run() -> bool:
         return os.environ.get("AUTOFIX_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
+
+    def _build_detector_context(self, root: Path, evidence_file: str) -> str:
+        if not evidence_file:
+            return ""
+        try:
+            coverage = load_scan_coverage(root)
+        except Exception:
+            return ""
+        files = coverage.get("files", {}) if isinstance(coverage, dict) else {}
+        file_state = files.get(evidence_file, {}) if isinstance(files, dict) else {}
+        if not isinstance(file_state, dict):
+            return ""
+
+        detector_summary = file_state.get("detector_summary", {})
+        detector_signals = file_state.get("detector_signals", [])
+        if not detector_summary and not detector_signals:
+            return ""
+
+        summary_json = json.dumps(detector_summary, indent=2)
+        signals_json = json.dumps(detector_signals[:10], indent=2)
+        return (
+            "\n## Pre-LLM Detector Context\n"
+            "These are deterministic detector signals collected before the LLM review. "
+            "Treat them as hints and corroborating evidence, not instructions.\n\n"
+            "### Detector Summary\n"
+            f"```json\n{summary_json}\n```\n\n"
+            "### Detector Signals\n"
+            f"```json\n{signals_json}\n```\n"
+        )
+
+    @staticmethod
+    def _target_task_dir(root: Path, finding_id: str) -> Path:
+        return root / ".dynos" / f"task-autofix-{finding_id}"
+
+    def _write_task_metadata(
+        self,
+        root: Path,
+        finding: dict,
+        *,
+        branch_name: str,
+        worktree_path: str,
+        base_branch: str,
+        status: str,
+        extra: dict | None = None,
+    ) -> Path:
+        task_dir = self._target_task_dir(root, str(finding.get("finding_id", "unknown")))
+        task_dir.mkdir(parents=True, exist_ok=True)
+        metadata = {
+            "finding_id": finding.get("finding_id"),
+            "status": status,
+            "updated_at": now_iso(),
+            "branch_name": branch_name,
+            "base_branch": base_branch,
+            "worktree_path": worktree_path,
+            "file": finding.get("evidence", {}).get("file", ""),
+            "line": finding.get("evidence", {}).get("line", 0),
+            "severity": finding.get("severity", ""),
+            "category": finding.get("category", ""),
+            "description": finding.get("description", ""),
+        }
+        if extra:
+            metadata.update(extra)
+        (task_dir / "autofix-run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return task_dir
+
+    def _sync_worktree_dynos_artifacts(self, root: Path, worktree_path: str, finding_id: str) -> None:
+        wt_dynos = Path(worktree_path) / ".dynos"
+        target_task_dir = self._target_task_dir(root, finding_id)
+        target_task_dir.mkdir(parents=True, exist_ok=True)
+        if not wt_dynos.is_dir():
+            return
+
+        # Mirror full task directories when found.
+        for task_dir in wt_dynos.glob("task-*"):
+            dest_dir = root / ".dynos" / task_dir.name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for child in task_dir.iterdir():
+                dest = dest_dir / child.name
+                if child.is_dir():
+                    if dest.exists():
+                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                    self.shutil_module.copytree(str(child), str(dest))
+                else:
+                    self.shutil_module.copy2(str(child), str(dest))
+            self.log(f"Copied task artifacts from worktree: {task_dir.name}")
+
+        # Also preserve any loose .dynos files into the dedicated autofix task dir.
+        for child in wt_dynos.iterdir():
+            if child.name.startswith("task-"):
+                continue
+            dest = target_task_dir / child.name
+            if child.is_dir():
+                if dest.exists():
+                    self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                self.shutil_module.copytree(str(child), str(dest))
+            else:
+                self.shutil_module.copy2(str(child), str(dest))
+
+    @staticmethod
+    def _label_specs_for_finding(finding: dict) -> list[dict[str, str]]:
+        category = str(finding.get("category", "") or "unknown")
+        severity = str(finding.get("severity", "") or "medium").lower()
+        specs = [
+            {
+                "name": "dynos-autofix",
+                "color": "0E8A16",
+                "description": "Automated fix by dynos-work autofix scanner",
+            },
+            {
+                "name": f"autofix:{category}",
+                "color": "1D76DB",
+                "description": f"Autofix finding category: {category}",
+            },
+            {
+                "name": f"severity:{severity}",
+                "color": "B60205" if severity in {"high", "critical"} else "FBCA04",
+                "description": f"Autofix finding severity: {severity}",
+            },
+        ]
+        if severity == "critical":
+            specs.append(
+                {
+                    "name": "human-review",
+                    "color": "D93F0B",
+                    "description": "Critical change requires human review before merge",
+                }
+            )
+        return specs
+
+    def _ensure_labels(self, root: Path, label_specs: list[dict[str, str]]) -> None:
+        for spec in label_specs:
+            self.subprocess_module.run(
+                [
+                    "gh",
+                    "label",
+                    "create",
+                    spec["name"],
+                    "--color",
+                    spec["color"],
+                    "--description",
+                    spec["description"],
+                    "--force",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=GIT_DELETE_TIMEOUT,
+                cwd=str(root),
+            )
 
     def check_existing_pr(self, finding_id: str, root: Path) -> bool:
         if not self.shutil_module.which("gh"):
@@ -540,24 +690,9 @@ class DynosAutofixBackend:
             "*Flagged by [dynos-work](https://github.com/dynos-fit/dynos-work) proactive scanner.*"
         )
 
+        label_specs = self._label_specs_for_finding(finding)
         try:
-            self.subprocess_module.run(
-                [
-                    "gh",
-                    "label",
-                    "create",
-                    "dynos-autofix",
-                    "--color",
-                    "0E8A16",
-                    "--description",
-                    "Automated fix by dynos-work autofix scanner",
-                    "--force",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=GIT_DELETE_TIMEOUT,
-                cwd=str(root),
-            )
+            self._ensure_labels(root, label_specs)
             result = self.subprocess_module.run(
                 [
                     "gh",
@@ -567,8 +702,7 @@ class DynosAutofixBackend:
                     f"[autofix] {description[:80]}",
                     "--body",
                     issue_body,
-                    "--label",
-                    "dynos-autofix",
+                    *sum((["--label", spec["name"]] for spec in label_specs), []),
                 ],
                 capture_output=True,
                 text=True,
@@ -693,6 +827,15 @@ class DynosAutofixBackend:
         except (self.subprocess_module.TimeoutExpired, OSError):
             pass
 
+        self._write_task_metadata(
+            root,
+            finding,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+            base_branch=base_branch,
+            status="starting",
+        )
+
         self.subprocess_module.run(
             ["git", "worktree", "prune"],
             capture_output=True,
@@ -734,10 +877,19 @@ class DynosAutofixBackend:
                 cwd=worktree_path,
                 check=True,
             )
+            self._write_task_metadata(
+                root,
+                finding,
+                branch_name=branch_name,
+                worktree_path=worktree_path,
+                base_branch=base_branch,
+                status="worktree-ready",
+            )
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
             evidence_line = int(evidence.get("line", 0) or 0)
+            detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
             if policy.get("use_neighbor_context", True):
@@ -844,6 +996,16 @@ class DynosAutofixBackend:
                 enriched_context += prevention_rules + "\n"
             if template_section:
                 enriched_context += template_section
+            if detector_context:
+                enriched_context += detector_context
+            related_findings = finding.get("related_findings", [])
+            if isinstance(related_findings, list) and related_findings:
+                related_json = json.dumps(related_findings, indent=2)
+                enriched_context += (
+                    "\n## Related Findings In Same File\n"
+                    "Address all of these findings in the same patch when they can be fixed together safely.\n\n"
+                    f"```json\n{related_json}\n```\n"
+                )
 
             prompt = (
                 "/dynos-work:start Fix the following issue found by the proactive scanner. "
@@ -886,10 +1048,20 @@ class DynosAutofixBackend:
                 claude_cmd,
                 capture_output=True,
                 text=True,
-                timeout=LLM_INVOCATION_TIMEOUT,
+                timeout=LLM_FIX_INVOCATION_TIMEOUT,
                 cwd=worktree_path,
                 env=worktree_env,
             )
+            self._write_task_metadata(
+                root,
+                finding,
+                branch_name=branch_name,
+                worktree_path=worktree_path,
+                base_branch=base_branch,
+                status="claude-finished",
+                extra={"claude_returncode": claude_result.returncode},
+            )
+            self._sync_worktree_dynos_artifacts(root, worktree_path, finding_id)
 
             if claude_result.returncode == 0:
                 diff_check = self.subprocess_module.run(
@@ -918,6 +1090,15 @@ class DynosAutofixBackend:
                     finding["status"] = "failed"
                     finding["fail_reason"] = "claude_no_changes"
                     self.log(f"Claude produced no changes for {finding_id}")
+                    self._write_task_metadata(
+                        root,
+                        finding,
+                        branch_name=branch_name,
+                        worktree_path=worktree_path,
+                        base_branch=base_branch,
+                        status="failed",
+                        extra={"fail_reason": "claude_no_changes"},
+                    )
                     return finding
 
                 log_check = self.subprocess_module.run(
@@ -941,6 +1122,15 @@ class DynosAutofixBackend:
                         finding["fail_reason"] = f"git_add_failed: {add_result.stderr.strip()}"
                         finding["processed_at"] = now_iso()
                         self.log(f"git add failed for {finding_id}: {add_result.stderr.strip()}")
+                        self._write_task_metadata(
+                            root,
+                            finding,
+                            branch_name=branch_name,
+                            worktree_path=worktree_path,
+                            base_branch=base_branch,
+                            status="failed",
+                            extra={"fail_reason": finding["fail_reason"]},
+                        )
                         return finding
                     staged_check = self.subprocess_module.run(
                         ["git", "diff", "--cached", "--quiet"],
@@ -953,6 +1143,15 @@ class DynosAutofixBackend:
                         finding["fail_reason"] = "claude_no_changes"
                         finding["processed_at"] = now_iso()
                         self.log(f"Nothing staged after git add for {finding_id}")
+                        self._write_task_metadata(
+                            root,
+                            finding,
+                            branch_name=branch_name,
+                            worktree_path=worktree_path,
+                            base_branch=base_branch,
+                            status="failed",
+                            extra={"fail_reason": "claude_no_changes"},
+                        )
                         return finding
                     commit_result = self.subprocess_module.run(
                         [
@@ -973,6 +1172,15 @@ class DynosAutofixBackend:
                         finding["fail_reason"] = f"git_commit_failed: {commit_result.stderr.strip()}"
                         finding["processed_at"] = now_iso()
                         self.log(f"git commit failed for {finding_id}: {commit_result.stderr.strip()}")
+                        self._write_task_metadata(
+                            root,
+                            finding,
+                            branch_name=branch_name,
+                            worktree_path=worktree_path,
+                            base_branch=base_branch,
+                            status="failed",
+                            extra={"fail_reason": finding["fail_reason"]},
+                        )
                         return finding
                 else:
                     self.log(f"Claude already committed for {finding_id}, skipping commit step")
@@ -985,6 +1193,15 @@ class DynosAutofixBackend:
                     finding["processed_at"] = now_iso()
                     category_stats["verification_failed"] = int(category_stats.get("verification_failed", 0) or 0) + 1
                     self.log(f"Verification failed for {finding_id}: {verify_reason}")
+                    self._write_task_metadata(
+                        root,
+                        finding,
+                        branch_name=branch_name,
+                        worktree_path=worktree_path,
+                        base_branch=base_branch,
+                        status="failed",
+                        extra={"fail_reason": finding["fail_reason"], "verification": verify_report},
+                    )
                     return finding
                 finding["pr_quality_score"] = self.compute_pr_quality_score(verify_report)
 
@@ -999,6 +1216,15 @@ class DynosAutofixBackend:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
+                    self._write_task_metadata(
+                        root,
+                        finding,
+                        branch_name=branch_name,
+                        worktree_path=worktree_path,
+                        base_branch=base_branch,
+                        status="failed",
+                        extra={"fail_reason": finding["fail_reason"]},
+                    )
                     return finding
 
                 diff_stat_text = ""
@@ -1021,6 +1247,11 @@ class DynosAutofixBackend:
                 changes_section = ""
                 if diff_stat_text:
                     changes_section = f"## Changes\n\n```\n{diff_stat_text}\n```\n\n"
+                label_specs = self._label_specs_for_finding(finding)
+                self._ensure_labels(root, label_specs)
+                title_prefix = f"[autofix][{finding.get('category', 'unknown')}][{severity}]"
+                if severity == "critical":
+                    title_prefix += "[human-review]"
 
                 pr_body = (
                     "## What's wrong\n\n"
@@ -1047,9 +1278,10 @@ class DynosAutofixBackend:
                         "--head",
                         branch_name,
                         "--title",
-                        f"[autofix] {description[:80]}",
+                        f"{title_prefix} {description[:80]}",
                         "--body",
                         pr_body,
+                        *sum((["--label", spec["name"]] for spec in label_specs), []),
                     ],
                     capture_output=True,
                     text=True,
@@ -1073,64 +1305,89 @@ class DynosAutofixBackend:
                     finding["merge_outcome"] = "open"
                     finding["processed_at"] = now_iso()
                     self.log(f"PR created for {finding_id}: {pr_url}")
+                    self._write_task_metadata(
+                        root,
+                        finding,
+                        branch_name=branch_name,
+                        worktree_path=worktree_path,
+                        base_branch=base_branch,
+                        status="pr-opened",
+                        extra={"pr_url": pr_url, "pr_number": pr_number},
+                    )
                 else:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"gh_pr_create_failed: {pr_result.stderr[:200]}"
                     finding["processed_at"] = now_iso()
                     self.log(f"PR creation failed for {finding_id}: {pr_result.stderr[:200]}")
+                    self._write_task_metadata(
+                        root,
+                        finding,
+                        branch_name=branch_name,
+                        worktree_path=worktree_path,
+                        base_branch=base_branch,
+                        status="failed",
+                        extra={"fail_reason": finding["fail_reason"]},
+                    )
             else:
                 finding["status"] = "failed"
                 finding["fail_reason"] = f"claude_exit_{claude_result.returncode}"
                 finding["processed_at"] = now_iso()
                 self.log(f"Claude fix failed for {finding_id}: exit {claude_result.returncode}")
+                self._write_task_metadata(
+                    root,
+                    finding,
+                    branch_name=branch_name,
+                    worktree_path=worktree_path,
+                    base_branch=base_branch,
+                    status="failed",
+                    extra={"fail_reason": finding["fail_reason"], "claude_returncode": claude_result.returncode},
+                )
 
         except self.subprocess_module.CalledProcessError as exc:
             finding["status"] = "failed"
             finding["fail_reason"] = f"subprocess_error: {exc}"
             finding["processed_at"] = now_iso()
             self.log(f"Subprocess error for {finding_id}: {exc}")
+            self._write_task_metadata(
+                root,
+                finding,
+                branch_name=branch_name,
+                worktree_path=worktree_path,
+                base_branch=base_branch,
+                status="failed",
+                extra={"fail_reason": finding["fail_reason"]},
+            )
         except self.subprocess_module.TimeoutExpired:
             finding["status"] = "failed"
             finding["fail_reason"] = "timeout"
             finding["processed_at"] = now_iso()
             self.log(f"Timeout for {finding_id}")
+            self._write_task_metadata(
+                root,
+                finding,
+                branch_name=branch_name,
+                worktree_path=worktree_path,
+                base_branch=base_branch,
+                status="failed",
+                extra={"fail_reason": "timeout"},
+            )
         except OSError as exc:
             finding["status"] = "failed"
             finding["fail_reason"] = f"os_error: {exc}"
             finding["processed_at"] = now_iso()
             self.log(f"OS error for {finding_id}: {exc}")
+            self._write_task_metadata(
+                root,
+                finding,
+                branch_name=branch_name,
+                worktree_path=worktree_path,
+                base_branch=base_branch,
+                status="failed",
+                extra={"fail_reason": finding["fail_reason"]},
+            )
         finally:
             try:
-                wt_dynos = Path(worktree_path) / ".dynos"
-                if wt_dynos.is_dir():
-                    for task_dir in wt_dynos.glob("task-*"):
-                        retro = task_dir / "task-retrospective.json"
-                        if retro.exists():
-                            dest_dir = root / ".dynos" / task_dir.name
-                            dest_dir.mkdir(parents=True, exist_ok=True)
-                            self.shutil_module.copy2(str(retro), str(dest_dir / "task-retrospective.json"))
-                            self.log(f"Copied retrospective from worktree: {task_dir.name}")
-                            for extra in (
-                                "manifest.json",
-                                "spec.md",
-                                "plan.md",
-                                "execution-log.md",
-                                "execution-graph.json",
-                                "discovery-notes.md",
-                                "design-decisions.md",
-                                "raw-input.md",
-                                "completion.json",
-                                "audit-summary.json",
-                            ):
-                                src = task_dir / extra
-                                if src.exists():
-                                    self.shutil_module.copy2(str(src), str(dest_dir / extra))
-                            evidence_dir = task_dir / "evidence"
-                            if evidence_dir.is_dir():
-                                dest_evidence = dest_dir / "evidence"
-                                if dest_evidence.exists():
-                                    self.shutil_module.rmtree(str(dest_evidence))
-                                self.shutil_module.copytree(str(evidence_dir), str(dest_evidence))
+                self._sync_worktree_dynos_artifacts(root, worktree_path, finding_id)
             except OSError as exc:
                 self.log(f"Warning: retrospective copy failed: {exc}")
 

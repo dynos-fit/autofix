@@ -22,6 +22,9 @@ from autofix.defaults import (
     FILE_SCORE_DETECTOR_CONFIDENCE_DIVISOR,
     FILE_SCORE_DETECTOR_FINDING_BONUS,
     FILE_SCORE_DETECTOR_RISK_BONUS,
+    FILE_SCORE_GINI_CONCENTRATION_THRESHOLD,
+    FILE_SCORE_GINI_REPEAT_PENALTY_CAP,
+    FILE_SCORE_GINI_REPEAT_PENALTY_WEIGHT,
     FILE_SCORE_LARGE_FILE_PENALTY_CAP,
     FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR,
     FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD,
@@ -37,6 +40,8 @@ from autofix.defaults import (
     GIT_LSFILES_TIMEOUT,
     MISSING_FILE_RETENTION_DAYS,
     NEIGHBOR_INVALIDATION_WINDOW_DAYS,
+    RECENT_SELECTION_HISTORY_LIMIT,
+    RECENT_SELECTION_LOOKBACK_DAYS,
 )
 from autofix.platform import is_generated_file, now_iso
 
@@ -160,6 +165,34 @@ def _compute_neighbor_activity(previous_files: dict[str, dict], *, now: datetime
     return {directory: True for directory in active_dirs}
 
 
+def _gini(values: list[int]) -> float:
+    cleaned = [max(int(v), 0) for v in values]
+    if not cleaned:
+        return 0.0
+    if sum(cleaned) == 0:
+        return 0.0
+    cleaned.sort()
+    total = sum(cleaned)
+    n = len(cleaned)
+    weighted = sum((index + 1) * value for index, value in enumerate(cleaned))
+    return round((2 * weighted) / (n * total) - (n + 1) / n, 6)
+
+
+def _recent_selection_count(file_info: dict, *, now: datetime) -> int:
+    raw_history = file_info.get("selection_history", [])
+    if not isinstance(raw_history, list):
+        return 0
+    count = 0
+    for value in raw_history:
+        dt = _parse_iso(str(value))
+        if dt is None:
+            continue
+        age_days = (now - dt).total_seconds() / 86400
+        if age_days <= RECENT_SELECTION_LOOKBACK_DAYS:
+            count += 1
+    return count
+
+
 def _detector_signal(rule: str, severity: str, confidence: float, detail: str, *, line: int | None = None) -> dict:
     signal = {
         "rule": rule,
@@ -266,6 +299,8 @@ def normalize_crawl_state(state: dict | None) -> dict:
                 item["last_llm_reviewed_at"] = legacy_scanned_at
             if legacy_scanned_at and not item.get("last_crawled_at"):
                 item["last_crawled_at"] = legacy_scanned_at
+            if not isinstance(item.get("reviewed_chunk_keys"), list):
+                item["reviewed_chunk_keys"] = []
             normalized_files[str(rel)] = item
     return {
         "version": 1,
@@ -374,6 +409,7 @@ def _compute_priority(
     finding_summary: dict,
     now: datetime,
     neighbor_activity: dict[str, bool],
+    selection_gini: float,
 ) -> tuple[float, list[dict]]:
     score = 0.0
     reasons: list[dict] = []
@@ -450,6 +486,21 @@ def _compute_priority(
             )
         )
 
+    recent_selection_count = int(file_info.get("recent_selection_count", 0) or 0)
+    if selection_gini >= FILE_SCORE_GINI_CONCENTRATION_THRESHOLD and recent_selection_count > 1:
+        penalty = min(
+            (recent_selection_count - 1) * FILE_SCORE_GINI_REPEAT_PENALTY_WEIGHT * selection_gini,
+            FILE_SCORE_GINI_REPEAT_PENALTY_CAP,
+        )
+        score -= penalty
+        reasons.append(
+            _reason(
+                "gini_repeat_penalty",
+                -penalty,
+                f"Recent scan attention is concentrated (gini={round(selection_gini, 3)}); file selected {recent_selection_count} times in {RECENT_SELECTION_LOOKBACK_DAYS} days",
+            )
+        )
+
     if str(rel).startswith(("src/", "lib/", "app/", "pkg/")):
         score += 2.0
         reasons.append(_reason("production_code", 2.0, "File is in a production-code path"))
@@ -506,6 +557,12 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
     now_dt = datetime.now(timezone.utc)
     now = now_iso()
     neighbor_activity = _compute_neighbor_activity(previous_files, now=now_dt)
+    recent_selection_counts = [
+        _recent_selection_count(info, now=now_dt)
+        for info in previous_files.values()
+        if isinstance(info, dict)
+    ]
+    selection_gini = _gini(recent_selection_counts)
 
     discovered = discover_repo_files(root)
     next_files: dict[str, dict] = {}
@@ -539,6 +596,13 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "historical_max_severity": str(findings_by_file.get(rel, {}).get("max_severity", previous.get("historical_max_severity", "low")) or "low"),
             "last_known_finding_at": findings_by_file.get(rel, {}).get("last_finding_at") or previous.get("last_known_finding_at"),
         })
+        history = previous.get("selection_history", [])
+        if isinstance(history, list):
+            normalized_history = [str(item) for item in history if isinstance(item, str)]
+        else:
+            normalized_history = []
+        file_info["selection_history"] = normalized_history[-RECENT_SELECTION_HISTORY_LIMIT:]
+        file_info["recent_selection_count"] = _recent_selection_count(file_info, now=now_dt)
         detector_analysis = analyze_file_for_llm(root, rel)
         file_info["detector_summary"] = detector_analysis["summary"]
         file_info["detector_signals"] = detector_analysis["signals"]
@@ -564,7 +628,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         file_info["detector_ttl_days"] = DETECTOR_TTL_DAYS
         file_info["detector_age_days"] = round(detector_age_days, 3) if detector_age_days != float("inf") else None
         file_info["stale_detector_state"] = detector_stale
-        score, reasons = _compute_priority(rel, file_info, findings_by_file.get(rel, {}), now_dt, neighbor_activity)
+        score, reasons = _compute_priority(rel, file_info, findings_by_file.get(rel, {}), now_dt, neighbor_activity, selection_gini)
         file_info["last_priority_score"] = score
         file_info["last_priority_reasons"] = reasons
         next_files[rel] = file_info
@@ -585,6 +649,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "next_eligible_at": file_info.get("next_eligible_at"),
             "detector_summary": file_info["detector_summary"],
             "detector_signals": file_info["detector_signals"][:10],
+            "recent_selection_count": file_info["recent_selection_count"],
         })
 
     for rel, previous in previous_files.items():
@@ -608,6 +673,12 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         info = next_files[item["path"]]
         info["last_selected_at"] = now
         info["selection_count"] = int(info.get("selection_count", 0) or 0) + 1
+        history = info.get("selection_history", [])
+        if not isinstance(history, list):
+            history = []
+        history.append(now)
+        info["selection_history"] = history[-RECENT_SELECTION_HISTORY_LIMIT:]
+        info["recent_selection_count"] = _recent_selection_count(info, now=now_dt)
 
     crawl_state["repo"] = {
         "last_inventory_at": now,
@@ -615,6 +686,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         "file_count": len(discovered),
         "eligible_file_count": len(ranked),
         "selected_file_count": len(selected),
+        "selection_gini": selection_gini,
     }
     crawl_state["files"] = next_files
     plan = {
@@ -627,11 +699,17 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
     return crawl_state, plan
 
 
-def finalize_crawl_state(state: dict, selected_paths: list[str], findings: list[dict]) -> dict:
+def finalize_crawl_state(
+    state: dict,
+    selected_paths: list[str],
+    findings: list[dict],
+    reviewed_chunks_by_file: dict[str, list[str]] | None = None,
+) -> dict:
     crawl_state = normalize_crawl_state(state)
     files = crawl_state.get("files", {})
     now = now_iso()
     findings_by_file = _findings_by_file(findings)
+    reviewed_chunks_by_file = reviewed_chunks_by_file or {}
     for rel in selected_paths:
         file_info = files.get(rel)
         if not isinstance(file_info, dict):
@@ -655,6 +733,12 @@ def finalize_crawl_state(state: dict, selected_paths: list[str], findings: list[
         file_info["detector_summary"]["analyzed_at"] = now
         file_info["stale_review"] = False
         file_info["stale_detector_state"] = False
+        prior_chunk_keys = file_info.get("reviewed_chunk_keys", [])
+        if not isinstance(prior_chunk_keys, list):
+            prior_chunk_keys = []
+        new_chunk_keys = reviewed_chunks_by_file.get(rel, [])
+        merged_chunk_keys = list(dict.fromkeys([*prior_chunk_keys, *new_chunk_keys]))
+        file_info["reviewed_chunk_keys"] = merged_chunk_keys[-100:]
     crawl_state["files"] = files
     crawl_state.setdefault("repo", {})["last_completed_crawl_at"] = now
     crawl_state["repo"]["last_reviewed_file_count"] = len(selected_paths)

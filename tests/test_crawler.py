@@ -2,6 +2,7 @@ from pathlib import Path
 import hashlib
 
 from autofix.crawler import analyze_file_for_llm, build_crawl_plan, finalize_crawl_state, normalize_crawl_state
+from autofix.scanner import autofix_batch, group_similar_findings
 from autofix.llm_io import extract_json_array, validate_llm_issue, validate_llm_issues
 from autofix.llm_io.prompting import build_review_chunks_for_file
 
@@ -143,6 +144,27 @@ def test_finalize_crawl_state_records_review_outcome(tmp_path: Path) -> None:
     assert updated["repo"]["last_reviewed_file_count"] == 1
 
 
+def test_finalize_crawl_state_persists_reviewed_chunk_keys(tmp_path: Path) -> None:
+    _write(tmp_path / "src/example.py", "def example():\n    return 1\n")
+    state = {
+        "files": {
+            "src/example.py": {
+                "path": "src/example.py",
+                "reviewed_chunk_keys": ["1-200"],
+            }
+        }
+    }
+
+    updated = finalize_crawl_state(
+        state,
+        ["src/example.py"],
+        [],
+        reviewed_chunks_by_file={"src/example.py": ["161-360", "321-520"]},
+    )
+
+    assert updated["files"]["src/example.py"]["reviewed_chunk_keys"] == ["1-200", "161-360", "321-520"]
+
+
 def test_normalize_crawl_state_migrates_legacy_scan_fields() -> None:
     state = {
         "files": {
@@ -257,6 +279,35 @@ def test_build_review_chunks_for_large_file(tmp_path: Path) -> None:
     assert chunks[-1]["end_line"] == 400
 
 
+def test_build_review_chunks_for_huge_file_caps_chunk_count(tmp_path: Path) -> None:
+    lines = "\n".join(f"line {i}" for i in range(1, 2001))
+    _write(tmp_path / "src/very_huge.py", lines)
+
+    chunks = build_review_chunks_for_file(tmp_path, review_file="src/very_huge.py")
+
+    assert len(chunks) == 6
+    assert chunks[0]["start_line"] == 1
+    assert chunks[-1]["end_line"] == 2000
+    assert chunks[0]["total_chunks"] > len(chunks)
+    assert all(chunk.get("sampled") is True for chunk in chunks)
+
+
+def test_build_review_chunks_for_huge_file_prefers_unseen_chunks(tmp_path: Path) -> None:
+    lines = "\n".join(f"line {i}" for i in range(1, 2001))
+    _write(tmp_path / "src/very_huge.py", lines)
+
+    first_pass = build_review_chunks_for_file(tmp_path, review_file="src/very_huge.py")
+    reviewed = {chunk["chunk_key"] for chunk in first_pass}
+    second_pass = build_review_chunks_for_file(
+        tmp_path,
+        review_file="src/very_huge.py",
+        reviewed_chunk_keys=reviewed,
+    )
+
+    second_keys = {chunk["chunk_key"] for chunk in second_pass}
+    assert second_keys - reviewed
+
+
 def test_build_crawl_plan_penalizes_giant_files(tmp_path: Path) -> None:
     huge_lines = "\n".join(f"line {i}" for i in range(1, 1201))
     _write(tmp_path / "lib/src/huge.dart", huge_lines)
@@ -276,3 +327,92 @@ def test_build_crawl_plan_penalizes_giant_files(tmp_path: Path) -> None:
 
     assert any(reason["rule"] == "large_file_penalty" for reason in huge_entry["reasons"])
     assert risky_entry["score"] > huge_entry["score"]
+
+
+def test_build_crawl_plan_applies_gini_repeat_penalty(tmp_path: Path) -> None:
+    _write(tmp_path / "lib/src/repeat.dart", "class Repeat {}\n")
+    _write(tmp_path / "lib/src/fresh.dart", "class Fresh {}\n")
+    recent_history = [f"2026-04-{day:02d}T00:00:00Z" for day in range(1, 7)]
+    state = {
+        "files": {
+            "lib/src/repeat.dart": {
+                "path": "lib/src/repeat.dart",
+                "selection_history": recent_history,
+                "selection_count": len(recent_history),
+                "last_llm_reviewed_at": "2026-03-01T00:00:00Z",
+                "last_crawled_at": "2026-03-01T00:00:00Z",
+            },
+            "lib/src/fresh.dart": {
+                "path": "lib/src/fresh.dart",
+                "selection_history": [],
+            },
+        }
+    }
+
+    next_state, plan = build_crawl_plan(tmp_path, state, [], max_files=2)
+
+    repeat_entry = next(item for item in plan["frontier"] if item["path"] == "lib/src/repeat.dart")
+    assert any(reason["rule"] == "gini_repeat_penalty" for reason in repeat_entry["reasons"])
+    assert next_state["repo"]["selection_gini"] > 0.35
+
+
+def test_group_similar_findings_batches_llm_review_by_file() -> None:
+    findings = [
+        {
+            "finding_id": "a",
+            "category": "llm-review",
+            "evidence": {"file": "test/example.dart", "category_detail": "one"},
+        },
+        {
+            "finding_id": "b",
+            "category": "llm-review",
+            "evidence": {"file": "test/example.dart", "category_detail": "two"},
+        },
+    ]
+
+    groups = group_similar_findings(findings, batch_min_group_size=3)
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+
+
+def test_autofix_batch_combines_same_file_findings_into_one_fix_call(tmp_path: Path) -> None:
+    calls: list[dict] = []
+
+    class Runtime:
+        def autofix_finding(self, finding, root, policy):
+            calls.append(finding)
+            return {
+                "status": "fixed",
+                "processed_at": "2026-04-08T00:00:00Z",
+                "pr_number": 123,
+                "pr_url": "https://example/pr/123",
+                "pr_state": "OPEN",
+                "merge_outcome": "open",
+                "verification": {"changed_files": ["test/example.dart"]},
+                "pr_quality_score": 0.9,
+            }
+
+    batch = [
+        {
+            "finding_id": "a",
+            "category": "llm-review",
+            "description": "one",
+            "evidence": {"file": "test/example.dart", "line": 10, "category_detail": "detail-a"},
+            "confidence_score": 0.9,
+        },
+        {
+            "finding_id": "b",
+            "category": "llm-review",
+            "description": "two",
+            "evidence": {"file": "test/example.dart", "line": 20, "category_detail": "detail-b"},
+            "confidence_score": 0.8,
+        },
+    ]
+
+    results = autofix_batch(batch, tmp_path, {}, Runtime())
+
+    assert len(calls) == 1
+    assert len(calls[0]["related_findings"]) == 2
+    assert len(results) == 2
+    assert all(result["status"] == "fixed" for result in results)

@@ -134,20 +134,25 @@ def sync_outcomes(
 
 
 def group_similar_findings(findings: list[dict], batch_min_group_size: int) -> list[list[dict]]:
-    """Group findings by exact (category, category_detail)."""
+    """Group findings by file for LLM review, otherwise by exact (category, category_detail)."""
     if not findings:
         return []
 
     groups: dict[tuple[str, str], list[dict]] = {}
     for finding in findings:
         category = finding.get("category", "")
+        evidence_file = str(finding.get("evidence", {}).get("file", "") or "")
+        if category == "llm-review" and evidence_file:
+            groups.setdefault(("file", evidence_file), []).append(finding)
+            continue
         detail = finding.get("category_detail", "") or ""
         groups.setdefault((category, detail), []).append(finding)
 
     result: list[list[dict]] = []
     for key in sorted(groups.keys()):
         group = groups[key]
-        if len(group) >= batch_min_group_size:
+        is_file_group = key[0] == "file"
+        if len(group) >= batch_min_group_size or (is_file_group and len(group) > 1):
             result.append(group)
             continue
         for finding in group:
@@ -169,29 +174,80 @@ def autofix_batch(
     category = batch[0].get("category", "unknown")
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     branch_name = f"dynos/auto-fix-batch-{category}-{timestamp}"
+    evidence_files = {
+        str(finding.get("evidence", {}).get("file", "") or "")
+        for finding in batch
+    }
+    same_file_batch = len(evidence_files) == 1 and bool(next(iter(evidence_files), ""))
 
     results: list[dict] = []
     passing_diffs: list[dict] = []
 
-    for finding in batch:
-        finding_id = finding["finding_id"]
-        updated = runtime.autofix_finding(finding, root, policy)
-        results.append(updated)
-
+    if same_file_batch:
+        primary = dict(batch[0])
+        primary["related_findings"] = [
+            {
+                "finding_id": finding.get("finding_id"),
+                "description": finding.get("description"),
+                "severity": finding.get("severity"),
+                "category_detail": finding.get("evidence", {}).get("category_detail", ""),
+                "file": finding.get("evidence", {}).get("file", ""),
+                "line": finding.get("evidence", {}).get("line", 0),
+                "confidence_score": finding.get("confidence_score"),
+            }
+            for finding in batch
+        ]
+        updated = runtime.autofix_finding(primary, root, policy)
+        for original in batch:
+            result = dict(original)
+            for key in (
+                "status",
+                "fail_reason",
+                "processed_at",
+                "pr_number",
+                "pr_url",
+                "pr_state",
+                "merge_outcome",
+                "branch_name",
+                "verification",
+                "pr_quality_score",
+                "dry_run",
+                "issue_number",
+                "issue_url",
+                "rollout_mode",
+            ):
+                if key in updated:
+                    result[key] = updated.get(key)
+            results.append(result)
         if updated.get("status") == "fixed":
             passing_diffs.append(
                 {
-                    "finding_id": finding_id,
+                    "finding_id": primary["finding_id"],
                     "verified": True,
                     "diff": updated.get("verification", {}).get("changed_files", []),
                     "finding": updated,
                 }
             )
-            continue
+    else:
+        for finding in batch:
+            finding_id = finding["finding_id"]
+            updated = runtime.autofix_finding(finding, root, policy)
+            results.append(updated)
 
-        updated["status"] = "failed"
-        if "fail_reason" not in updated:
-            updated["fail_reason"] = "batch_verification_failed"
+            if updated.get("status") == "fixed":
+                passing_diffs.append(
+                    {
+                        "finding_id": finding_id,
+                        "verified": True,
+                        "diff": updated.get("verification", {}).get("changed_files", []),
+                        "finding": updated,
+                    }
+                )
+                continue
+
+            updated["status"] = "failed"
+            if "fail_reason" not in updated:
+                updated["fail_reason"] = "batch_verification_failed"
 
     if not [result for result in passing_diffs if result["verified"]]:
         for result in results:
@@ -340,7 +396,7 @@ def process_finding(
         return finding
 
     project_config = runtime.project_policy(root)
-    q_learning_enabled = bool(project_config.get("repair_qlearning", True))
+    q_learning_enabled = bool(project_config.get("repair_qlearning", False))
     q_table = None
     q_action = None
     q_state = None

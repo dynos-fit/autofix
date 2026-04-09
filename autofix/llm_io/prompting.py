@@ -6,6 +6,7 @@ from pathlib import Path
 
 from autofix.defaults import (
     LLM_REVIEW_CHUNK_LINES,
+    LLM_REVIEW_CHUNK_MAX_PER_FILE,
     LLM_REVIEW_CHUNK_OVERLAP,
     LLM_REVIEW_CHUNK_PROMPT_KEY,
     LLM_REVIEW_CHUNK_THRESHOLD,
@@ -106,8 +107,10 @@ def build_review_chunks_for_file(
     root: Path,
     *,
     review_file: str,
+    reviewed_chunk_keys: set[str] | None = None,
     chunk_threshold: int = LLM_REVIEW_CHUNK_THRESHOLD,
     chunk_lines: int = LLM_REVIEW_CHUNK_LINES,
+    chunk_max_per_file: int = LLM_REVIEW_CHUNK_MAX_PER_FILE,
     chunk_overlap: int = LLM_REVIEW_CHUNK_OVERLAP,
 ) -> list[dict]:
     path = root / review_file
@@ -131,12 +134,48 @@ def build_review_chunks_for_file(
                 "start_line": start + 1,
                 "end_line": end,
                 "content": chunk_content,
+                "chunk_key": f"{start + 1}-{end}",
             }
         )
         if end >= len(lines):
             break
         start += step
-    return chunks
+    if len(chunks) <= chunk_max_per_file:
+        return chunks
+
+    reviewed_chunk_keys = reviewed_chunk_keys or set()
+
+    def sample_indexes(pool_size: int, limit: int) -> list[int]:
+        if pool_size <= limit:
+            return list(range(pool_size))
+        selected_indexes: list[int] = []
+        last_index = pool_size - 1
+        for slot in range(limit):
+            if limit == 1:
+                index = 0
+            else:
+                index = round(slot * last_index / (limit - 1))
+            if not selected_indexes or index != selected_indexes[-1]:
+                selected_indexes.append(index)
+        return sorted(set(selected_indexes))
+
+    unseen_chunks = [chunk for chunk in chunks if chunk["chunk_key"] not in reviewed_chunk_keys]
+    sampled_chunks: list[dict]
+    if len(unseen_chunks) >= chunk_max_per_file:
+        sampled_chunks = [unseen_chunks[index] for index in sample_indexes(len(unseen_chunks), chunk_max_per_file)]
+    else:
+        sampled_chunks = list(unseen_chunks)
+        if len(sampled_chunks) < chunk_max_per_file:
+            seen_chunks = [chunk for chunk in chunks if chunk["chunk_key"] in reviewed_chunk_keys]
+            remaining = chunk_max_per_file - len(sampled_chunks)
+            sampled_chunks.extend(seen_chunks[index] for index in sample_indexes(len(seen_chunks), remaining))
+
+    total_chunks = len(chunks)
+    for chunk in sampled_chunks:
+        chunk["total_chunks"] = total_chunks
+        chunk["sampled"] = True
+        chunk["previously_reviewed"] = chunk["chunk_key"] in reviewed_chunk_keys
+    return sampled_chunks
 
 
 def build_review_prompt_for_chunk(

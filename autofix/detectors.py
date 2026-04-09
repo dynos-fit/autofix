@@ -547,6 +547,7 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
     log(f"Running Haiku LLM review on {len(review_files)} files: {[str(f.relative_to(root)) for f in review_files]}")
 
     total_filtered: list[dict] = []
+    reviewed_chunks_by_file: dict[str, list[str]] = {}
     review_started_at = time.monotonic()
     budget_exhausted = False
     for path in review_files:
@@ -556,9 +557,15 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
             log(f"Stopping LLM review early after {round(elapsed, 1)}s; total review budget {LLM_REVIEW_TOTAL_TIMEOUT}s exhausted")
             budget_exhausted = True
             break
-        chunks = build_review_chunks_for_file(root, review_file=rel)
+        file_state = coverage.get("files", {}).get(rel, {}) if isinstance(coverage.get("files", {}), dict) else {}
+        reviewed_chunk_keys = set(file_state.get("reviewed_chunk_keys", [])) if isinstance(file_state, dict) else set()
+        chunks = build_review_chunks_for_file(root, review_file=rel, reviewed_chunk_keys=reviewed_chunk_keys)
         if len(chunks) > 1:
-            log(f"Chunking {rel} into {len(chunks)} review chunks")
+            total_chunks = int(chunks[0].get("total_chunks", len(chunks)) or len(chunks))
+            if total_chunks > len(chunks):
+                log(f"Chunking {rel} into {total_chunks} review chunks; reviewing {len(chunks)} sampled chunks this scan")
+            else:
+                log(f"Chunking {rel} into {len(chunks)} review chunks")
         for chunk in chunks:
             elapsed = time.monotonic() - review_started_at
             if elapsed >= LLM_REVIEW_TOTAL_TIMEOUT:
@@ -569,6 +576,7 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
             if len(chunks) > 1:
                 prompt = build_review_prompt_for_chunk(root, review_file=rel, chunk=chunk)
                 log(f"Reviewing chunk {chunk['start_line']}-{chunk['end_line']} of {rel}")
+                reviewed_chunks_by_file.setdefault(rel, []).append(str(chunk.get("chunk_key", "")))
             else:
                 prompt = build_review_prompt_for_file(
                     root,
@@ -666,6 +674,7 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
         coverage,
         [str(path.relative_to(root)) for path in review_files],
         findings,
+        reviewed_chunks_by_file=reviewed_chunks_by_file,
     )
     coverage["last_scan_at"] = now_iso()
     save_scan_coverage(root, coverage)
