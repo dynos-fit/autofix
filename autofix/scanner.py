@@ -670,7 +670,7 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
         by_category[category] = by_category.get(category, 0) + 1
         by_severity[severity] = by_severity.get(severity, 0) + 1
 
-    for finding in new_findings:
+    for finding in all_scan_findings:
         if finding.get("status") == "skipped-dedup":
             category = finding.get("category", "unknown")
             severity = finding.get("severity", "unknown")
@@ -702,7 +702,7 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
     except OSError:
         pass
 
-    haiku_invocations = 1 if any(finding.get("category") == "llm-review" for finding in new_findings) else 0
+    haiku_invocations = 1 if any(finding.get("category") == "llm-review" for finding in all_scan_findings) else 0
     fix_invocations = 0
     opus_fix_invocations = 0
     for finding in all_scan_findings:
@@ -759,7 +759,7 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
         root,
         "autofix_scan",
         duration_s=round(time.monotonic() - start_time, 3),
-        total_detected=len(new_findings),
+        total_detected=len(all_scan_findings),
         processed=summary_counts.get("processed", 0),
         fixed=summary_counts.get("fixed", 0),
         issues_opened=summary_counts.get("issues_opened", 0),
