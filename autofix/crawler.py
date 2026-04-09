@@ -129,7 +129,10 @@ def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
@@ -167,7 +170,10 @@ def _compute_neighbor_activity(previous_files: dict[str, dict], *, now: datetime
 
 
 def _gini(values: list[int]) -> float:
-    cleaned = [max(int(v), 0) for v in values]
+    try:
+        cleaned = [max(int(v), 0) for v in values]
+    except (ValueError, TypeError):
+        return 0.0
     if not cleaned:
         return 0.0
     if sum(cleaned) == 0:
@@ -251,6 +257,8 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
 
     for regex, detail in RISK_PATTERNS:
+        if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+            break
         for match in regex.finditer(content):
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
@@ -615,8 +623,6 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         )
         if last_crawl_hash:
             changed_since_last_crawl = last_crawl_hash != content_hash
-        elif last_review_marker:
-            changed_since_last_crawl = False
         else:
             changed_since_last_crawl = True
         file_info["changed_since_last_crawl"] = changed_since_last_crawl
@@ -662,7 +668,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             continue
         missing = dict(previous)
         missing["missing"] = True
-        missing["last_missing_at"] = now
+        missing.setdefault("last_missing_at", now)
         missing_at = _parse_iso(now)
         first_missing = _parse_iso(str(previous.get("last_missing_at", "") or ""))
         age_days = ((missing_at - first_missing).total_seconds() / 86400) if (missing_at and first_missing) else 0
