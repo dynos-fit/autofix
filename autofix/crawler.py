@@ -129,7 +129,10 @@ def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
@@ -250,11 +253,15 @@ def analyze_file_for_llm(root: Path, rel: str) -> dict:
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("secret_pattern", "critical", 0.96, detail, line=line))
 
+    risky_api_limit_reached = False
     for regex, detail in RISK_PATTERNS:
+        if risky_api_limit_reached:
+            break
         for match in regex.finditer(content):
             line = content[: match.start()].count("\n") + 1
             signals.append(_detector_signal("risky_api", "high", 0.78, detail, line=line))
             if len([s for s in signals if s["rule"] == "risky_api"]) >= 3:
+                risky_api_limit_reached = True
                 break
 
     for regex, detail in DATA_FLOW_PATTERNS:
@@ -470,14 +477,14 @@ def _compute_priority(
         reasons.append(_reason("recent_churn", impact, f"File changed {churn} times in the last 30 days"))
 
     line_count = int(file_info.get("line_count", 0) or 0)
-    complexity = min(line_count / FILE_SCORE_COMPLEXITY_DIVISOR, FILE_SCORE_COMPLEXITY_MAX)
+    complexity = min(line_count / FILE_SCORE_COMPLEXITY_DIVISOR, FILE_SCORE_COMPLEXITY_MAX) if FILE_SCORE_COMPLEXITY_DIVISOR else 0.0
     if complexity:
         impact = complexity * FILE_SCORE_COMPLEXITY_WEIGHT
         score += impact
         reasons.append(_reason("file_size", impact, f"{line_count} lines of code"))
     if line_count > FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD:
         oversize = line_count - FILE_SCORE_LARGE_FILE_PENALTY_THRESHOLD
-        penalty = min(oversize / FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR, FILE_SCORE_LARGE_FILE_PENALTY_CAP)
+        penalty = min(oversize / FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR, FILE_SCORE_LARGE_FILE_PENALTY_CAP) if FILE_SCORE_LARGE_FILE_PENALTY_DIVISOR else 0.0
         score -= penalty
         reasons.append(
             _reason(
@@ -616,7 +623,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
         if last_crawl_hash:
             changed_since_last_crawl = last_crawl_hash != content_hash
         elif last_review_marker:
-            changed_since_last_crawl = False
+            changed_since_last_crawl = True
         else:
             changed_since_last_crawl = True
         file_info["changed_since_last_crawl"] = changed_since_last_crawl
@@ -648,8 +655,8 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "stale_review": file_info["stale_review"],
             "stale_detector_state": file_info["stale_detector_state"],
             "next_eligible_at": file_info.get("next_eligible_at"),
-            "detector_summary": file_info["detector_summary"],
-            "detector_signals": file_info["detector_signals"][:10],
+            "detector_summary": file_info.get("detector_summary", {}),
+            "detector_signals": file_info.get("detector_signals", [])[:10],
             "recent_selection_count": file_info["recent_selection_count"],
             "selection_count": int(file_info.get("selection_count", 0) or 0),
             "last_selected_at": file_info.get("last_selected_at") or "",
@@ -745,7 +752,7 @@ def finalize_crawl_state(
         file_info["last_llm_reviewed_at"] = now
         file_info["crawl_count"] = int(file_info.get("crawl_count", 0) or 0) + 1
         file_info["llm_review_count"] = int(file_info.get("llm_review_count", 0) or 0) + 1
-        file_info["last_crawl_hash"] = file_info.get("content_hash")
+        file_info["last_crawl_hash"] = file_info.get("content_hash", "")
         finding_summary = findings_by_file.get(rel, {})
         file_info["last_finding_count"] = int(finding_summary.get("count", 0) or 0)
         file_info["last_result"] = "findings" if file_info["last_finding_count"] else "clean"
