@@ -160,15 +160,14 @@ def build_review_chunks_for_file(
         return sorted(set(selected_indexes))
 
     unseen_chunks = [chunk for chunk in chunks if chunk["chunk_key"] not in reviewed_chunk_keys]
+    if not unseen_chunks:
+        # All chunks already reviewed — skip this file
+        return []
     sampled_chunks: list[dict]
     if len(unseen_chunks) >= chunk_max_per_file:
         sampled_chunks = [unseen_chunks[index] for index in sample_indexes(len(unseen_chunks), chunk_max_per_file)]
     else:
         sampled_chunks = list(unseen_chunks)
-        if len(sampled_chunks) < chunk_max_per_file:
-            seen_chunks = [chunk for chunk in chunks if chunk["chunk_key"] in reviewed_chunk_keys]
-            remaining = chunk_max_per_file - len(sampled_chunks)
-            sampled_chunks.extend(seen_chunks[index] for index in sample_indexes(len(seen_chunks), remaining))
 
     total_chunks = len(chunks)
     for chunk in sampled_chunks:
