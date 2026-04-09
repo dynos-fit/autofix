@@ -42,6 +42,7 @@ from autofix.defaults import (
     NEIGHBOR_INVALIDATION_WINDOW_DAYS,
     RECENT_SELECTION_HISTORY_LIMIT,
     RECENT_SELECTION_LOOKBACK_DAYS,
+    DIVERSITY_RESERVED_SLOTS,
 )
 from autofix.platform import is_generated_file, now_iso
 
@@ -650,6 +651,7 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             "detector_summary": file_info["detector_summary"],
             "detector_signals": file_info["detector_signals"][:10],
             "recent_selection_count": file_info["recent_selection_count"],
+            "selection_count": int(file_info.get("selection_count", 0) or 0),
         })
 
     for rel, previous in previous_files.items():
@@ -667,7 +669,23 @@ def build_crawl_plan(root: Path, state: dict, findings: list[dict], *, max_files
             next_files[rel] = missing
 
     ranked.sort(key=lambda item: (item["score"], item["finding_count_total"], item["recent_churn"]), reverse=True)
-    selected = ranked[:max_files]
+
+    # Two-phase selection: reserve slots for rarely/never-selected files to
+    # enforce diversity when the score distribution is heavily skewed.
+    reserved = min(DIVERSITY_RESERVED_SLOTS, max_files // 2)
+    priority_slots = max_files - reserved
+    priority_selected = ranked[:priority_slots]
+    priority_paths = {item["path"] for item in priority_selected}
+
+    # Build the diversity pool from files NOT already in the priority set.
+    # Sort by lifetime selection_count (fewest first), then by score as
+    # tiebreaker.  This guarantees never-selected files are chosen before
+    # any file that has ever been scanned, regardless of score.
+    remaining = [item for item in ranked if item["path"] not in priority_paths]
+    remaining.sort(key=lambda item: (item["selection_count"], -item["score"]))
+    diversity_selected = remaining[:reserved]
+
+    selected = priority_selected + diversity_selected
     selected_paths = {item["path"] for item in selected}
     for item in selected:
         info = next_files[item["path"]]

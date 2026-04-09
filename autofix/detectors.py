@@ -12,6 +12,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from autofix.defaults import (
     FILE_SCORE_CHURN_MAX,
@@ -492,7 +493,12 @@ def compute_file_scores(root: Path, coverage: dict) -> list[tuple[Path, float]]:
     return scored
 
 
-def detect_llm_review(root: Path, *, log) -> list[dict]:
+def detect_llm_review(
+    root: Path,
+    *,
+    log,
+    on_findings: Callable[[list[dict]], None] | None = None,
+) -> list[dict]:
     findings: list[dict] = []
     coverage = load_scan_coverage(root)
     findings_list = load_findings(root)
@@ -551,6 +557,7 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
     review_started_at = time.monotonic()
     budget_exhausted = False
     for path in review_files:
+        file_filtered: list[dict] = []
         rel = str(path.relative_to(root))
         elapsed = time.monotonic() - review_started_at
         if elapsed >= LLM_REVIEW_TOTAL_TIMEOUT:
@@ -642,32 +649,38 @@ def detect_llm_review(root: Path, *, log) -> list[dict]:
             if filtered and all(float(i.get("_confidence_score", i.get("confidence", 0))) >= HIGH_CONFIDENCE_THRESHOLD for i in filtered):
                 log(f"WARNING: All findings for {rel} have confidence >= {HIGH_CONFIDENCE_THRESHOLD}. Possible confidence degeneration.")
 
-            total_filtered.extend(filtered)
+            file_filtered.extend(filtered)
         if budget_exhausted:
             break
 
-    for issue in total_filtered:
-        desc = str(issue.get("description", ""))
-        file_name = str(issue.get("file", ""))
-        line_num = issue.get("line", 0)
-        severity = str(issue.get("severity", "low"))
-        cat_detail = str(issue.get("category_detail", ""))
-        conf_score = float(issue.get("_confidence_score", issue.get("confidence", 0.5)))
-        if not desc or not file_name:
-            continue
-        if severity not in ("low", "medium", "high", "critical"):
-            severity = "medium"
-        fid_raw = f"llm-review-{file_name}-{line_num}-{desc[:50]}"
-        fid = f"llm-review-{hashlib.sha256(fid_raw.encode()).hexdigest()[:16]}"
-        finding = make_finding(
-            finding_id=fid,
-            severity=severity,
-            category="llm-review",
-            description=f"[{cat_detail}] {desc}",
-            evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": "haiku"},
-        )
-        finding["confidence_score"] = conf_score
-        findings.append(finding)
+        file_findings: list[dict] = []
+        for issue in file_filtered:
+            desc = str(issue.get("description", ""))
+            file_name = str(issue.get("file", ""))
+            line_num = issue.get("line", 0)
+            severity = str(issue.get("severity", "low"))
+            cat_detail = str(issue.get("category_detail", ""))
+            conf_score = float(issue.get("_confidence_score", issue.get("confidence", 0.5)))
+            if not desc or not file_name:
+                continue
+            if severity not in ("low", "medium", "high", "critical"):
+                severity = "medium"
+            fid_raw = f"llm-review-{file_name}-{line_num}-{desc[:50]}"
+            fid = f"llm-review-{hashlib.sha256(fid_raw.encode()).hexdigest()[:16]}"
+            finding = make_finding(
+                finding_id=fid,
+                severity=severity,
+                category="llm-review",
+                description=f"[{cat_detail}] {desc}",
+                evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": "haiku"},
+            )
+            finding["confidence_score"] = conf_score
+            file_findings.append(finding)
+
+        total_filtered.extend(file_filtered)
+        findings.extend(file_findings)
+        if file_findings and on_findings is not None:
+            on_findings(file_findings)
 
     log(f"Haiku review found {len(findings)} issues (after confidence filtering)")
     coverage = finalize_crawl_state(

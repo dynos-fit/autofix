@@ -143,7 +143,7 @@ def runtime_factory() -> ScannerRuntime:
         detect_dependency_vulns=lambda root: detect_dependency_vulns(root, log=_log),
         detect_dead_code=detect_dead_code,
         detect_architectural_drift=lambda root: detect_architectural_drift(root, log=_log),
-        detect_llm_review=lambda root: detect_llm_review(root, log=_log),
+        detect_llm_review=lambda root, **kwargs: detect_llm_review(root, log=_log, **kwargs),
         autofix_finding=backend.autofix_finding,
         open_github_issue=backend.open_github_issue,
         cleanup_merged_branches=_cleanup_merged_branches,

@@ -41,7 +41,7 @@ class ScannerRuntime:
     detect_dependency_vulns: Callable[[Path], list[dict]]
     detect_dead_code: Callable[[Path], list[dict]]
     detect_architectural_drift: Callable[[Path], list[dict]]
-    detect_llm_review: Callable[[Path], list[dict]]
+    detect_llm_review: Callable[..., list[dict]]
     autofix_finding: Callable[[dict, Path, dict | None], dict]
     open_github_issue: Callable[[dict, Path, dict | None], dict]
     cleanup_merged_branches: Callable[[Path], None]
@@ -508,49 +508,9 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
     existing_findings, metrics = sync_outcomes(root, existing_findings, policy, runtime)
     existing_findings = runtime.prune_findings(existing_findings)
 
-    new_findings: list[dict] = []
-    new_findings.extend(runtime.detect_syntax_errors(root))
-    new_findings.extend(runtime.detect_recurring_audit(root))
-    new_findings.extend(runtime.detect_dependency_vulns(root))
-    new_findings.extend(runtime.detect_dead_code(root))
-    new_findings.extend(runtime.detect_architectural_drift(root))
-    new_findings.extend(runtime.detect_llm_review(root))
-    runtime.log(f"Detected {len(new_findings)} raw findings")
-
-    to_process: list[dict] = []
     skipped_dedup = 0
-    for finding in new_findings:
-        skip_reason = runtime.dedup_finding(finding, existing_findings)
-        if skip_reason:
-            runtime.log(f"Skipping {finding['finding_id']}: {skip_reason}")
-            finding["status"] = "skipped-dedup"
-            finding["processed_at"] = runtime.now_iso()
-            finding["fail_reason"] = skip_reason
-            existing_findings.append(finding)
-            skipped_dedup += 1
-            continue
-        to_process.append(finding)
-
-    to_process = to_process[:max_findings]
-    runtime.log(
-        f"Processing {len(to_process)} findings (max={max_findings}, skipped_dedup={skipped_dedup})"
-    )
-
-    batches: list[list[dict]] = []
-    individual_findings: list[dict] = []
-    if policy.get("batch_similar_findings", True) and len(to_process) >= runtime.batch_min_group_size:
-        groups = group_similar_findings(to_process, runtime.batch_min_group_size)
-        for group in groups:
-            if len(group) >= runtime.batch_min_group_size:
-                batches.append(group)
-                continue
-            individual_findings.extend(group)
-        if batches:
-            runtime.log(
-                f"Batch grouping: {len(batches)} batches, {len(individual_findings)} individual findings"
-            )
-    else:
-        individual_findings = to_process
+    accepted_for_processing = 0
+    raw_findings_count = 0
 
     summary_counts: dict[str, int] = {
         "processed": 0,
@@ -565,55 +525,11 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
     by_severity: dict[str, int] = {}
     all_scan_findings: list[dict] = []
 
-    for batch in batches:
-        elapsed = time.monotonic() - start_time
-        remaining = runtime.scan_timeout_seconds - elapsed
-        if remaining < 120:
-            runtime.log(f"Time budget low ({remaining:.0f}s), skipping remaining batches")
-            for finding in batch:
-                finding["status"] = "new"
-                finding["fail_reason"] = "timeout_budget_exhausted"
-                finding["processed_at"] = runtime.now_iso()
-                existing_findings.append(finding)
-                all_scan_findings.append(finding)
-                summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
-            continue
-
-        for result in autofix_batch(batch, root, policy or {}, runtime):
-            existing_findings.append(result)
-            all_scan_findings.append(result)
-            summary_counts["processed"] += 1
-            status = result.get("status", "")
-            if status == "fixed":
-                summary_counts["fixed"] += 1
-            elif status == "issue-opened":
-                summary_counts["issues_opened"] += 1
-            elif status == "failed":
-                summary_counts["failed"] += 1
-
-    for finding in individual_findings:
-        elapsed = time.monotonic() - start_time
-        remaining = runtime.scan_timeout_seconds - elapsed
-        if remaining < 60:
-            runtime.log(f"Time budget low ({remaining:.0f}s remaining), stopping processing")
-            finding["status"] = "new"
-            finding["fail_reason"] = "timeout_budget_exhausted"
-            finding["processed_at"] = runtime.now_iso()
-            existing_findings.append(finding)
-            all_scan_findings.append(finding)
-            summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
-            continue
-
-        processed = process_finding(finding, root, policy, existing_findings, runtime)
-        if processed["status"] == "failed" and processed["attempt_count"] < runtime.max_attempts:
-            runtime.log(
-                f"Finding {processed['finding_id']} failed attempt {processed['attempt_count']}, will retry next cycle"
-            )
-
-        existing_findings.append(processed)
-        all_scan_findings.append(processed)
+    def _record_result(result: dict) -> None:
+        existing_findings.append(result)
+        all_scan_findings.append(result)
         summary_counts["processed"] += 1
-        status = processed.get("status", "")
+        status = result.get("status", "")
         if status == "fixed":
             summary_counts["fixed"] += 1
         elif status == "issue-opened":
@@ -624,6 +540,106 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
             summary_counts["suppressed"] += 1
         elif status in ("failed", "permanently_failed"):
             summary_counts["failed"] += 1
+
+    def _process_incoming_findings(raw_findings: list[dict]) -> None:
+        nonlocal skipped_dedup, accepted_for_processing, raw_findings_count
+        if not raw_findings:
+            return
+        raw_findings_count += len(raw_findings)
+
+        to_process: list[dict] = []
+        for finding in raw_findings:
+            if accepted_for_processing >= max_findings:
+                break
+            skip_reason = runtime.dedup_finding(finding, existing_findings)
+            if skip_reason:
+                runtime.log(f"Skipping {finding['finding_id']}: {skip_reason}")
+                finding["status"] = "skipped-dedup"
+                finding["processed_at"] = runtime.now_iso()
+                finding["fail_reason"] = skip_reason
+                existing_findings.append(finding)
+                skipped_dedup += 1
+                summary_counts["skipped_dedup"] = skipped_dedup
+                continue
+            to_process.append(finding)
+            accepted_for_processing += 1
+
+        if not to_process:
+            return
+
+        runtime.log(
+            f"Processing {len(to_process)} findings (max={max_findings}, skipped_dedup={skipped_dedup})"
+        )
+
+        batches: list[list[dict]] = []
+        individual_findings: list[dict] = []
+        if policy.get("batch_similar_findings", True) and len(to_process) >= runtime.batch_min_group_size:
+            groups = group_similar_findings(to_process, runtime.batch_min_group_size)
+            for group in groups:
+                same_file_group = (
+                    len(group) > 1
+                    and all(
+                        finding.get("category") == "llm-review"
+                        and str(finding.get("evidence", {}).get("file", "") or "")
+                        == str(group[0].get("evidence", {}).get("file", "") or "")
+                        for finding in group
+                    )
+                )
+                if len(group) >= runtime.batch_min_group_size or same_file_group:
+                    batches.append(group)
+                    continue
+                individual_findings.extend(group)
+            if batches:
+                runtime.log(
+                    f"Batch grouping: {len(batches)} batches, {len(individual_findings)} individual findings"
+                )
+        else:
+            individual_findings = to_process
+
+        for batch in batches:
+            elapsed = time.monotonic() - start_time
+            remaining = runtime.scan_timeout_seconds - elapsed
+            if remaining < 120:
+                runtime.log(f"Time budget low ({remaining:.0f}s), skipping remaining batches")
+                for finding in batch:
+                    finding["status"] = "new"
+                    finding["fail_reason"] = "timeout_budget_exhausted"
+                    finding["processed_at"] = runtime.now_iso()
+                    existing_findings.append(finding)
+                    all_scan_findings.append(finding)
+                    summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
+                continue
+
+            for result in autofix_batch(batch, root, policy or {}, runtime):
+                _record_result(result)
+
+        for finding in individual_findings:
+            elapsed = time.monotonic() - start_time
+            remaining = runtime.scan_timeout_seconds - elapsed
+            if remaining < 60:
+                runtime.log(f"Time budget low ({remaining:.0f}s remaining), stopping processing")
+                finding["status"] = "new"
+                finding["fail_reason"] = "timeout_budget_exhausted"
+                finding["processed_at"] = runtime.now_iso()
+                existing_findings.append(finding)
+                all_scan_findings.append(finding)
+                summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
+                continue
+
+            processed = process_finding(finding, root, policy, existing_findings, runtime)
+            if processed["status"] == "failed" and processed["attempt_count"] < runtime.max_attempts:
+                runtime.log(
+                    f"Finding {processed['finding_id']} failed attempt {processed['attempt_count']}, will retry next cycle"
+                )
+            _record_result(processed)
+
+    _process_incoming_findings(runtime.detect_syntax_errors(root))
+    _process_incoming_findings(runtime.detect_recurring_audit(root))
+    _process_incoming_findings(runtime.detect_dependency_vulns(root))
+    _process_incoming_findings(runtime.detect_dead_code(root))
+    _process_incoming_findings(runtime.detect_architectural_drift(root))
+    runtime.detect_llm_review(root, on_findings=_process_incoming_findings)
+    runtime.log(f"Detected {raw_findings_count} raw findings")
 
     for finding in all_scan_findings:
         category = finding.get("category", "unknown")
