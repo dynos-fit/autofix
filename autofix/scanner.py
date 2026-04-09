@@ -12,29 +12,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from autofix.platform import runtime_state_dir
-
-
 def _update_retrospective_outcome(root: Path, finding: dict) -> None:
     """Update an existing task-retrospective.json when PR outcome is finalized."""
     finding_id = str(finding.get("finding_id", ""))
     if not finding_id:
         return
-    task_dir = runtime_state_dir(root) / f"task-autofix-{finding_id}"
-    retro_path = task_dir / "task-retrospective.json"
-    if not retro_path.is_file():
+    # Find the task dir by scanning manifests for this finding
+    dynos_dir = root / ".dynos"
+    if not dynos_dir.is_dir():
         return
-    try:
-        retro = json.loads(retro_path.read_text(encoding="utf-8"))
-        merge_outcome = finding.get("merge_outcome", "")
-        retro["merge_outcome"] = merge_outcome
-        if merge_outcome == "merged":
-            retro["task_outcome"] = "MERGED"
-        elif merge_outcome == "closed_unmerged":
-            retro["task_outcome"] = "CLOSED"
-        retro_path.write_text(json.dumps(retro, indent=2), encoding="utf-8")
-    except (json.JSONDecodeError, OSError):
-        pass
+    for task_dir in dynos_dir.glob("task-*"):
+        retro_path = task_dir / "task-retrospective.json"
+        if not retro_path.is_file():
+            continue
+        try:
+            retro = json.loads(retro_path.read_text(encoding="utf-8"))
+            if retro.get("finding_id") != finding_id:
+                continue
+            merge_outcome = finding.get("merge_outcome", "")
+            retro["merge_outcome"] = merge_outcome
+            if merge_outcome == "merged":
+                retro["task_outcome"] = "MERGED"
+            elif merge_outcome == "closed_unmerged":
+                retro["task_outcome"] = "CLOSED"
+            retro_path.write_text(json.dumps(retro, indent=2), encoding="utf-8")
+            return
+        except (json.JSONDecodeError, OSError):
+            pass
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,6 @@ from autofix.defaults import (
     VERIFY_FILE_PENALTY_CAP,
     VERIFY_LARGE_DIFF_PENALTY,
 )
-from autofix.platform import runtime_state_dir
 from autofix.runtime.core import now_iso, persistent_project_dir
 from autofix.state import load_scan_coverage
 
@@ -82,9 +81,48 @@ class DynosAutofixBackend:
             f"```json\n{signals_json}\n```\n"
         )
 
-    @staticmethod
-    def _target_task_dir(root: Path, finding_id: str) -> Path:
-        return runtime_state_dir(root) / f"task-autofix-{finding_id}"
+    def _target_task_dir(self, root: Path, finding_id: str) -> Path:
+        """Get or create a .dynos/task-YYYYMMDD-NNN directory for this finding.
+
+        Uses the standard dynos-work naming convention. Caches the mapping
+        so the same finding always maps to the same task dir within a run.
+        """
+        if not hasattr(self, "_finding_task_map"):
+            self._finding_task_map: dict[str, Path] = {}
+        if finding_id in self._finding_task_map:
+            return self._finding_task_map[finding_id]
+
+        dynos_dir = root / ".dynos"
+        dynos_dir.mkdir(parents=True, exist_ok=True)
+
+        # Check if a task dir already exists for this finding
+        for task_dir in sorted(dynos_dir.glob("task-*")):
+            manifest_path = task_dir / "manifest.json"
+            if manifest_path.is_file():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if manifest.get("autofix_finding_id") == finding_id:
+                        self._finding_task_map[finding_id] = task_dir
+                        return task_dir
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        # Generate next sequential ID: task-YYYYMMDD-NNN
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        existing = sorted(dynos_dir.glob(f"task-{today}-*"))
+        next_num = 1
+        for d in existing:
+            parts = d.name.split("-")
+            if len(parts) == 3:
+                try:
+                    next_num = max(next_num, int(parts[2]) + 1)
+                except ValueError:
+                    pass
+        task_dir = dynos_dir / f"task-{today}-{next_num:03d}"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        self._finding_task_map[finding_id] = task_dir
+        return task_dir
 
     def _write_task_metadata(
         self,
@@ -124,10 +162,11 @@ class DynosAutofixBackend:
         if not wt_dynos.is_dir():
             return
 
-        # Mirror full task directories when found.
-        state_dir = runtime_state_dir(root)
+        # Mirror full task directories to .dynos/ (standard dynos-work location).
+        dynos_dir = root / ".dynos"
+        dynos_dir.mkdir(parents=True, exist_ok=True)
         for task_dir in wt_dynos.glob("task-*"):
-            dest_dir = state_dir / task_dir.name
+            dest_dir = dynos_dir / task_dir.name
             dest_dir.mkdir(parents=True, exist_ok=True)
             for child in task_dir.iterdir():
                 dest = dest_dir / child.name
@@ -153,8 +192,10 @@ class DynosAutofixBackend:
 
     def _tag_synced_manifests(self, root: Path, finding_id: str) -> None:
         """Inject 'source: autofix' into any manifest.json created by the foundry."""
-        state_dir = runtime_state_dir(root)
-        for task_dir in state_dir.glob("task-*"):
+        dynos_dir = root / ".dynos"
+        if not dynos_dir.is_dir():
+            return
+        for task_dir in dynos_dir.glob("task-*"):
             manifest_path = task_dir / "manifest.json"
             if not manifest_path.is_file():
                 continue
