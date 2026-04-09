@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 
 from autofix.cli import build_parser, standalone_scan, standalone_sync_outcomes
+from autofix.config import config_show, config_set
+from autofix.daemon import daemon_start, daemon_stop, daemon_status
 from autofix.defaults import (
     BATCH_MIN_GROUP_SIZE,
     GH_API_TIMEOUT,
@@ -29,7 +31,7 @@ from autofix.detectors import (
     detect_recurring_audit,
     detect_syntax_errors,
 )
-from autofix.dynos_backend import create_dynos_backend
+from autofix.backend import create_dynos_backend
 from autofix.routing import check_category_health, compute_autofix_reward, compute_centrality_tier
 from autofix.runtime.core import write_json
 from autofix.runtime.dynos import (
@@ -44,6 +46,9 @@ from autofix.runtime.dynos import (
     select_action,
     update_q_value,
 )
+from autofix.init import cmd_init
+from autofix.repo import repo_add, repo_remove, repo_list
+from autofix.scan_all import cmd_scan_all
 from autofix.scanner import ScannerRuntime, sync_outcomes
 from autofix.state import (
     build_autofix_benchmarks,
@@ -238,8 +243,122 @@ def cmd_sync_outcomes(args: argparse.Namespace) -> int:
     return standalone_sync_outcomes(args, sync_outcomes, runtime_factory)
 
 
+# ---------------------------------------------------------------------------
+# New subcommand handlers
+# ---------------------------------------------------------------------------
+
+
+def handle_init(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    result = cmd_init(
+        root,
+        max_files=getattr(args, "max_files", None),
+        interval=getattr(args, "interval", None),
+    )
+    print(result.message)
+    return result.exit_code
+
+
+def handle_daemon_start(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    result = daemon_start(root=root, interval=getattr(args, "interval", None))
+    print(result.message)
+    return result.exit_code
+
+
+def handle_daemon_stop(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    result = daemon_stop(root=root)
+    print(result.message)
+    return result.exit_code
+
+
+def handle_daemon_status(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    result = daemon_status(root=root)
+    print(result.message)
+    return result.exit_code
+
+
+def handle_repo_add(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    home_dir = Path.home()
+    result = repo_add(path, home_dir)
+    print(result.message)
+    return result.exit_code
+
+
+def handle_repo_remove(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    home_dir = Path.home()
+    result = repo_remove(path, home_dir)
+    print(result.message)
+    return result.exit_code
+
+
+def handle_repo_list(args: argparse.Namespace) -> int:
+    home_dir = Path.home()
+    result = repo_list(home_dir)
+    as_json = getattr(args, "as_json", False)
+    if as_json:
+        # Parse the output lines back into structured data for JSON
+        lines = [l for l in result.output.strip().splitlines() if l.strip()] if result.output.strip() else []
+        repos = [{"path": line} for line in lines]
+        print(json.dumps(repos, indent=2))
+    else:
+        if result.output:
+            print(result.output)
+        else:
+            print(result.message)
+    return result.exit_code
+
+
+def handle_config_show(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    as_json = getattr(args, "as_json", False)
+    result = config_show(root, as_json=as_json)
+    if result.output:
+        print(result.output)
+    if result.message:
+        print(result.message, file=__import__("sys").stderr)
+    return result.exit_code
+
+
+def handle_config_set(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    result = config_set(root, args.key, args.value)
+    if result.message:
+        print(result.message)
+    return result.exit_code
+
+
+def handle_scan_all(args: argparse.Namespace) -> int:
+    home_dir = Path.home()
+    result = cmd_scan_all(home_dir=home_dir)
+    as_json = getattr(args, "as_json", False)
+    if as_json:
+        print(json.dumps({"exit_code": result.exit_code, "output": result.output}, indent=2))
+    else:
+        print(result.output)
+    return result.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser(scan_handler=cmd_scan, sync_handler=cmd_sync_outcomes, runtime_factory=runtime_factory)
+    parser = build_parser(
+        scan_handler=cmd_scan,
+        sync_handler=cmd_sync_outcomes,
+        runtime_factory=runtime_factory,
+        init_handler=handle_init,
+        daemon_start_handler=handle_daemon_start,
+        daemon_stop_handler=handle_daemon_stop,
+        daemon_status_handler=handle_daemon_status,
+        repo_add_handler=handle_repo_add,
+        repo_remove_handler=handle_repo_remove,
+        repo_list_handler=handle_repo_list,
+        config_show_handler=handle_config_show,
+        config_set_handler=handle_config_set,
+        scan_all_handler=handle_scan_all,
+    )
     args = parser.parse_args(argv)
     func = getattr(args, "func", None)
     if func is None:
