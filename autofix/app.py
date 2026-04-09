@@ -31,7 +31,7 @@ from autofix.detectors import (
     detect_recurring_audit,
     detect_syntax_errors,
 )
-from autofix.dynos_backend import create_dynos_backend
+from autofix.backend import create_dynos_backend
 from autofix.routing import check_category_health, compute_autofix_reward, compute_centrality_tier
 from autofix.runtime.core import write_json
 from autofix.runtime.dynos import (

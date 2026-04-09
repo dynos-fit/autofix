@@ -12,6 +12,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from autofix.platform import runtime_state_dir
+
+
+def _update_retrospective_outcome(root: Path, finding: dict) -> None:
+    """Update an existing task-retrospective.json when PR outcome is finalized."""
+    finding_id = str(finding.get("finding_id", ""))
+    if not finding_id:
+        return
+    task_dir = runtime_state_dir(root) / f"task-autofix-{finding_id}"
+    retro_path = task_dir / "task-retrospective.json"
+    if not retro_path.is_file():
+        return
+    try:
+        retro = json.loads(retro_path.read_text(encoding="utf-8"))
+        merge_outcome = finding.get("merge_outcome", "")
+        retro["merge_outcome"] = merge_outcome
+        if merge_outcome == "merged":
+            retro["task_outcome"] = "MERGED"
+        elif merge_outcome == "closed_unmerged":
+            retro["task_outcome"] = "CLOSED"
+        retro_path.write_text(json.dumps(retro, indent=2), encoding="utf-8")
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
 @dataclass(frozen=True)
 class ScannerRuntime:
     log: Callable[[str], None]
@@ -322,6 +347,7 @@ def check_pr_outcomes(
             finding["merge_outcome"] = "merged"
             finding["q_reward_applied"] = True
             updated = True
+            _update_retrospective_outcome(root, finding)
 
             try:
                 diff_result = subprocess.run(
@@ -342,6 +368,7 @@ def check_pr_outcomes(
             finding["merge_outcome"] = "closed_unmerged"
             finding["q_reward_applied"] = True
             updated = True
+            _update_retrospective_outcome(root, finding)
 
     if updated:
         runtime.save_autofix_q_table(root, q_table)

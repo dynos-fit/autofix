@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from autofix.dynos_backend import create_dynos_backend
+from autofix.backend import create_dynos_backend
 from autofix.platform import aggregate_state_dir, current_state_dir, persistent_project_dir, runtime_state_dir, state_history_root
 from autofix.state import autofix_benchmarks_path, autofix_metrics_path, findings_path, load_findings, scan_coverage_path
 from autofix.runtime import dynos

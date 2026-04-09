@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Dynos-specific autofix execution backend.
+"""Autofix execution backend.
 
-This module owns the parts of autofix that are tightly coupled to the Dynos
+This module owns the parts of autofix that are tightly coupled to the
 repair workflow, Git worktrees, and GitHub issue/PR operations. The scanner and
-policy logic can call into this backend without embedding Dynos execution
+policy logic can call into this backend without embedding execution
 details directly.
 """
 
@@ -32,6 +32,7 @@ from autofix.defaults import (
     VERIFY_FILE_PENALTY_CAP,
     VERIFY_LARGE_DIFF_PENALTY,
 )
+from autofix.platform import runtime_state_dir
 from autofix.runtime.core import now_iso, persistent_project_dir
 from autofix.state import load_scan_coverage
 
@@ -83,7 +84,7 @@ class DynosAutofixBackend:
 
     @staticmethod
     def _target_task_dir(root: Path, finding_id: str) -> Path:
-        return root / ".dynos" / f"task-autofix-{finding_id}"
+        return runtime_state_dir(root) / f"task-autofix-{finding_id}"
 
     def _write_task_metadata(
         self,
@@ -124,8 +125,9 @@ class DynosAutofixBackend:
             return
 
         # Mirror full task directories when found.
+        state_dir = runtime_state_dir(root)
         for task_dir in wt_dynos.glob("task-*"):
-            dest_dir = root / ".dynos" / task_dir.name
+            dest_dir = state_dir / task_dir.name
             dest_dir.mkdir(parents=True, exist_ok=True)
             for child in task_dir.iterdir():
                 dest = dest_dir / child.name
@@ -148,6 +150,92 @@ class DynosAutofixBackend:
                 self.shutil_module.copytree(str(child), str(dest))
             else:
                 self.shutil_module.copy2(str(child), str(dest))
+
+    def _tag_synced_manifests(self, root: Path, finding_id: str) -> None:
+        """Inject 'source: autofix' into any manifest.json created by the foundry."""
+        state_dir = runtime_state_dir(root)
+        for task_dir in state_dir.glob("task-*"):
+            manifest_path = task_dir / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if manifest.get("source") == "autofix":
+                    continue
+                manifest["source"] = "autofix"
+                manifest["autofix_finding_id"] = finding_id
+                manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def _write_retrospective(self, root: Path, finding: dict, verify_report: dict | None = None) -> None:
+        """Write a task-retrospective.json for the autofix finding so the learning loop can consume it."""
+        finding_id = str(finding.get("finding_id", "unknown"))
+        task_dir = self._target_task_dir(root, finding_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        status = finding.get("status", "")
+        if status == "fixed":
+            outcome = "DONE"
+        elif status in ("failed", "permanently_failed"):
+            outcome = "FAILED"
+        else:
+            outcome = status.upper() or "UNKNOWN"
+
+        quality_score = float(finding.get("pr_quality_score", 0) or 0)
+        retrospective = {
+            "task_id": f"task-autofix-{finding_id}",
+            "task_outcome": outcome,
+            "task_type": "autofix-repair",
+            "task_domains": "backend",
+            "task_risk_level": finding.get("severity", "medium"),
+            "source": "autofix",
+            "finding_id": finding_id,
+            "finding_category": finding.get("category", ""),
+            "finding_severity": finding.get("severity", ""),
+            "findings_by_auditor": {},
+            "findings_by_category": {},
+            "executor_repair_frequency": {},
+            "spec_review_iterations": 0,
+            "repair_cycle_count": 0,
+            "subagent_spawn_count": 0,
+            "wasted_spawns": 0,
+            "auditor_zero_finding_streaks": {},
+            "executor_zero_repair_streak": 0,
+            "token_usage_by_agent": {},
+            "total_token_usage": 0,
+            "model_used_by_agent": {},
+            "agent_source": {},
+            "alongside_overlap": {},
+            "quality_score": quality_score,
+            "cost_score": 1.0,
+            "efficiency_score": 1.0,
+            "pr_number": finding.get("pr_number"),
+            "pr_url": finding.get("pr_url"),
+            "merge_outcome": finding.get("merge_outcome"),
+        }
+        if verify_report:
+            retrospective["verification"] = {
+                "passed": verify_report.get("passed", False),
+                "quality_score": verify_report.get("quality_score", 0),
+            }
+
+        retro_path = task_dir / "task-retrospective.json"
+        # If the foundry already wrote a retrospective, merge source tag into it
+        if retro_path.is_file():
+            try:
+                existing = json.loads(retro_path.read_text(encoding="utf-8"))
+                existing["source"] = "autofix"
+                existing["finding_id"] = finding_id
+                existing["pr_number"] = finding.get("pr_number")
+                existing["pr_url"] = finding.get("pr_url")
+                existing["merge_outcome"] = finding.get("merge_outcome")
+                retro_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+                return
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        retro_path.write_text(json.dumps(retrospective, indent=2), encoding="utf-8")
 
     @staticmethod
     def _label_specs_for_finding(finding: dict) -> list[dict[str, str]]:
@@ -1043,6 +1131,20 @@ class DynosAutofixBackend:
             else:
                 self.log(f"Running foundry pipeline for {finding_id}")
 
+            # Pre-seed .dynos/ in the worktree so the foundry writes
+            # artifacts there, and tag the manifest with source: autofix.
+            wt_dynos = Path(worktree_path) / ".dynos"
+            wt_dynos.mkdir(parents=True, exist_ok=True)
+            seed_manifest = {
+                "source": "autofix",
+                "finding_id": finding_id,
+                "category": finding.get("category", ""),
+                "severity": finding.get("severity", ""),
+            }
+            (wt_dynos / "autofix-seed.json").write_text(
+                json.dumps(seed_manifest, indent=2), encoding="utf-8"
+            )
+
             worktree_env = {**os.environ, "DYNOS_AUTOFIX_WORKTREE": "1"}
             claude_result = self.subprocess_module.run(
                 claude_cmd,
@@ -1062,6 +1164,7 @@ class DynosAutofixBackend:
                 extra={"claude_returncode": claude_result.returncode},
             )
             self._sync_worktree_dynos_artifacts(root, worktree_path, finding_id)
+            self._tag_synced_manifests(root, finding_id)
 
             if claude_result.returncode == 0:
                 diff_check = self.subprocess_module.run(
@@ -1202,6 +1305,7 @@ class DynosAutofixBackend:
                         status="failed",
                         extra={"fail_reason": finding["fail_reason"], "verification": verify_report},
                     )
+                    self._write_retrospective(root, finding, verify_report)
                     return finding
                 finding["pr_quality_score"] = self.compute_pr_quality_score(verify_report)
 
@@ -1259,13 +1363,13 @@ class DynosAutofixBackend:
                     f"**Where:** {location}\n"
                     f"**Severity:** {severity}\n\n"
                     "## What this PR does\n\n"
-                    "Fixes the issue above. The change was generated by the dynos-work autofix scanner "
+                    "Fixes the issue above. The change was generated by the autofix scanner "
                     "and verified by running the foundry pipeline (spec -> plan -> execute -> audit).\n\n"
                     f"{changes_section}"
                     "## Evidence\n\n"
                     f"```json\n{evidence_str}\n```\n\n"
                     "---\n"
-                    "*Auto-generated by [dynos-work](https://github.com/dynos-fit/dynos-work) proactive scanner.*"
+                    "*Auto-generated by [autofix-scanner](https://github.com/dynos-fit/autofix) proactive scanner.*"
                 )
                 self.log(f"Creating PR for {finding_id}")
                 pr_result = self.subprocess_module.run(
@@ -1314,6 +1418,7 @@ class DynosAutofixBackend:
                         status="pr-opened",
                         extra={"pr_url": pr_url, "pr_number": pr_number},
                     )
+                    self._write_retrospective(root, finding, verify_report)
                 else:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"gh_pr_create_failed: {pr_result.stderr[:200]}"
