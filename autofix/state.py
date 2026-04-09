@@ -377,7 +377,7 @@ def suppression_reason(finding: dict, policy: dict) -> str | None:
     return None
 
 
-def rate_limit_snapshot(policy: dict, findings: list[dict]) -> dict:
+def rate_limit_snapshot(policy: dict, findings: list[dict], config: dict | None = None) -> dict:
     now = datetime.now(timezone.utc)
     today = now.date()
     open_prs = 0
@@ -396,18 +396,20 @@ def rate_limit_snapshot(policy: dict, findings: list[dict]) -> dict:
                     recent_failures += 1
             except ValueError:
                 pass
+    # config.json overrides take priority over policy for rate limits
+    cfg = config or {}
     return {
         "prs_today": prs_today,
         "open_prs": open_prs,
         "recent_failures": recent_failures,
-        "max_prs_per_day": int(policy.get("max_prs_per_day", MAX_PRS_PER_DAY) or MAX_PRS_PER_DAY),
-        "max_open_prs": int(policy.get("max_open_prs", MAX_OPEN_PRS) or MAX_OPEN_PRS),
+        "max_prs_per_day": int(cfg.get("max_prs_per_day", policy.get("max_prs_per_day", MAX_PRS_PER_DAY)) or MAX_PRS_PER_DAY),
+        "max_open_prs": int(cfg.get("max_open_prs", policy.get("max_open_prs", MAX_OPEN_PRS)) or MAX_OPEN_PRS),
         "cooldown_after_failures": int(policy.get("cooldown_after_failures", COOLDOWN_AFTER_FAILURES) or COOLDOWN_AFTER_FAILURES),
     }
 
 
-def rate_limit_reason(policy: dict, findings: list[dict]) -> str | None:
-    snapshot = rate_limit_snapshot(policy, findings)
+def rate_limit_reason(policy: dict, findings: list[dict], config: dict | None = None) -> str | None:
+    snapshot = rate_limit_snapshot(policy, findings, config=config)
     if snapshot["prs_today"] >= snapshot["max_prs_per_day"]:
         return f"max_prs_per_day reached ({snapshot['prs_today']}/{snapshot['max_prs_per_day']})"
     if snapshot["open_prs"] >= snapshot["max_open_prs"]:

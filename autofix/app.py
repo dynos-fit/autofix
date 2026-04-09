@@ -110,7 +110,10 @@ def _cleanup_merged_branches(root: Path) -> None:
             continue
 
 
-def runtime_factory() -> ScannerRuntime:
+def runtime_factory(root: Path | None = None) -> ScannerRuntime:
+    from autofix.config import resolve_config
+
+    cfg = resolve_config(root) if root else {}
     backend = create_dynos_backend(
         load_policy=load_autofix_policy,
         log=_log,
@@ -160,8 +163,8 @@ def runtime_factory() -> ScannerRuntime:
         save_fix_template=save_fix_template,
         gh_api_timeout=GH_API_TIMEOUT,
         max_attempts=MAX_ATTEMPTS,
-        min_conf_autofix=MIN_CONF_AUTOFIX,
-        scan_timeout_seconds=SCAN_TIMEOUT_SECONDS,
+        min_conf_autofix=float(cfg.get("min_confidence", MIN_CONF_AUTOFIX)),
+        scan_timeout_seconds=int(cfg.get("scan_timeout", SCAN_TIMEOUT_SECONDS)),
         batch_min_group_size=BATCH_MIN_GROUP_SIZE,
         qlearn_epsilon=QLEARN_EPSILON,
         pr_feedback_reward_merged=PR_FEEDBACK_REWARD_MERGED,

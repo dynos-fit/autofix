@@ -255,14 +255,14 @@ def cmd_suppress_remove(args: argparse.Namespace) -> int:
 
 def standalone_scan(args: argparse.Namespace, runtime_factory) -> int:
     root, max_findings = resolve_scan_args(args)
-    return scan_locked(root, max_findings, runtime_factory())
+    return scan_locked(root, max_findings, runtime_factory(root=root))
 
 
 def standalone_sync_outcomes(args: argparse.Namespace, sync_outcomes_fn, runtime_factory) -> int:
     root = Path(args.root).resolve()
     findings = load_findings(root)
     policy = load_autofix_policy(root)
-    findings, metrics = sync_outcomes_fn(root, findings, policy, runtime_factory())
+    findings, metrics = sync_outcomes_fn(root, findings, policy, runtime_factory(root=root))
     save_findings(root, findings)
     write_json(findings_path(root), {"findings": findings})
     print(json.dumps({"synced": True, "count": len(findings), "metrics": metrics}, indent=2))

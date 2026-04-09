@@ -174,8 +174,9 @@ def _default_scan_fn(root: Path, config: dict[str, Any]) -> None:
         from autofix.app import runtime_factory
         from autofix.scanner import scan_locked
 
+        resolved = root.resolve()
         max_findings = int(config.get("max_findings", 100))
-        scan_locked(root.resolve(), max_findings, runtime_factory())
+        scan_locked(resolved, max_findings, runtime_factory(root=resolved))
     except Exception as exc:
         _default_scan_logger.exception("Scan cycle failed: %s", exc)
 
@@ -200,6 +201,13 @@ def _daemon_loop(
 
     while not shutdown_event.is_set():
         config = _load_config(root)
+        # Hot-reload interval from config (criterion 19)
+        config_interval = config.get("interval")
+        if config_interval:
+            try:
+                interval_seconds = parse_interval(str(config_interval))
+            except (ValueError, TypeError):
+                pass
         logger.info("Starting scan cycle")
         try:
             scan_fn(root, config)
