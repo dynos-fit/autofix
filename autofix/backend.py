@@ -66,6 +66,8 @@ class DynosAutofixBackend:
 
         detector_summary = file_state.get("detector_summary", {})
         detector_signals = file_state.get("detector_signals", [])
+        if not isinstance(detector_signals, list):
+            detector_signals = []
         if not detector_summary and not detector_signals:
             return ""
 
@@ -471,6 +473,8 @@ class DynosAutofixBackend:
                 timeout=GIT_DELETE_TIMEOUT,
                 cwd=worktree_path,
             )
+            if diff_result.returncode != 0:
+                return False, f"git diff failed (exit {diff_result.returncode}): {diff_result.stderr.strip()}", report
             changed_files = [f.strip() for f in diff_result.stdout.splitlines() if f.strip()]
         except (self.subprocess_module.TimeoutExpired, OSError):
             return False, "could not determine changed files", report
@@ -975,13 +979,15 @@ class DynosAutofixBackend:
             self.shutil_module.rmtree(worktree_path, ignore_errors=True)
 
         try:
-            self.subprocess_module.run(
+            fetch_result = self.subprocess_module.run(
                 ["git", "fetch", "origin", base_branch],
                 capture_output=True,
                 text=True,
                 timeout=GH_API_TIMEOUT,
                 cwd=str(root),
             )
+            if fetch_result.returncode != 0:
+                raise OSError(f"git fetch failed (exit {fetch_result.returncode}): {fetch_result.stderr.strip()}")
             self.log(f"Creating worktree at {worktree_path}")
             self.subprocess_module.run(
                 ["git", "worktree", "add", "--detach", worktree_path, f"origin/{base_branch}"],
@@ -1017,7 +1023,10 @@ class DynosAutofixBackend:
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
-            evidence_line = int(evidence.get("line", 0) or 0)
+            try:
+                evidence_line = int(evidence.get("line", 0) or 0)
+            except (ValueError, TypeError):
+                evidence_line = 0
             detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
@@ -1233,6 +1242,7 @@ class DynosAutofixBackend:
                 if not has_changes:
                     finding["status"] = "failed"
                     finding["fail_reason"] = "claude_no_changes"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Claude produced no changes for {finding_id}")
                     self._write_task_metadata(
                         root,
@@ -1385,6 +1395,7 @@ class DynosAutofixBackend:
                 if push_result.returncode != 0:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
                     self._write_task_metadata(
                         root,
@@ -1590,7 +1601,7 @@ class DynosAutofixBackend:
         finally:
             try:
                 self._sync_worktree_dynos_artifacts(root, worktree_path, finding_id)
-            except OSError as exc:
+            except Exception as exc:
                 self.log(f"Warning: retrospective copy failed: {exc}")
 
             try:
@@ -1606,12 +1617,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError) as prune_exc:
+                    self.log(f"Warning: worktree prune failed: {prune_exc}")
 
         return finding
 
