@@ -66,6 +66,8 @@ class DynosAutofixBackend:
 
         detector_summary = file_state.get("detector_summary", {})
         detector_signals = file_state.get("detector_signals", [])
+        if not isinstance(detector_signals, list):
+            detector_signals = []
         if not detector_summary and not detector_signals:
             return ""
 
@@ -173,7 +175,7 @@ class DynosAutofixBackend:
                 if child.is_dir():
                     if dest.exists():
                         self.shutil_module.rmtree(str(dest), ignore_errors=True)
-                    self.shutil_module.copytree(str(child), str(dest))
+                    self.shutil_module.copytree(str(child), str(dest), dirs_exist_ok=True)
                 else:
                     self.shutil_module.copy2(str(child), str(dest))
             self.log(f"Copied task artifacts from worktree: {task_dir.name}")
@@ -186,7 +188,7 @@ class DynosAutofixBackend:
             if child.is_dir():
                 if dest.exists():
                     self.shutil_module.rmtree(str(dest), ignore_errors=True)
-                self.shutil_module.copytree(str(child), str(dest))
+                self.shutil_module.copytree(str(child), str(dest), dirs_exist_ok=True)
             else:
                 self.shutil_module.copy2(str(child), str(dest))
 
@@ -471,6 +473,8 @@ class DynosAutofixBackend:
                 timeout=GIT_DELETE_TIMEOUT,
                 cwd=worktree_path,
             )
+            if diff_result.returncode != 0:
+                return False, "could not determine changed files", report
             changed_files = [f.strip() for f in diff_result.stdout.splitlines() if f.strip()]
         except (self.subprocess_module.TimeoutExpired, OSError):
             return False, "could not determine changed files", report
@@ -598,7 +602,10 @@ class DynosAutofixBackend:
 
                         if isinstance(rescan_issues, list) and len(rescan_issues) > 0:
                             original_desc = finding.get("description", "")
-                            original_line = int(finding.get("evidence", {}).get("line", 0) or 0)
+                            try:
+                                original_line = int(finding.get("evidence", {}).get("line", 0) or 0)
+                            except (ValueError, TypeError):
+                                original_line = 0
                             original_still_present = False
                             new_regressions = []
 
@@ -806,7 +813,7 @@ class DynosAutofixBackend:
             if reviewer:
                 issue_body += f"**Detected by:** {reviewer}\n"
             issue_body += "\n"
-            if "attempt" in str(finding.get("attempt_count", 0)) or finding.get("attempt_count", 0) > 1:
+            if finding.get("attempt_count", 0) > 1:
                 issue_body += (
                     "### Why this is an issue (not a PR)\n\n"
                     f"The autofix scanner attempted to fix this automatically ({finding.get('attempt_count', 0)} attempts) "
@@ -973,6 +980,8 @@ class DynosAutofixBackend:
         )
         if Path(worktree_path).exists():
             self.shutil_module.rmtree(worktree_path, ignore_errors=True)
+            if Path(worktree_path).exists():
+                self.log(f"Warning: failed to remove existing worktree directory {worktree_path}")
 
         try:
             self.subprocess_module.run(
@@ -1017,7 +1026,10 @@ class DynosAutofixBackend:
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
-            evidence_line = int(evidence.get("line", 0) or 0)
+            try:
+                evidence_line = int(evidence.get("line", 0) or 0)
+            except (ValueError, TypeError):
+                evidence_line = 0
             detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
@@ -1384,6 +1396,7 @@ class DynosAutofixBackend:
                 )
                 if push_result.returncode != 0:
                     finding["status"] = "failed"
+                    finding["processed_at"] = now_iso()
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
                     self._write_task_metadata(
@@ -1606,12 +1619,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError):
+                    self.log("Warning: git worktree prune failed during cleanup")
 
         return finding
 
