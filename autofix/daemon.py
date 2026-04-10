@@ -290,7 +290,10 @@ def daemon_start(
 
     # --- Grandchild: the daemon process ---
     daemon_pid = os.getpid()
-    write_pid_file(root, daemon_pid)
+    try:
+        write_pid_file(root, daemon_pid)
+    except OSError:
+        pass  # Continue without PID file; signal handler and scan loop still run
 
     # Set up SIGTERM handler
     shutdown_event = threading.Event()
@@ -346,6 +349,8 @@ def daemon_stop(*, root: Path) -> DaemonResult:
         time.sleep(0.2)
 
     _remove_pid_file(root)
+    if is_process_alive(pid):
+        return DaemonResult(exit_code=1, message=f"Daemon (PID {pid}) did not stop within 10 seconds.")
     return DaemonResult(exit_code=0, message=f"Daemon (PID {pid}) stopped.")
 
 
