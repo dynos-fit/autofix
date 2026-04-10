@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from autofix.daemon import (
+    _remove_pid_file,
     daemon_start,
     daemon_status,
     daemon_stop,
@@ -63,6 +64,18 @@ class TestPIDFileManagement:
         repo = _setup_repo(tmp_path / "repo")
         (repo / ".autofix" / "daemon.pid").write_text("not-a-number")
         assert read_pid_file(repo) is None
+
+    def test_remove_pid_file_logs_oserror(self, tmp_path: Path) -> None:
+        """OSError in _remove_pid_file should be logged, not silently swallowed."""
+        repo = _setup_repo(tmp_path / "repo")
+        _write_pid_file(repo, 12345)
+        with (
+            patch("pathlib.Path.unlink", side_effect=OSError("permission denied")),
+            patch("logging.Logger.warning") as mock_warn,
+        ):
+            _remove_pid_file(repo)
+        assert mock_warn.called
+        assert "Failed to remove PID file" in mock_warn.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +193,27 @@ class TestDaemonStop:
         repo = _setup_repo(tmp_path / "repo")
         _write_pid_file(repo, 12345)
         with (
-            patch("autofix.daemon.is_process_alive", side_effect=[True, False]),
+            patch("autofix.daemon.is_process_alive", side_effect=[True, False, False]),
             patch("autofix.daemon.os.kill") as mock_kill,
         ):
             result = daemon_stop(root=repo)
         mock_kill.assert_called_with(12345, signal.SIGTERM)
         assert result.exit_code == 0
         assert not (repo / ".autofix" / "daemon.pid").exists()
+
+    def test_stop_returns_error_when_process_survives(self, tmp_path: Path) -> None:
+        """If process is still alive after timeout, report failure."""
+        repo = _setup_repo(tmp_path / "repo")
+        _write_pid_file(repo, 12345)
+        with (
+            patch("autofix.daemon.is_process_alive", return_value=True),
+            patch("autofix.daemon.os.kill"),
+            patch("autofix.daemon.time.monotonic", side_effect=[0, 0, 11]),
+            patch("autofix.daemon.time.sleep"),
+        ):
+            result = daemon_stop(root=repo)
+        assert result.exit_code == 1
+        assert "did not stop" in result.message.lower()
 
     def test_stop_with_no_daemon_exits_0(self, tmp_path: Path) -> None:
         """Stopping when no daemon is running should succeed gracefully."""
