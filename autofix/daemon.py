@@ -200,7 +200,11 @@ def _daemon_loop(
     logger.info("Daemon loop started (interval=%ds)", interval_seconds)
 
     while not shutdown_event.is_set():
-        config = _load_config(root)
+        try:
+            config = _load_config(root)
+        except Exception:
+            logger.exception("Failed to load config; using defaults")
+            config = {}
         # Hot-reload interval from config (criterion 19)
         config_interval = config.get("interval")
         if config_interval:
@@ -334,19 +338,24 @@ def daemon_stop(*, root: Path) -> DaemonResult:
     # Send SIGTERM
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError:
+    except (ProcessLookupError, OSError):
         _remove_pid_file(root)
         return DaemonResult(exit_code=0, message=f"Failed to send SIGTERM to PID {pid}; cleaned up.")
 
     # Wait up to 10 seconds for the process to exit
     deadline = time.monotonic() + 10
+    exited = False
     while time.monotonic() < deadline:
         if not is_process_alive(pid):
+            exited = True
             break
         time.sleep(0.2)
 
-    _remove_pid_file(root)
-    return DaemonResult(exit_code=0, message=f"Daemon (PID {pid}) stopped.")
+    if exited:
+        _remove_pid_file(root)
+        return DaemonResult(exit_code=0, message=f"Daemon (PID {pid}) stopped.")
+
+    return DaemonResult(exit_code=1, message=f"Daemon (PID {pid}) did not exit within 10s; PID file retained.")
 
 
 # ---------------------------------------------------------------------------
