@@ -27,7 +27,17 @@ SUPPORTED_KEYS: set[str] = {
     "min_confidence",
     "max_open_prs",
     "max_prs_per_day",
+    "llm_backend",
+    "llm_base_url",
+    "llm_api_key",
+    "llm_max_steps",
+    "review_chunk_lines",
+    "review_file_truncation",
+    "fix_surrounding_lines",
+    "fix_neighbor_files",
+    "fix_neighbor_lines",
     "review_model",
+    "fix_model",
     "dry_run",
 }
 
@@ -41,22 +51,55 @@ _DEFAULTS_MAP: Dict[str, str] = {
     "min_confidence": "MIN_FINDING_CONFIDENCE",
     "max_open_prs": "MAX_OPEN_PRS",
     "max_prs_per_day": "MAX_PRS_PER_DAY",
+    "llm_backend": None,
+    "llm_base_url": None,
+    "llm_api_key": None,
+    "llm_max_steps": None,
+    "review_chunk_lines": None,
+    "review_file_truncation": None,
+    "fix_surrounding_lines": None,
+    "fix_neighbor_files": None,
+    "fix_neighbor_lines": None,
     "review_model": None,
+    "fix_model": None,
     "dry_run": None,
 }
 
 _INTERVAL_DEFAULT = "30m"
+_LLM_BACKEND_DEFAULT = "claude_cli"
+_LLM_BASE_URL_DEFAULT = ""
+_LLM_API_KEY_DEFAULT = ""
+_LLM_MAX_STEPS_DEFAULT = 12
+_REVIEW_CHUNK_LINES_DEFAULT = defaults.LLM_REVIEW_CHUNK_LINES
+_REVIEW_FILE_TRUNCATION_DEFAULT = defaults.LLM_REVIEW_FILE_TRUNCATION
+_FIX_SURROUNDING_LINES_DEFAULT = 8
+_FIX_NEIGHBOR_FILES_DEFAULT = 2
+_FIX_NEIGHBOR_LINES_DEFAULT = 40
 _REVIEW_MODEL_DEFAULT = "default"
+_FIX_MODEL_DEFAULT = "default"
 _DRY_RUN_DEFAULT = False
 
 # Keys whose values are integers
-_INT_KEYS = {"max_files", "max_findings", "scan_timeout", "llm_timeout", "max_open_prs", "max_prs_per_day"}
+_INT_KEYS = {
+    "max_files",
+    "max_findings",
+    "scan_timeout",
+    "llm_timeout",
+    "max_open_prs",
+    "max_prs_per_day",
+    "llm_max_steps",
+    "review_chunk_lines",
+    "review_file_truncation",
+    "fix_surrounding_lines",
+    "fix_neighbor_files",
+    "fix_neighbor_lines",
+}
 # Keys whose values are floats
 _FLOAT_KEYS = {"min_confidence"}
 # Keys whose values are booleans
 _BOOL_KEYS = {"dry_run"}
 # Keys whose values stay as strings
-_STR_KEYS = {"interval", "review_model"}
+_STR_KEYS = {"interval", "llm_backend", "llm_base_url", "llm_api_key", "review_model", "fix_model"}
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +159,17 @@ def _build_defaults() -> Dict[str, Any]:
             result[key] = getattr(defaults, attr)
     # Hardcoded fallbacks for keys without a defaults.py mapping
     result.setdefault("interval", _INTERVAL_DEFAULT)
+    result.setdefault("llm_backend", _LLM_BACKEND_DEFAULT)
+    result.setdefault("llm_base_url", _LLM_BASE_URL_DEFAULT)
+    result.setdefault("llm_api_key", _LLM_API_KEY_DEFAULT)
+    result.setdefault("llm_max_steps", _LLM_MAX_STEPS_DEFAULT)
+    result.setdefault("review_chunk_lines", _REVIEW_CHUNK_LINES_DEFAULT)
+    result.setdefault("review_file_truncation", _REVIEW_FILE_TRUNCATION_DEFAULT)
+    result.setdefault("fix_surrounding_lines", _FIX_SURROUNDING_LINES_DEFAULT)
+    result.setdefault("fix_neighbor_files", _FIX_NEIGHBOR_FILES_DEFAULT)
+    result.setdefault("fix_neighbor_lines", _FIX_NEIGHBOR_LINES_DEFAULT)
     result.setdefault("review_model", _REVIEW_MODEL_DEFAULT)
+    result.setdefault("fix_model", _FIX_MODEL_DEFAULT)
     result.setdefault("dry_run", _DRY_RUN_DEFAULT)
     return result
 
@@ -190,6 +243,10 @@ def _parse_value(key: str, raw: str) -> Any:
     # String keys (interval, review_model) -- validate interval format
     if key == "interval":
         parse_interval(raw)  # validates; raises on bad input
+    if key == "llm_backend":
+        valid = {"claude_cli", "openai_compatible"}
+        if raw not in valid:
+            raise ValueError(f"Unsupported llm_backend '{raw}'. Valid values: {', '.join(sorted(valid))}")
     return raw
 
 

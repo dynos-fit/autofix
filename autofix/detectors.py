@@ -37,6 +37,7 @@ from autofix.defaults import (
     PIP_AUDIT_TIMEOUT,
 )
 from autofix.crawler import build_crawl_plan, finalize_crawl_state
+from autofix.agent_loop import run_review_agent_loop
 from autofix.llm_io import (
     build_review_prompt,
     build_review_chunks_for_file,
@@ -47,6 +48,7 @@ from autofix.llm_io import (
     repair_llm_output,
     validate_llm_issues,
 )
+from autofix.llm_backend import LLMBackendConfig, run_prompt
 from autofix.platform import (
     collect_retrospectives,
     is_generated_file,
@@ -497,6 +499,10 @@ def detect_llm_review(
     root: Path,
     *,
     log,
+    backend_config: LLMBackendConfig | None = None,
+    review_chunk_lines: int = LLM_REVIEW_CHUNK_LINES,
+    review_file_truncation: int = LLM_REVIEW_FILE_TRUNCATION,
+    review_model: str | None = None,
     on_findings: Callable[[list[dict]], None] | None = None,
 ) -> list[dict]:
     findings: list[dict] = []
@@ -542,12 +548,14 @@ def detect_llm_review(
     )
     save_scan_coverage(root, coverage)
 
-    if not shutil.which("claude"):
+    config = backend_config or LLMBackendConfig()
+    if config.backend == "claude_cli" and not shutil.which("claude"):
         log("Skipping LLM review: claude CLI not available")
         return findings
 
+    reviewer_name = str(review_model or "default").strip() or "default"
     log(f"File scores (top 10): {[(item['path'], round(float(item['score']), 1)) for item in scored_files[:10]]}")
-    log(f"Running Haiku LLM review on {len(review_files)} files: {[str(f.relative_to(root)) for f in review_files]}")
+    log(f"Running LLM review with model '{reviewer_name}' on {len(review_files)} files: {[str(f.relative_to(root)) for f in review_files]}")
 
     total_filtered: list[dict] = []
     reviewed_chunks_by_file: dict[str, list[str]] = {}
@@ -556,6 +564,62 @@ def detect_llm_review(
     for path in review_files:
         file_filtered: list[dict] = []
         rel = str(path.relative_to(root))
+        if config.backend != "claude_cli":
+            review_task_prompt = (
+                "Review the file for real bugs and return findings through finish_review.\n\n"
+                f"Target file: {rel}\n"
+                "Use read_file to inspect the file incrementally. Do not inspect unrelated files unless necessary.\n"
+                "Focus on logic bugs, security issues, error handling gaps, data integrity problems, and resource/lifecycle issues.\n"
+            )
+            agent_result = run_review_agent_loop(
+                root=root,
+                task_prompt=review_task_prompt,
+                model=review_model,
+                backend_config=config,
+                max_steps=max(4, min(int(review_chunk_lines or 80) // 20, 10)),
+                subprocess_module=subprocess,
+                timeout=LLM_INVOCATION_TIMEOUT,
+            )
+            if not agent_result.ok:
+                log(f"LLM review agent failed for {rel}: {agent_result.error[:200]}")
+                continue
+            issues = extract_json_array(agent_result.findings_json) or []
+            validated = validate_llm_issues(issues, allowed_files={rel})
+            filtered: list[dict] = []
+            for issue in validated:
+                confidence = float(issue.get("confidence", 0.5))
+                if confidence < MIN_FINDING_CONFIDENCE:
+                    continue
+                issue["_confidence_score"] = confidence
+                filtered.append(issue)
+            file_findings: list[dict] = []
+            for issue in filtered:
+                desc = str(issue.get("description", ""))
+                file_name = str(issue.get("file", ""))
+                line_num = issue.get("line", 0)
+                severity = str(issue.get("severity", "low"))
+                cat_detail = str(issue.get("category_detail", ""))
+                conf_score = float(issue.get("_confidence_score", issue.get("confidence", 0.5)))
+                if not desc or not file_name:
+                    continue
+                if severity not in ("low", "medium", "high", "critical"):
+                    severity = "medium"
+                fid_raw = f"llm-review-{file_name}-{line_num}-{desc[:50]}"
+                fid = f"llm-review-{hashlib.sha256(fid_raw.encode()).hexdigest()[:16]}"
+                finding = make_finding(
+                    finding_id=fid,
+                    severity=severity,
+                    category="llm-review",
+                    description=f"[{cat_detail}] {desc}",
+                    evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": reviewer_name},
+                )
+                finding["confidence_score"] = conf_score
+                file_findings.append(finding)
+            findings.extend(file_findings)
+            if file_findings and on_findings is not None:
+                on_findings(file_findings)
+            continue
+
         elapsed = time.monotonic() - review_started_at
         if elapsed >= LLM_REVIEW_TOTAL_TIMEOUT:
             log(f"Stopping LLM review early after {round(elapsed, 1)}s; total review budget {LLM_REVIEW_TOTAL_TIMEOUT}s exhausted")
@@ -563,7 +627,12 @@ def detect_llm_review(
             break
         file_state = coverage.get("files", {}).get(rel, {}) if isinstance(coverage.get("files", {}), dict) else {}
         reviewed_chunk_keys = set(file_state.get("reviewed_chunk_keys", [])) if isinstance(file_state, dict) else set()
-        chunks = build_review_chunks_for_file(root, review_file=rel, reviewed_chunk_keys=reviewed_chunk_keys)
+        chunks = build_review_chunks_for_file(
+            root,
+            review_file=rel,
+            reviewed_chunk_keys=reviewed_chunk_keys,
+            chunk_lines=review_chunk_lines,
+        )
         if len(chunks) > 1:
             total_chunks = int(chunks[0].get("total_chunks", len(chunks)) or len(chunks))
             if total_chunks > len(chunks):
@@ -587,21 +656,23 @@ def detect_llm_review(
                     selected_files=scored_files,
                     review_file=rel,
                     findings_list=findings_list,
+                    file_truncation=review_file_truncation,
                 )
             try:
-                result = subprocess.run(
-                    ["claude", "-p", prompt, "--model", "haiku"],
-                    capture_output=True, text=True, timeout=LLM_INVOCATION_TIMEOUT, cwd=root,
+                result = run_prompt(
+                    prompt,
+                    model=review_model,
+                    config=config,
+                    timeout=LLM_INVOCATION_TIMEOUT,
+                    cwd=root,
+                    subprocess_module=subprocess,
                 )
             except subprocess.TimeoutExpired:
-                log(f"Haiku review timed out after {LLM_INVOCATION_TIMEOUT}s for {rel}")
-                continue
-            except OSError as exc:
-                log(f"Haiku review failed for {rel}: {exc}")
+                log(f"LLM review timed out after {LLM_INVOCATION_TIMEOUT}s for {rel}")
                 continue
 
             if result.returncode != 0:
-                log(f"Haiku review exited {result.returncode} for {rel}")
+                log(f"LLM review exited {result.returncode} for {rel}: {result.stderr[:200]}")
                 continue
 
             allowed_files = {rel}
@@ -610,11 +681,13 @@ def detect_llm_review(
                 repaired = repair_llm_output(
                     result.stdout,
                     allowed_files=[rel],
+                    model=review_model,
+                    backend_config=config,
                     subprocess_module=subprocess,
                     cwd=root,
                 )
                 if repaired is None:
-                    log(f"Could not parse or repair Haiku response as JSON for {rel}")
+                    log(f"Could not parse or repair LLM response as JSON for {rel}")
                     continue
                 issues = extract_json_array(repaired)
                 if issues is None:
@@ -622,6 +695,8 @@ def detect_llm_review(
                         review_prompt=prompt,
                         bad_output=repaired,
                         allowed_files=[rel],
+                        model=review_model,
+                        backend_config=config,
                         subprocess_module=subprocess,
                         cwd=root,
                     )
@@ -669,7 +744,7 @@ def detect_llm_review(
                 severity=severity,
                 category="llm-review",
                 description=f"[{cat_detail}] {desc}",
-                evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": "haiku"},
+                evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": reviewer_name},
             )
             finding["confidence_score"] = conf_score
             file_findings.append(finding)
@@ -679,7 +754,7 @@ def detect_llm_review(
         if file_findings and on_findings is not None:
             on_findings(file_findings)
 
-    log(f"Haiku review found {len(findings)} issues (after confidence filtering)")
+    log(f"LLM review found {len(findings)} issues (after confidence filtering)")
     coverage = finalize_crawl_state(
         coverage,
         [str(path.relative_to(root)) for path in review_files],

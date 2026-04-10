@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from autofix.defaults import LLM_INVOCATION_TIMEOUT
+from autofix.llm_backend import LLMBackendConfig, run_prompt
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 FORMAT_REPAIR_PROMPT_PATH = PROMPTS_DIR / "llm_format_repair.md"
@@ -85,6 +86,8 @@ def repair_llm_output(
     raw_output: str,
     *,
     allowed_files: list[str],
+    model: str | None = None,
+    backend_config: LLMBackendConfig | None = None,
     subprocess_module,
     cwd: Path,
 ) -> str | None:
@@ -92,12 +95,13 @@ def repair_llm_output(
     prompt = prompt.replace("{{allowed_files}}", json.dumps(allowed_files, indent=2))
     prompt = prompt.replace("{{raw_output}}", raw_output)
     try:
-        result = subprocess_module.run(
-            ["claude", "-p", prompt, "--model", "haiku"],
-            capture_output=True,
-            text=True,
+        result = run_prompt(
+            prompt,
+            model=model,
+            config=backend_config or LLMBackendConfig(),
             timeout=LLM_INVOCATION_TIMEOUT,
-            cwd=str(cwd),
+            cwd=cwd,
+            subprocess_module=subprocess_module,
         )
     except (subprocess_module.TimeoutExpired, OSError):
         return None
@@ -111,6 +115,8 @@ def regenerate_llm_output(
     review_prompt: str,
     bad_output: str,
     allowed_files: list[str],
+    model: str | None = None,
+    backend_config: LLMBackendConfig | None = None,
     subprocess_module,
     cwd: Path,
 ) -> str | None:
@@ -119,12 +125,13 @@ def regenerate_llm_output(
     prompt = prompt.replace("{{review_prompt}}", review_prompt)
     prompt = prompt.replace("{{bad_output}}", bad_output)
     try:
-        result = subprocess_module.run(
-            ["claude", "-p", prompt, "--model", "haiku"],
-            capture_output=True,
-            text=True,
+        result = run_prompt(
+            prompt,
+            model=model,
+            config=backend_config or LLMBackendConfig(),
             timeout=LLM_INVOCATION_TIMEOUT,
-            cwd=str(cwd),
+            cwd=cwd,
+            subprocess_module=subprocess_module,
         )
     except (subprocess_module.TimeoutExpired, OSError):
         return None

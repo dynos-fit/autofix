@@ -12,6 +12,7 @@ from pathlib import Path
 
 from autofix.cli import build_parser, standalone_scan, standalone_sync_outcomes
 from autofix.config import config_show, config_set
+from autofix.llm_backend import LLMBackendConfig
 from autofix.daemon import daemon_start, daemon_stop, daemon_status
 from autofix.defaults import (
     BATCH_MIN_GROUP_SIZE,
@@ -114,6 +115,11 @@ def runtime_factory(root: Path | None = None) -> ScannerRuntime:
     from autofix.config import resolve_config
 
     cfg = resolve_config(root) if root else {}
+    llm_backend_config = LLMBackendConfig(
+        backend=str(cfg.get("llm_backend", "claude_cli")),
+        base_url=str(cfg.get("llm_base_url", "")),
+        api_key=str(cfg.get("llm_api_key", "")),
+    )
     backend = create_dynos_backend(
         load_policy=load_autofix_policy,
         log=_log,
@@ -122,6 +128,12 @@ def runtime_factory(root: Path | None = None) -> ScannerRuntime:
         build_import_graph_fn=build_import_graph,
         get_neighbor_file_contents_fn=get_neighbor_file_contents,
         find_matching_template_fn=find_matching_template,
+        llm_backend_config=llm_backend_config,
+        llm_max_steps=int(cfg.get("llm_max_steps", 12)),
+        fix_surrounding_lines=int(cfg.get("fix_surrounding_lines", 8)),
+        fix_neighbor_files=int(cfg.get("fix_neighbor_files", 2)),
+        fix_neighbor_lines=int(cfg.get("fix_neighbor_lines", 40)),
+        fix_model=cfg.get("fix_model"),
     )
     return ScannerRuntime(
         log=_log,
@@ -151,7 +163,15 @@ def runtime_factory(root: Path | None = None) -> ScannerRuntime:
         detect_dependency_vulns=lambda root: detect_dependency_vulns(root, log=_log),
         detect_dead_code=detect_dead_code,
         detect_architectural_drift=lambda root: detect_architectural_drift(root, log=_log),
-        detect_llm_review=lambda root, **kwargs: detect_llm_review(root, log=_log, **kwargs),
+        detect_llm_review=lambda root, **kwargs: detect_llm_review(
+            root,
+            log=_log,
+            backend_config=llm_backend_config,
+            review_chunk_lines=int(cfg.get("review_chunk_lines", 200)),
+            review_file_truncation=int(cfg.get("review_file_truncation", 400)),
+            review_model=cfg.get("review_model"),
+            **kwargs,
+        ),
         autofix_finding=backend.autofix_finding,
         open_github_issue=backend.open_github_issue,
         cleanup_merged_branches=_cleanup_merged_branches,
@@ -188,7 +208,11 @@ def _classify_fixability(finding: dict) -> str:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    if not args.dry_run and not shutil.which("claude"):
+    from autofix.config import resolve_config
+
+    cfg = resolve_config(root)
+    llm_backend = str(cfg.get("llm_backend", "claude_cli"))
+    if not args.dry_run and llm_backend == "claude_cli" and not shutil.which("claude"):
         print(json.dumps({"ok": False, "error": "claude CLI not found"}))
         return 1
     lock_path = root / ".autofix" / "scan.lock"
