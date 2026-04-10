@@ -13,6 +13,7 @@ import ast
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -95,17 +96,23 @@ class DynosAutofixBackend:
         dynos_dir = root / ".dynos"
         dynos_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if a task dir already exists for this finding
+        # Check if a task dir already exists for this finding.
+        # _write_task_metadata writes to autofix-run.json with a "finding_id"
+        # key, so check both that and manifest.json for compatibility.
         for task_dir in sorted(dynos_dir.glob("task-*")):
-            manifest_path = task_dir / "manifest.json"
-            if manifest_path.is_file():
-                try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if manifest.get("autofix_finding_id") == finding_id:
-                        self._finding_task_map[finding_id] = task_dir
-                        return task_dir
-                except (json.JSONDecodeError, OSError):
-                    pass
+            for meta_name, id_key in [
+                ("autofix-run.json", "finding_id"),
+                ("manifest.json", "autofix_finding_id"),
+            ]:
+                meta_path = task_dir / meta_name
+                if meta_path.is_file():
+                    try:
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        if meta.get(id_key) == finding_id:
+                            self._finding_task_map[finding_id] = task_dir
+                            return task_dir
+                    except (json.JSONDecodeError, OSError):
+                        pass
 
         # Generate next sequential ID: task-YYYYMMDD-NNN
         from datetime import datetime, timezone
@@ -151,7 +158,8 @@ class DynosAutofixBackend:
             "description": finding.get("description", ""),
         }
         if extra:
-            metadata.update(extra)
+            reserved = {"finding_id", "status", "updated_at", "branch_name", "base_branch", "worktree_path"}
+            metadata.update({k: v for k, v in extra.items() if k not in reserved})
         (task_dir / "autofix-run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return task_dir
 
@@ -683,7 +691,7 @@ class DynosAutofixBackend:
                 self.log(f"Running full test suite for {severity} severity finding")
                 try:
                     test_result = self.subprocess_module.run(
-                        test_command.split(),
+                        shlex.split(test_command),
                         capture_output=True,
                         text=True,
                         timeout=300,
@@ -706,7 +714,7 @@ class DynosAutofixBackend:
                     self.log(f"Running targeted tests for {severity} severity finding: {targeted_test_paths}")
                     try:
                         test_result = self.subprocess_module.run(
-                            test_command.split() + targeted_test_paths,
+                            shlex.split(test_command) + targeted_test_paths,
                             capture_output=True,
                             text=True,
                             timeout=120,
@@ -806,7 +814,7 @@ class DynosAutofixBackend:
             if reviewer:
                 issue_body += f"**Detected by:** {reviewer}\n"
             issue_body += "\n"
-            if "attempt" in str(finding.get("attempt_count", 0)) or finding.get("attempt_count", 0) > 1:
+            if finding.get("attempt_count", 0) >= 1:
                 issue_body += (
                     "### Why this is an issue (not a PR)\n\n"
                     f"The autofix scanner attempted to fix this automatically ({finding.get('attempt_count', 0)} attempts) "
@@ -1352,28 +1360,33 @@ class DynosAutofixBackend:
 
                 # Rebase onto latest remote base branch before pushing to
                 # avoid "tip of your current branch is behind" rejections.
-                self.subprocess_module.run(
+                fetch_result = self.subprocess_module.run(
                     ["git", "fetch", "origin", base_branch],
                     capture_output=True,
                     timeout=GH_API_TIMEOUT,
                     cwd=worktree_path,
                 )
-                rebase_result = self.subprocess_module.run(
-                    ["git", "rebase", f"origin/{base_branch}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=GH_API_TIMEOUT,
-                    cwd=worktree_path,
-                )
-                if rebase_result.returncode != 0:
-                    # Rebase conflict — abort and try force push instead
-                    self.subprocess_module.run(
-                        ["git", "rebase", "--abort"],
+                if fetch_result.returncode != 0:
+                    self.log(f"git fetch failed for {finding_id}, skipping rebase")
+                else:
+                    rebase_result = self.subprocess_module.run(
+                        ["git", "rebase", f"origin/{base_branch}"],
                         capture_output=True,
-                        timeout=GIT_DELETE_TIMEOUT,
+                        text=True,
+                        timeout=GH_API_TIMEOUT,
                         cwd=worktree_path,
                     )
-                    self.log(f"Rebase failed for {finding_id}, attempting force push")
+                    if rebase_result.returncode != 0:
+                        # Rebase conflict — abort and try force push instead
+                        abort_result = self.subprocess_module.run(
+                            ["git", "rebase", "--abort"],
+                            capture_output=True,
+                            timeout=GIT_DELETE_TIMEOUT,
+                            cwd=worktree_path,
+                        )
+                        if abort_result.returncode != 0:
+                            self.log(f"git rebase --abort failed for {finding_id}")
+                        self.log(f"Rebase failed for {finding_id}, attempting force push")
 
                 push_result = self.subprocess_module.run(
                     ["git", "push", "-u", "origin", branch_name, "--force-with-lease"],
@@ -1606,12 +1619,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError) as prune_exc:
+                    self.log(f"Warning: worktree prune failed: {prune_exc}")
 
         return finding
 
