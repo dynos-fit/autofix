@@ -180,7 +180,7 @@ class TestDaemonStop:
         repo = _setup_repo(tmp_path / "repo")
         _write_pid_file(repo, 12345)
         with (
-            patch("autofix.daemon.is_process_alive", side_effect=[True, False]),
+            patch("autofix.daemon.is_process_alive", side_effect=[True, False, False]),
             patch("autofix.daemon.os.kill") as mock_kill,
         ):
             result = daemon_stop(root=repo)
