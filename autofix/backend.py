@@ -172,7 +172,7 @@ class DynosAutofixBackend:
                 dest = dest_dir / child.name
                 if child.is_dir():
                     if dest.exists():
-                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                        self.shutil_module.rmtree(str(dest))
                     self.shutil_module.copytree(str(child), str(dest))
                 else:
                     self.shutil_module.copy2(str(child), str(dest))
@@ -185,7 +185,7 @@ class DynosAutofixBackend:
             dest = target_task_dir / child.name
             if child.is_dir():
                 if dest.exists():
-                    self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                    self.shutil_module.rmtree(str(dest))
                 self.shutil_module.copytree(str(child), str(dest))
             else:
                 self.shutil_module.copy2(str(child), str(dest))
@@ -471,6 +471,8 @@ class DynosAutofixBackend:
                 timeout=GIT_DELETE_TIMEOUT,
                 cwd=worktree_path,
             )
+            if diff_result.returncode != 0:
+                return False, f"git diff failed (exit {diff_result.returncode})", report
             changed_files = [f.strip() for f in diff_result.stdout.splitlines() if f.strip()]
         except (self.subprocess_module.TimeoutExpired, OSError):
             return False, "could not determine changed files", report
@@ -644,12 +646,14 @@ class DynosAutofixBackend:
         if evidence_file and changed_files and evidence_file not in changed_files:
             evidence_dir = str(Path(evidence_file).parent)
             for changed in changed_files:
-                if (
-                    not changed.startswith(evidence_dir)
-                    and not changed.startswith("tests/")
-                    and not changed.startswith("test/")
-                    and changed != evidence_file
-                ):
+                in_scope = (
+                    changed.startswith("tests/")
+                    or changed.startswith("test/")
+                    or changed == evidence_file
+                    or evidence_dir == "."
+                    or changed.startswith(evidence_dir)
+                )
+                if not in_scope:
                     return False, f"out-of-scope change: {changed} (expected near {evidence_file})", report
 
         evidence_stem = Path(evidence_file).stem if evidence_file else ""
@@ -1352,28 +1356,33 @@ class DynosAutofixBackend:
 
                 # Rebase onto latest remote base branch before pushing to
                 # avoid "tip of your current branch is behind" rejections.
-                self.subprocess_module.run(
+                fetch_result = self.subprocess_module.run(
                     ["git", "fetch", "origin", base_branch],
                     capture_output=True,
                     timeout=GH_API_TIMEOUT,
                     cwd=worktree_path,
                 )
-                rebase_result = self.subprocess_module.run(
-                    ["git", "rebase", f"origin/{base_branch}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=GH_API_TIMEOUT,
-                    cwd=worktree_path,
-                )
-                if rebase_result.returncode != 0:
-                    # Rebase conflict — abort and try force push instead
-                    self.subprocess_module.run(
-                        ["git", "rebase", "--abort"],
+                if fetch_result.returncode != 0:
+                    self.log(f"Fetch failed for {finding_id}, skipping rebase")
+                else:
+                    rebase_result = self.subprocess_module.run(
+                        ["git", "rebase", f"origin/{base_branch}"],
                         capture_output=True,
-                        timeout=GIT_DELETE_TIMEOUT,
+                        text=True,
+                        timeout=GH_API_TIMEOUT,
                         cwd=worktree_path,
                     )
-                    self.log(f"Rebase failed for {finding_id}, attempting force push")
+                    if rebase_result.returncode != 0:
+                        # Rebase conflict — abort and try force push instead
+                        abort_result = self.subprocess_module.run(
+                            ["git", "rebase", "--abort"],
+                            capture_output=True,
+                            timeout=GIT_DELETE_TIMEOUT,
+                            cwd=worktree_path,
+                        )
+                        if abort_result.returncode != 0:
+                            self.log(f"Rebase abort failed for {finding_id}")
+                        self.log(f"Rebase failed for {finding_id}, attempting force push")
 
                 push_result = self.subprocess_module.run(
                     ["git", "push", "-u", "origin", branch_name, "--force-with-lease"],
@@ -1385,6 +1394,7 @@ class DynosAutofixBackend:
                 if push_result.returncode != 0:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
                     self._write_task_metadata(
                         root,
@@ -1606,12 +1616,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError) as prune_exc:
+                    self.log(f"Warning: worktree prune failed: {prune_exc}")
 
         return finding
 
