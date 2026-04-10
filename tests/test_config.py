@@ -132,6 +132,18 @@ class TestConfigSet:
         config = json.loads((repo / ".autofix" / "config.json").read_text())
         assert config["min_confidence"] == 0.8
 
+    def test_set_llm_backend_key(self, tmp_path: Path) -> None:
+        repo = _setup_repo(tmp_path / "repo")
+        result = config_set(root=repo, key="llm_backend", value="openai_compatible")
+        assert result.exit_code == 0
+        config = json.loads((repo / ".autofix" / "config.json").read_text())
+        assert config["llm_backend"] == "openai_compatible"
+
+    def test_set_invalid_llm_backend_fails(self, tmp_path: Path) -> None:
+        repo = _setup_repo(tmp_path / "repo")
+        result = config_set(root=repo, key="llm_backend", value="bad")
+        assert result.exit_code == 1
+
     def test_set_invalid_key_fails(self, tmp_path: Path) -> None:
         repo = _setup_repo(tmp_path / "repo")
         result = config_set(root=repo, key="nonexistent_key", value="42")
@@ -205,7 +217,17 @@ class TestSupportedKeys:
             "min_confidence",
             "max_open_prs",
             "max_prs_per_day",
+            "llm_backend",
+            "llm_base_url",
+            "llm_api_key",
+            "llm_max_steps",
+            "review_chunk_lines",
+            "review_file_truncation",
+            "fix_surrounding_lines",
+            "fix_neighbor_files",
+            "fix_neighbor_lines",
             "review_model",
+            "fix_model",
             "dry_run",
         }
         assert expected == set(SUPPORTED_KEYS)

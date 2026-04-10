@@ -57,6 +57,38 @@ The workflow is:
 - `gh` for issues and PRs
 - `claude` for autonomous fixes
 
+## Local Models
+
+The scanner now supports two LLM backends through repo-local config:
+
+- `claude_cli`: existing behavior using the `claude` CLI
+- `openai_compatible`: any OpenAI-style chat endpoint, including Ollama and `llama.cpp`
+
+Example local-model config:
+
+```bash
+python3 -m autofix config set --root /path/to/repo llm_backend openai_compatible
+python3 -m autofix config set --root /path/to/repo llm_base_url http://127.0.0.1:11434/v1
+python3 -m autofix config set --root /path/to/repo llm_api_key ollama
+python3 -m autofix config set --root /path/to/repo review_model qwen2.5-coder:7b-16k
+python3 -m autofix config set --root /path/to/repo fix_model qwen2.5-coder:7b-16k
+python3 -m autofix config set --root /path/to/repo llm_max_steps 12
+python3 -m autofix config set --root /path/to/repo review_chunk_lines 80
+python3 -m autofix config set --root /path/to/repo review_file_truncation 160
+python3 -m autofix config set --root /path/to/repo fix_surrounding_lines 6
+python3 -m autofix config set --root /path/to/repo fix_neighbor_files 1
+python3 -m autofix config set --root /path/to/repo fix_neighbor_lines 24
+```
+
+`review_model` drives review/repair prompts. `fix_model` drives the autofix repair flow. `llm_max_steps` bounds the local agent loop used by `openai_compatible` backends.
+
+For smaller local models, the prompt-budget settings above are the recommended starting point.
+
+Behavior by backend:
+
+- `claude_cli`: keeps the original chunked review prompt flow and Claude Code repair flow
+- `openai_compatible`: uses an on-demand review agent and a bounded local fix agent to reduce prompt bloat
+
 ## Operations
 
 See [`docs/AUTOFIX_STANDALONE.md`](/home/hassam/autofix-standalone/docs/AUTOFIX_STANDALONE.md).
