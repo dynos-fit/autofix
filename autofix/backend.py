@@ -97,11 +97,11 @@ class DynosAutofixBackend:
 
         # Check if a task dir already exists for this finding
         for task_dir in sorted(dynos_dir.glob("task-*")):
-            manifest_path = task_dir / "manifest.json"
+            manifest_path = task_dir / "autofix-run.json"
             if manifest_path.is_file():
                 try:
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if manifest.get("autofix_finding_id") == finding_id:
+                    if manifest.get("finding_id") == finding_id:
                         self._finding_task_map[finding_id] = task_dir
                         return task_dir
                 except (json.JSONDecodeError, OSError):
@@ -474,6 +474,8 @@ class DynosAutofixBackend:
             changed_files = [f.strip() for f in diff_result.stdout.splitlines() if f.strip()]
         except (self.subprocess_module.TimeoutExpired, OSError):
             return False, "could not determine changed files", report
+        if diff_result.returncode != 0:
+            return False, f"git diff failed (exit {diff_result.returncode})", report
         report["changed_files"] = changed_files
 
         if not changed_files:
@@ -662,13 +664,21 @@ class DynosAutofixBackend:
         for test_path in candidate_tests:
             if not test_path.exists():
                 continue
-            result = self.subprocess_module.run(
-                ["python3", "-m", "pytest", "-q", str(test_path)],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                cwd=worktree_path,
-            )
+            try:
+                result = self.subprocess_module.run(
+                    ["python3", "-m", "pytest", "-q", str(test_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    cwd=worktree_path,
+                )
+            except self.subprocess_module.TimeoutExpired:
+                report["targeted_tests"].append({
+                    "path": str(test_path.relative_to(Path(worktree_path))),
+                    "returncode": -1,
+                    "timeout": True,
+                })
+                return False, f"targeted test timed out: {test_path.name}", report
             report["targeted_tests"].append({
                 "path": str(test_path.relative_to(Path(worktree_path))),
                 "returncode": result.returncode,
@@ -806,7 +816,7 @@ class DynosAutofixBackend:
             if reviewer:
                 issue_body += f"**Detected by:** {reviewer}\n"
             issue_body += "\n"
-            if "attempt" in str(finding.get("attempt_count", 0)) or finding.get("attempt_count", 0) > 1:
+            if finding.get("attempt_count", 0) > 1:
                 issue_body += (
                     "### Why this is an issue (not a PR)\n\n"
                     f"The autofix scanner attempted to fix this automatically ({finding.get('attempt_count', 0)} attempts) "
@@ -1017,7 +1027,10 @@ class DynosAutofixBackend:
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
-            evidence_line = int(evidence.get("line", 0) or 0)
+            try:
+                evidence_line = int(evidence.get("line", 0) or 0)
+            except (ValueError, TypeError):
+                evidence_line = 0
             detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
@@ -1229,10 +1242,12 @@ class DynosAutofixBackend:
                         timeout=GIT_DELETE_TIMEOUT,
                         cwd=worktree_path,
                     )
-                    has_changes = bool(log_check.stdout.strip())
+                    if log_check.returncode == 0:
+                        has_changes = bool(log_check.stdout.strip())
                 if not has_changes:
                     finding["status"] = "failed"
                     finding["fail_reason"] = "claude_no_changes"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Claude produced no changes for {finding_id}")
                     self._write_task_metadata(
                         root,
