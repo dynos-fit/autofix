@@ -97,11 +97,11 @@ class DynosAutofixBackend:
 
         # Check if a task dir already exists for this finding
         for task_dir in sorted(dynos_dir.glob("task-*")):
-            manifest_path = task_dir / "manifest.json"
-            if manifest_path.is_file():
+            run_path = task_dir / "autofix-run.json"
+            if run_path.is_file():
                 try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if manifest.get("autofix_finding_id") == finding_id:
+                    run_meta = json.loads(run_path.read_text(encoding="utf-8"))
+                    if run_meta.get("finding_id") == finding_id:
                         self._finding_task_map[finding_id] = task_dir
                         return task_dir
                 except (json.JSONDecodeError, OSError):
