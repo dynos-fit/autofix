@@ -171,8 +171,10 @@ class DynosAutofixBackend:
             for child in task_dir.iterdir():
                 dest = dest_dir / child.name
                 if child.is_dir():
-                    if dest.exists():
+                    if dest.is_dir():
                         self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                    elif dest.exists():
+                        dest.unlink()
                     self.shutil_module.copytree(str(child), str(dest))
                 else:
                     self.shutil_module.copy2(str(child), str(dest))
@@ -184,8 +186,10 @@ class DynosAutofixBackend:
                 continue
             dest = target_task_dir / child.name
             if child.is_dir():
-                if dest.exists():
+                if dest.is_dir():
                     self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                elif dest.exists():
+                    dest.unlink()
                 self.shutil_module.copytree(str(child), str(dest))
             else:
                 self.shutil_module.copy2(str(child), str(dest))
