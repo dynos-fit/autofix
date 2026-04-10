@@ -171,9 +171,9 @@ class DynosAutofixBackend:
             for child in task_dir.iterdir():
                 dest = dest_dir / child.name
                 if child.is_dir():
-                    if dest.exists():
-                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
-                    self.shutil_module.copytree(str(child), str(dest))
+                    if dest.exists() and not dest.is_dir():
+                        dest.unlink()
+                    self.shutil_module.copytree(str(child), str(dest), dirs_exist_ok=True)
                 else:
                     self.shutil_module.copy2(str(child), str(dest))
             self.log(f"Copied task artifacts from worktree: {task_dir.name}")
@@ -184,9 +184,9 @@ class DynosAutofixBackend:
                 continue
             dest = target_task_dir / child.name
             if child.is_dir():
-                if dest.exists():
-                    self.shutil_module.rmtree(str(dest), ignore_errors=True)
-                self.shutil_module.copytree(str(child), str(dest))
+                if dest.exists() and not dest.is_dir():
+                    dest.unlink()
+                self.shutil_module.copytree(str(child), str(dest), dirs_exist_ok=True)
             else:
                 self.shutil_module.copy2(str(child), str(dest))
 
@@ -311,23 +311,28 @@ class DynosAutofixBackend:
 
     def _ensure_labels(self, root: Path, label_specs: list[dict[str, str]]) -> None:
         for spec in label_specs:
-            self.subprocess_module.run(
-                [
-                    "gh",
-                    "label",
-                    "create",
-                    spec["name"],
-                    "--color",
-                    spec["color"],
-                    "--description",
-                    spec["description"],
-                    "--force",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=GIT_DELETE_TIMEOUT,
-                cwd=str(root),
-            )
+            try:
+                result = self.subprocess_module.run(
+                    [
+                        "gh",
+                        "label",
+                        "create",
+                        spec["name"],
+                        "--color",
+                        spec["color"],
+                        "--description",
+                        spec["description"],
+                        "--force",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=GIT_DELETE_TIMEOUT,
+                    cwd=str(root),
+                )
+                if result.returncode != 0:
+                    self.log(f"Warning: failed to create label {spec['name']}: {result.stderr.strip()}")
+            except (self.subprocess_module.TimeoutExpired, OSError) as exc:
+                self.log(f"Warning: failed to create label {spec['name']}: {exc}")
 
     def check_existing_pr(self, finding_id: str, root: Path) -> bool:
         if not self.shutil_module.which("gh"):
@@ -645,7 +650,7 @@ class DynosAutofixBackend:
             evidence_dir = str(Path(evidence_file).parent)
             for changed in changed_files:
                 if (
-                    not changed.startswith(evidence_dir)
+                    not (changed.startswith(evidence_dir + "/") or changed == evidence_dir)
                     and not changed.startswith("tests/")
                     and not changed.startswith("test/")
                     and changed != evidence_file
@@ -975,13 +980,15 @@ class DynosAutofixBackend:
             self.shutil_module.rmtree(worktree_path, ignore_errors=True)
 
         try:
-            self.subprocess_module.run(
+            fetch_result = self.subprocess_module.run(
                 ["git", "fetch", "origin", base_branch],
                 capture_output=True,
                 text=True,
                 timeout=GH_API_TIMEOUT,
                 cwd=str(root),
             )
+            if fetch_result.returncode != 0:
+                self.log(f"Warning: git fetch failed: {fetch_result.stderr.strip()}")
             self.log(f"Creating worktree at {worktree_path}")
             self.subprocess_module.run(
                 ["git", "worktree", "add", "--detach", worktree_path, f"origin/{base_branch}"],
@@ -1017,7 +1024,10 @@ class DynosAutofixBackend:
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
-            evidence_line = int(evidence.get("line", 0) or 0)
+            try:
+                evidence_line = int(evidence.get("line", 0) or 0)
+            except (ValueError, TypeError):
+                evidence_line = 0
             detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
@@ -1129,7 +1139,10 @@ class DynosAutofixBackend:
                 enriched_context += detector_context
             related_findings = finding.get("related_findings", [])
             if isinstance(related_findings, list) and related_findings:
-                related_json = json.dumps(related_findings, indent=2)
+                try:
+                    related_json = json.dumps(related_findings, indent=2, default=str)
+                except (TypeError, ValueError):
+                    related_json = "[]"
                 enriched_context += (
                     "\n## Related Findings In Same File\n"
                     "Address all of these findings in the same patch when they can be fixed together safely.\n\n"
@@ -1385,6 +1398,7 @@ class DynosAutofixBackend:
                 if push_result.returncode != 0:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
                     self._write_task_metadata(
                         root,
@@ -1606,12 +1620,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError) as prune_exc:
+                    self.log(f"Warning: worktree prune failed: {prune_exc}")
 
         return finding
 
