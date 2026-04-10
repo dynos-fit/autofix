@@ -203,7 +203,7 @@ def _daemon_loop(
         config = _load_config(root)
         # Hot-reload interval from config (criterion 19)
         config_interval = config.get("interval")
-        if config_interval:
+        if config_interval is not None:
             try:
                 interval_seconds = parse_interval(str(config_interval))
             except (ValueError, TypeError):
@@ -345,7 +345,10 @@ def daemon_stop(*, root: Path) -> DaemonResult:
             break
         time.sleep(0.2)
 
+    still_alive = is_process_alive(pid)
     _remove_pid_file(root)
+    if still_alive:
+        return DaemonResult(exit_code=1, message=f"Daemon (PID {pid}) did not stop within 10 seconds.")
     return DaemonResult(exit_code=0, message=f"Daemon (PID {pid}) stopped.")
 
 
