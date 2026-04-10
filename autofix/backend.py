@@ -97,15 +97,17 @@ class DynosAutofixBackend:
 
         # Check if a task dir already exists for this finding
         for task_dir in sorted(dynos_dir.glob("task-*")):
-            manifest_path = task_dir / "manifest.json"
-            if manifest_path.is_file():
-                try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if manifest.get("autofix_finding_id") == finding_id:
-                        self._finding_task_map[finding_id] = task_dir
-                        return task_dir
-                except (json.JSONDecodeError, OSError):
-                    pass
+            for meta_name in ("manifest.json", "autofix-run.json"):
+                meta_path = task_dir / meta_name
+                if meta_path.is_file():
+                    try:
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        fid = meta.get("autofix_finding_id") or meta.get("finding_id")
+                        if fid == finding_id:
+                            self._finding_task_map[finding_id] = task_dir
+                            return task_dir
+                    except (json.JSONDecodeError, OSError):
+                        pass
 
         # Generate next sequential ID: task-YYYYMMDD-NNN
         from datetime import datetime, timezone
@@ -728,8 +730,8 @@ class DynosAutofixBackend:
 
     def open_github_issue(self, finding: dict, root: Path, policy: dict | None = None) -> dict:
         policy = policy or self.load_policy(root)
-        finding_id = finding["finding_id"]
-        description = finding["description"]
+        finding_id = finding.get("finding_id", "unknown")
+        description = finding.get("description", "")
         category = str(finding.get("category", "") or "")
         category_stats = policy.get("categories", {}).get(category, {}).get("stats", {})
 
@@ -756,7 +758,7 @@ class DynosAutofixBackend:
             self.log(f"Issue already exists for {finding_id}, skipping")
             return finding
 
-        severity = finding["severity"]
+        severity = finding.get("severity", "low")
         evidence = finding.get("evidence", {})
         file_name = evidence.get("file", "")
         line_num = evidence.get("line", "")
@@ -1233,6 +1235,7 @@ class DynosAutofixBackend:
                 if not has_changes:
                     finding["status"] = "failed"
                     finding["fail_reason"] = "claude_no_changes"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Claude produced no changes for {finding_id}")
                     self._write_task_metadata(
                         root,
@@ -1606,12 +1609,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError):
+                    pass
 
         return finding
 
