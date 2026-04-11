@@ -6,6 +6,7 @@ from autofix.agent_loop import _execute_action, execute_action
 from autofix.benchmarking import benchmark_trace_llm, benchmark_trace_tool
 from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent
 from benchmarks.agent_bench.tasks_to_fixtures import materialize_agent_bench_fixtures
+from benchmarks.agent_bench.run_autofix_benchmark import _ensure_agent_bench_importable
 
 
 def test_optional_benchmark_decorators_are_noops_without_agent_bench() -> None:
@@ -74,3 +75,22 @@ def test_materialize_agent_bench_fixtures_maps_task_format(tmp_path: Path) -> No
     assert fixture_json["test_command"] == [sys.executable, "-m", "pytest", "-q"]
     copied_source = fixtures_root / "bugfix_take_limit" / "bugged" / "src" / "calc.py"
     assert copied_source.exists()
+
+
+def test_agent_bench_import_helper_adds_sibling_checkout_to_sys_path(tmp_path: Path) -> None:
+    package_root = tmp_path / "agent-bench"
+    module_dir = package_root / "agent_bench"
+    module_dir.mkdir(parents=True)
+    (module_dir / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+
+    sentinel = str(package_root.resolve())
+    if sentinel in sys.path:
+        sys.path.remove(sentinel)
+    sys.modules.pop("agent_bench", None)
+    try:
+        _ensure_agent_bench_importable(str(package_root))
+        assert sentinel in sys.path
+    finally:
+        sys.modules.pop("agent_bench", None)
+        if sentinel in sys.path:
+            sys.path.remove(sentinel)

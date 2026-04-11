@@ -24,6 +24,7 @@ class AgentRunResult:
     findings_json: str = ""
 
 _BLOCKED_PATH_PARTS = {".git", ".autofix", ".dynos"}
+_INSPECTION_ACTIONS = {"list_files", "read_file", "search"}
 
 
 def _load_prompt(path: Path) -> str:
@@ -77,6 +78,18 @@ def _is_allowed_command(parts: list[str]) -> bool:
         ["git", "log"],
     )
     return any(parts[: len(prefix)] == prefix for prefix in allowed_prefixes)
+
+
+def _requires_inspection_before_finish(action: dict, *, has_inspected_repo: bool) -> str | None:
+    kind = str(action.get("action", "") or "")
+    if has_inspected_repo:
+        return None
+    if kind in {"finish", "finish_review"}:
+        return (
+            "You must inspect the repository before finishing. "
+            "Use at least one of list_files, read_file, or search first."
+        )
+    return None
 
 
 @benchmark_trace_tool
@@ -217,6 +230,7 @@ def run_agent_loop(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task_prompt},
     ]
+    has_inspected_repo = False
     for step in range(1, max_steps + 1):
         prompt = (
             system_prompt
@@ -239,6 +253,13 @@ def run_agent_loop(
             return AgentRunResult(ok=False, error=f"invalid agent output: {exc}", steps=step)
 
         messages.append({"role": "assistant", "content": result.stdout})
+        inspection_error = _requires_inspection_before_finish(
+            action,
+            has_inspected_repo=has_inspected_repo,
+        )
+        if inspection_error is not None:
+            messages.append({"role": "user", "content": f"Tool result:\n{json.dumps({'error': inspection_error})}"})
+            continue
         if str(action.get("action")) == "finish":
             return AgentRunResult(ok=True, summary=str(action.get("summary", "") or ""), steps=step)
 
@@ -246,6 +267,9 @@ def run_agent_loop(
             tool_result = execute_action(action, root=root, subprocess_module=subprocess_module)
         except Exception as exc:
             tool_result = json.dumps({"error": str(exc)})
+        else:
+            if str(action.get("action", "") or "") in _INSPECTION_ACTIONS:
+                has_inspected_repo = True
         messages.append({"role": "user", "content": f"Tool result:\n{tool_result}"})
     return AgentRunResult(ok=False, error="agent exceeded max steps", steps=max_steps)
 
@@ -265,6 +289,7 @@ def run_review_agent_loop(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task_prompt},
     ]
+    has_inspected_repo = False
     for step in range(1, max_steps + 1):
         prompt = (
             system_prompt
@@ -287,6 +312,13 @@ def run_review_agent_loop(
             return AgentRunResult(ok=False, error=f"invalid review agent output: {exc}", steps=step)
 
         messages.append({"role": "assistant", "content": result.stdout})
+        inspection_error = _requires_inspection_before_finish(
+            action,
+            has_inspected_repo=has_inspected_repo,
+        )
+        if inspection_error is not None:
+            messages.append({"role": "user", "content": f"Tool result:\n{json.dumps({'error': inspection_error})}"})
+            continue
         if str(action.get("action")) == "finish_review":
             findings = action.get("findings", [])
             if not isinstance(findings, list):
@@ -297,5 +329,8 @@ def run_review_agent_loop(
             tool_result = execute_action(action, root=root, subprocess_module=subprocess_module)
         except Exception as exc:
             tool_result = json.dumps({"error": str(exc)})
+        else:
+            if str(action.get("action", "") or "") in _INSPECTION_ACTIONS:
+                has_inspected_repo = True
         messages.append({"role": "user", "content": f"Tool result:\n{tool_result}"})
     return AgentRunResult(ok=False, error="review agent exceeded max steps", steps=max_steps)

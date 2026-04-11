@@ -13,4 +13,7 @@ Rules:
 - `file` must be a real repo-relative path.
 - `line` must point to a real line in that file.
 - Never inspect .git/, .autofix/, or .dynos/ internals.
+- Before returning `finish_review`, inspect the repo with at least one of:
+  `list_files`, `read_file`, or `search`.
+- Before reporting a finding, inspect the target file with `read_file` or `search`.
 - If no issues are found, return {"action":"finish_review","findings":[]}.

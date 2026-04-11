@@ -10,7 +10,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent
 from benchmarks.agent_bench.tasks_to_fixtures import materialize_agent_bench_fixtures
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     from agent_bench.metrics import DEFAULT_PRICING, summarize
     from agent_bench.reporter import write_report
     from agent_bench.runner import FixtureRunner, RunnerConfig
+    from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent
 
     only = [item.strip() for item in args.only.split(",") if item.strip()] or None
     output_dir = _output_dir(args.output_dir)

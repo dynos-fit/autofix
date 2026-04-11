@@ -14,8 +14,11 @@ Allowed actions:
 Rules:
 - Stay within the current repo.
 - Keep changes minimal and scoped to the finding.
-- Prefer read/search before editing.
+- Before returning `finish`, you must inspect the repo with at least one of:
+  `list_files`, `read_file`, or `search`.
+- Before editing, inspect the target file or relevant symbol with `read_file` or `search`.
 - Use run_command only for safe read-only git commands or pytest.
 - Never read or edit .git/, .autofix/, or .dynos/ internals.
 - If enough context is available, edit the file directly instead of asking for unrelated files.
+- If you changed code, prefer running a narrow verification command or `git_diff` before `finish`.
 - When you are done, return finish.
