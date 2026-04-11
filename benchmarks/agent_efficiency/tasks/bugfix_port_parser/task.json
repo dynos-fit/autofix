@@ -1,0 +1,22 @@
+{
+  "id": "bugfix_port_parser",
+  "title": "Raise on invalid port values",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "instruction": "Fix `parse_port` in `src/config.py`. Invalid values should raise `ValueError` instead of silently returning 0. Valid integer strings should still parse correctly.",
+  "repo_dir": "repo",
+  "scope": {
+    "allowed_files": [
+      "src/config.py"
+    ],
+    "forbidden_files": [
+      "tests"
+    ]
+  },
+  "verification": [
+    {
+      "name": "pytest",
+      "command": "{python_executable} -m pytest -q"
+    }
+  ]
+}

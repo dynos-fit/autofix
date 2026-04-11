@@ -1,0 +1,22 @@
+{
+  "id": "bugfix_take_limit",
+  "title": "Fix off-by-one error in take_limit",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "instruction": "The helper `take_limit` in `src/calc.py` returns the wrong number of items. Fix the implementation so it returns exactly `limit` items and keeps existing behavior for edge cases covered by tests.",
+  "repo_dir": "repo",
+  "scope": {
+    "allowed_files": [
+      "src/calc.py"
+    ],
+    "forbidden_files": [
+      "tests"
+    ]
+  },
+  "verification": [
+    {
+      "name": "pytest",
+      "command": "{python_executable} -m pytest -q"
+    }
+  ]
+}

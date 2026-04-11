@@ -1,0 +1,23 @@
+# Benchmark Summary
+
+- Suite: agent-efficiency-starter
+- Adapter: mock-agent
+- Tasks run: 3
+- Tasks solved: 3
+- Success rate: 1.0
+- Invalid fixtures: 0
+- Exact token coverage: 1.0
+- Average total tokens: 200.0
+- Median total tokens: 200.0
+- Max total tokens: 200
+- Token snowball index: 1.0
+- Expensive failure ratio: 0.0
+- Scope discipline: 1.0
+- Mean steps: 1
+- Average wall time (s): 0.019
+- Solved per 1k tokens: 5.0
+- Solved per minute: 3214.2857
+- Resource AUC: 0.5
+- Total cost (USD): 0.0
+- Cost per resolved task (USD): 0.0
+- Tool calls: read_file=3, write_file=3

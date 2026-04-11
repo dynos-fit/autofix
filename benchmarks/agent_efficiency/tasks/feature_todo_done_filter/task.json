@@ -1,0 +1,22 @@
+{
+  "id": "feature_todo_done_filter",
+  "title": "Add done-only filtering to todo title listing",
+  "category": "feature",
+  "difficulty": "medium",
+  "instruction": "Update `src/todo_cli.py` so `list_titles` supports an optional `done_only` flag. When true, it should return only completed task titles. Preserve existing behavior when the flag is omitted.",
+  "repo_dir": "repo",
+  "scope": {
+    "allowed_files": [
+      "src/todo_cli.py"
+    ],
+    "forbidden_files": [
+      "tests"
+    ]
+  },
+  "verification": [
+    {
+      "name": "pytest",
+      "command": "{python_executable} -m pytest -q"
+    }
+  ]
+}
