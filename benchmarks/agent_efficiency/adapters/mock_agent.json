@@ -1,0 +1,5 @@
+{
+  "name": "mock-agent",
+  "model_hint": "mock-agent",
+  "command_template": "{python_executable} {repo_root}/benchmarks/agent_efficiency/adapters/mock_agent.py --task-id {task_id} --task-file {task_file} --workdir {workdir} --prompt-file {prompt_file} --usage-file {usage_file} --trace-file {trace_file}"
+}
