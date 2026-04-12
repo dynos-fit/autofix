@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from autofix.repo import _load_repos, _repos_file
-from autofix.scanner import scan_locked, ScannerRuntime
+from autofix.scanner import run_scan_with_lock
 
 
 @dataclass
@@ -27,9 +27,12 @@ def run_scan(root: Path, **kwargs: object) -> int:
     Tests patch this function to avoid heavy scanner dependencies.
     """
     try:
-        runtime = ScannerRuntime()
+        from autofix.app import runtime_factory
+
         max_findings = int(kwargs.get("max_findings", 0)) if kwargs.get("max_findings") else 0
-        return scan_locked(root, max_findings=max_findings, runtime=runtime)
+        return run_scan_with_lock(root.resolve(), max_findings=max_findings, runtime=runtime_factory(root=root.resolve()))
+    except RuntimeError:
+        return 1
     except Exception:
         return 1
 

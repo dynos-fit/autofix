@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from autofix.agent_loop import run_review_agent_loop
 from autofix.defaults import (
     FILE_SCORE_CHURN_MAX,
     FILE_SCORE_CHURN_WEIGHT,
@@ -29,6 +30,7 @@ from autofix.defaults import (
     GIT_LSFILES_TIMEOUT,
     HIGH_CONFIDENCE_THRESHOLD,
     LLM_INVOCATION_TIMEOUT,
+    LLM_REVIEW_CHUNK_LINES,
     LLM_REVIEW_FILE_TRUNCATION,
     LLM_REVIEW_MAX_FILES,
     LLM_REVIEW_TOTAL_TIMEOUT,
@@ -36,6 +38,7 @@ from autofix.defaults import (
     NPM_AUDIT_TIMEOUT,
     PIP_AUDIT_TIMEOUT,
 )
+from autofix.llm_backend import LLMBackendConfig
 from autofix.crawler import build_crawl_plan, finalize_crawl_state
 from autofix.llm_io import (
     build_review_prompt,
@@ -498,8 +501,16 @@ def detect_llm_review(
     *,
     log,
     on_findings: Callable[[list[dict]], None] | None = None,
+    backend_config: LLMBackendConfig | None = None,
+    review_model: str = "default",
+    llm_timeout: int = LLM_INVOCATION_TIMEOUT,
+    llm_max_steps: int = 12,
+    review_chunk_lines: int = LLM_REVIEW_CHUNK_LINES,
+    review_file_truncation: int = LLM_REVIEW_FILE_TRUNCATION,
+    subprocess_module=subprocess,
 ) -> list[dict]:
     findings: list[dict] = []
+    backend_config = backend_config or LLMBackendConfig()
     coverage = load_scan_coverage(root)
     findings_list = load_findings(root)
     coverage, crawl_plan = build_crawl_plan(root, coverage, findings_list, max_files=LLM_REVIEW_MAX_FILES)
@@ -542,12 +553,18 @@ def detect_llm_review(
     )
     save_scan_coverage(root, coverage)
 
-    if not shutil.which("claude"):
+    if backend_config.backend == "claude_cli" and not shutil.which("claude"):
         log("Skipping LLM review: claude CLI not available")
+        return findings
+    if backend_config.backend == "openai_compatible" and not backend_config.base_url.strip():
+        log("Skipping LLM review: llm_base_url is required for openai_compatible backend")
         return findings
 
     log(f"File scores (top 10): {[(item['path'], round(float(item['score']), 1)) for item in scored_files[:10]]}")
-    log(f"Running Haiku LLM review on {len(review_files)} files: {[str(f.relative_to(root)) for f in review_files]}")
+    log(
+        f"Running {backend_config.backend} LLM review on {len(review_files)} files: "
+        f"{[str(f.relative_to(root)) for f in review_files]}"
+    )
 
     total_filtered: list[dict] = []
     reviewed_chunks_by_file: dict[str, list[str]] = {}
@@ -563,7 +580,12 @@ def detect_llm_review(
             break
         file_state = coverage.get("files", {}).get(rel, {}) if isinstance(coverage.get("files", {}), dict) else {}
         reviewed_chunk_keys = set(file_state.get("reviewed_chunk_keys", [])) if isinstance(file_state, dict) else set()
-        chunks = build_review_chunks_for_file(root, review_file=rel, reviewed_chunk_keys=reviewed_chunk_keys)
+        chunks = build_review_chunks_for_file(
+            root,
+            review_file=rel,
+            reviewed_chunk_keys=reviewed_chunk_keys,
+            chunk_lines=review_chunk_lines,
+        )
         if len(chunks) > 1:
             total_chunks = int(chunks[0].get("total_chunks", len(chunks)) or len(chunks))
             if total_chunks > len(chunks):
@@ -577,61 +599,100 @@ def detect_llm_review(
                     log(f"Stopping LLM review early after {round(elapsed, 1)}s; total review budget {LLM_REVIEW_TOTAL_TIMEOUT}s exhausted")
                     budget_exhausted = True
                 break
-            if len(chunks) > 1:
-                prompt = build_review_prompt_for_chunk(root, review_file=rel, chunk=chunk)
-                log(f"Reviewing chunk {chunk['start_line']}-{chunk['end_line']} of {rel}")
-                reviewed_chunks_by_file.setdefault(rel, []).append(str(chunk.get("chunk_key", "")))
-            else:
-                prompt = build_review_prompt_for_file(
-                    root,
-                    selected_files=scored_files,
-                    review_file=rel,
-                    findings_list=findings_list,
-                )
-            try:
-                result = subprocess.run(
-                    ["claude", "-p", prompt, "--model", "haiku"],
-                    capture_output=True, text=True, timeout=LLM_INVOCATION_TIMEOUT, cwd=root,
-                )
-            except subprocess.TimeoutExpired:
-                log(f"Haiku review timed out after {LLM_INVOCATION_TIMEOUT}s for {rel}")
-                continue
-            except OSError as exc:
-                log(f"Haiku review failed for {rel}: {exc}")
-                continue
-
-            if result.returncode != 0:
-                log(f"Haiku review exited {result.returncode} for {rel}")
-                continue
-
             allowed_files = {rel}
-            issues = extract_json_array(result.stdout)
-            if issues is None:
-                repaired = repair_llm_output(
-                    result.stdout,
-                    allowed_files=[rel],
-                    subprocess_module=subprocess,
-                    cwd=root,
+            if backend_config.backend == "openai_compatible":
+                if len(chunks) > 1:
+                    log(f"Reviewing chunk {chunk['start_line']}-{chunk['end_line']} of {rel}")
+                    reviewed_chunks_by_file.setdefault(rel, []).append(str(chunk.get("chunk_key", "")))
+                    task_prompt = (
+                        "Review the repository for provable bugs.\n"
+                        f"Focus on file `{rel}` and start with lines {chunk['start_line']}-{chunk['end_line']}.\n"
+                        "Inspect the target file and nearby tests before returning findings.\n"
+                        "Only return findings for the target file.\n"
+                    )
+                else:
+                    task_prompt = (
+                        "Review the repository for provable bugs.\n"
+                        f"Focus on file `{rel}`.\n"
+                        "Inspect the target file and nearby tests before returning findings.\n"
+                        "Only return findings for the target file.\n"
+                    )
+                agent_result = run_review_agent_loop(
+                    root=root,
+                    task_prompt=task_prompt,
+                    model=review_model,
+                    backend_config=backend_config,
+                    max_steps=llm_max_steps,
+                    subprocess_module=subprocess_module,
+                    timeout=llm_timeout,
                 )
-                if repaired is None:
-                    log(f"Could not parse or repair Haiku response as JSON for {rel}")
+                if not agent_result.ok:
+                    log(f"Review agent failed for {rel}: {agent_result.error}")
                     continue
-                issues = extract_json_array(repaired)
-                if issues is None:
-                    regenerated = regenerate_llm_output(
-                        review_prompt=prompt,
-                        bad_output=repaired,
-                        allowed_files=[rel],
-                        subprocess_module=subprocess,
+                try:
+                    issues = json.loads(agent_result.findings_json or "[]")
+                except json.JSONDecodeError:
+                    log(f"Review agent returned invalid findings JSON for {rel}")
+                    continue
+            else:
+                if len(chunks) > 1:
+                    prompt = build_review_prompt_for_chunk(root, review_file=rel, chunk=chunk)
+                    log(f"Reviewing chunk {chunk['start_line']}-{chunk['end_line']} of {rel}")
+                    reviewed_chunks_by_file.setdefault(rel, []).append(str(chunk.get("chunk_key", "")))
+                else:
+                    prompt = build_review_prompt_for_file(
+                        root,
+                        selected_files=scored_files,
+                        review_file=rel,
+                        findings_list=findings_list,
+                        file_truncation=review_file_truncation,
+                    )
+                try:
+                    result = subprocess_module.run(
+                        ["claude", "-p", prompt, "--model", review_model],
+                        capture_output=True,
+                        text=True,
+                        timeout=llm_timeout,
                         cwd=root,
                     )
-                    if regenerated is None:
-                        log(f"Repair pass failed and regenerate pass did not return output for {rel}")
+                except subprocess_module.TimeoutExpired:
+                    log(f"Review timed out after {llm_timeout}s for {rel}")
+                    continue
+                except OSError as exc:
+                    log(f"Review failed for {rel}: {exc}")
+                    continue
+
+                if result.returncode != 0:
+                    log(f"Review exited {result.returncode} for {rel}")
+                    continue
+
+                issues = extract_json_array(result.stdout)
+                if issues is None:
+                    repaired = repair_llm_output(
+                        result.stdout,
+                        allowed_files=[rel],
+                        subprocess_module=subprocess_module,
+                        cwd=root,
+                    )
+                    if repaired is None:
+                        log(f"Could not parse or repair review output as JSON for {rel}")
                         continue
-                    issues = extract_json_array(regenerated)
+                    issues = extract_json_array(repaired)
                     if issues is None:
-                        log(f"Regenerate pass did not return a valid JSON array for {rel}")
-                        continue
+                        regenerated = regenerate_llm_output(
+                            review_prompt=prompt,
+                            bad_output=repaired,
+                            allowed_files=[rel],
+                            subprocess_module=subprocess_module,
+                            cwd=root,
+                        )
+                        if regenerated is None:
+                            log(f"Repair pass failed and regenerate pass did not return output for {rel}")
+                            continue
+                        issues = extract_json_array(regenerated)
+                        if issues is None:
+                            log(f"Regenerate pass did not return a valid JSON array for {rel}")
+                            continue
 
             validated = validate_llm_issues(issues, allowed_files=allowed_files)
             filtered: list[dict] = []
@@ -669,7 +730,12 @@ def detect_llm_review(
                 severity=severity,
                 category="llm-review",
                 description=f"[{cat_detail}] {desc}",
-                evidence={"file": file_name, "line": line_num, "category_detail": cat_detail, "reviewer": "haiku"},
+                evidence={
+                    "file": file_name,
+                    "line": line_num,
+                    "category_detail": cat_detail,
+                    "reviewer": backend_config.backend,
+                },
             )
             finding["confidence_score"] = conf_score
             file_findings.append(finding)
@@ -679,7 +745,7 @@ def detect_llm_review(
         if file_findings and on_findings is not None:
             on_findings(file_findings)
 
-    log(f"Haiku review found {len(findings)} issues (after confidence filtering)")
+    log(f"{backend_config.backend} review found {len(findings)} issues (after confidence filtering)")
     coverage = finalize_crawl_state(
         coverage,
         [str(path.relative_to(root)) for path in review_files],

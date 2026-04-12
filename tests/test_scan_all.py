@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from autofix.scan_all import cmd_scan_all
+from autofix.scan_all import cmd_scan_all, run_scan
 
 
 def _make_git_repo(path: Path) -> Path:
@@ -74,6 +74,20 @@ class TestScanAll:
             cmd_scan_all(home_dir=home)
 
         assert scan_order == [str(r) for r in repos]
+
+    def test_run_scan_uses_runtime_factory_and_repo_lock(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path / "repo")
+        runtime = object()
+
+        with (
+            patch("autofix.app.runtime_factory", return_value=runtime) as mock_runtime_factory,
+            patch("autofix.scan_all.run_scan_with_lock", return_value=0) as mock_run_scan_with_lock,
+        ):
+            exit_code = run_scan(repo, max_findings=7)
+
+        assert exit_code == 0
+        mock_runtime_factory.assert_called_once_with(root=repo.resolve())
+        mock_run_scan_with_lock.assert_called_once_with(repo.resolve(), max_findings=7, runtime=runtime)
 
 
 # ---------------------------------------------------------------------------

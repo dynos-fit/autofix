@@ -24,10 +24,20 @@ SUPPORTED_KEYS: set[str] = {
     "max_findings",
     "scan_timeout",
     "llm_timeout",
+    "llm_backend",
+    "llm_base_url",
+    "llm_api_key",
     "min_confidence",
     "max_open_prs",
     "max_prs_per_day",
     "review_model",
+    "fix_model",
+    "llm_max_steps",
+    "review_chunk_lines",
+    "review_file_truncation",
+    "fix_surrounding_lines",
+    "fix_neighbor_files",
+    "fix_neighbor_lines",
     "dry_run",
 }
 
@@ -38,25 +48,63 @@ _DEFAULTS_MAP: Dict[str, str] = {
     "max_findings": "MAX_FINDINGS_ENTRIES",
     "scan_timeout": "SCAN_TIMEOUT_SECONDS",
     "llm_timeout": "LLM_INVOCATION_TIMEOUT",
+    "llm_backend": None,
+    "llm_base_url": None,
+    "llm_api_key": None,
     "min_confidence": "MIN_FINDING_CONFIDENCE",
     "max_open_prs": "MAX_OPEN_PRS",
     "max_prs_per_day": "MAX_PRS_PER_DAY",
     "review_model": None,
+    "fix_model": None,
+    "llm_max_steps": None,
+    "review_chunk_lines": "LLM_REVIEW_CHUNK_LINES",
+    "review_file_truncation": "LLM_REVIEW_FILE_TRUNCATION",
+    "fix_surrounding_lines": None,
+    "fix_neighbor_files": None,
+    "fix_neighbor_lines": None,
     "dry_run": None,
 }
 
 _INTERVAL_DEFAULT = "30m"
+_LLM_BACKEND_DEFAULT = "claude_cli"
+_LLM_BASE_URL_DEFAULT = ""
+_LLM_API_KEY_DEFAULT = ""
 _REVIEW_MODEL_DEFAULT = "default"
+_FIX_MODEL_DEFAULT = "default"
+_LLM_MAX_STEPS_DEFAULT = 12
+_FIX_SURROUNDING_LINES_DEFAULT = 20
+_FIX_NEIGHBOR_FILES_DEFAULT = 5
+_FIX_NEIGHBOR_LINES_DEFAULT = 100
 _DRY_RUN_DEFAULT = False
 
 # Keys whose values are integers
-_INT_KEYS = {"max_files", "max_findings", "scan_timeout", "llm_timeout", "max_open_prs", "max_prs_per_day"}
+_INT_KEYS = {
+    "max_files",
+    "max_findings",
+    "scan_timeout",
+    "llm_timeout",
+    "max_open_prs",
+    "max_prs_per_day",
+    "llm_max_steps",
+    "review_chunk_lines",
+    "review_file_truncation",
+    "fix_surrounding_lines",
+    "fix_neighbor_files",
+    "fix_neighbor_lines",
+}
 # Keys whose values are floats
 _FLOAT_KEYS = {"min_confidence"}
 # Keys whose values are booleans
 _BOOL_KEYS = {"dry_run"}
 # Keys whose values stay as strings
-_STR_KEYS = {"interval", "review_model"}
+_STR_KEYS = {
+    "interval",
+    "llm_backend",
+    "llm_base_url",
+    "llm_api_key",
+    "review_model",
+    "fix_model",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +145,8 @@ def parse_interval(value: str) -> int:
     amount = int(match.group(1))
     suffix = match.group(2)
 
-    if amount < 0:
-        raise ValueError(f"Interval must be non-negative, got {amount}")
+    if amount <= 0:
+        raise ValueError(f"Interval must be positive, got {amount}")
 
     multiplier = 60 if suffix == "m" else 3600
     return amount * multiplier
@@ -116,7 +164,15 @@ def _build_defaults() -> Dict[str, Any]:
             result[key] = getattr(defaults, attr)
     # Hardcoded fallbacks for keys without a defaults.py mapping
     result.setdefault("interval", _INTERVAL_DEFAULT)
+    result.setdefault("llm_backend", _LLM_BACKEND_DEFAULT)
+    result.setdefault("llm_base_url", _LLM_BASE_URL_DEFAULT)
+    result.setdefault("llm_api_key", _LLM_API_KEY_DEFAULT)
     result.setdefault("review_model", _REVIEW_MODEL_DEFAULT)
+    result.setdefault("fix_model", _FIX_MODEL_DEFAULT)
+    result.setdefault("llm_max_steps", _LLM_MAX_STEPS_DEFAULT)
+    result.setdefault("fix_surrounding_lines", _FIX_SURROUNDING_LINES_DEFAULT)
+    result.setdefault("fix_neighbor_files", _FIX_NEIGHBOR_FILES_DEFAULT)
+    result.setdefault("fix_neighbor_lines", _FIX_NEIGHBOR_LINES_DEFAULT)
     result.setdefault("dry_run", _DRY_RUN_DEFAULT)
     return result
 
@@ -178,7 +234,10 @@ def config_show(root: Path, as_json: bool = False) -> ConfigResult:
 def _parse_value(key: str, raw: str) -> Any:
     """Coerce a raw string value to the appropriate Python type for *key*."""
     if key in _INT_KEYS:
-        return int(raw)
+        value = int(raw)
+        if value < 0:
+            raise ValueError(f"Expected non-negative integer, got {raw}")
+        return value
     if key in _FLOAT_KEYS:
         return float(raw)
     if key in _BOOL_KEYS:
@@ -187,9 +246,11 @@ def _parse_value(key: str, raw: str) -> Any:
         if raw.lower() in ("false", "0", "no"):
             return False
         raise ValueError(f"Invalid boolean value: {raw}")
-    # String keys (interval, review_model) -- validate interval format
+    # String keys -- validate interval format and backend values
     if key == "interval":
         parse_interval(raw)  # validates; raises on bad input
+    if key == "llm_backend" and raw not in {"claude_cli", "openai_compatible"}:
+        raise ValueError("llm_backend must be 'claude_cli' or 'openai_compatible'")
     return raw
 
 

@@ -28,35 +28,46 @@ def _read_repos_json(home: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Criterion 5: prerequisite checks (git, gh, claude)
+# Criterion 5: prerequisite checks (git, gh)
 # ---------------------------------------------------------------------------
 
 class TestPrerequisiteChecks:
-    """Criterion 5: autofix init checks for git, gh, and claude on PATH."""
+    """Criterion 5: autofix init checks for git and gh on PATH."""
 
     def test_missing_all_tools_reports_all_and_exits_1(self, tmp_path: Path) -> None:
-        """When all three tools are missing, error names all of them."""
+        """When required tools are missing, error names them."""
         repo = _make_git_repo(tmp_path / "repo")
         with patch("autofix.init.shutil.which", return_value=None):
             result = cmd_init(root=repo, home_dir=tmp_path / "home")
         assert result.exit_code == 1
         assert "git" in result.message
         assert "gh" in result.message
-        assert "claude" in result.message
 
     def test_missing_one_tool_reports_it_and_exits_1(self, tmp_path: Path) -> None:
-        """When only 'claude' is missing, error names it specifically."""
+        """When only 'gh' is missing, error names it specifically."""
         repo = _make_git_repo(tmp_path / "repo")
 
         def selective_which(name: str) -> str | None:
-            return None if name == "claude" else f"/usr/bin/{name}"
+            return None if name == "gh" else f"/usr/bin/{name}"
 
         with patch("autofix.init.shutil.which", side_effect=selective_which):
             result = cmd_init(root=repo, home_dir=tmp_path / "home")
         assert result.exit_code == 1
-        assert "claude" in result.message
+        assert "gh" in result.message
         # Tools that ARE present should not be listed as missing.
         assert "git" not in result.message or "missing" not in result.message.lower()
+
+    def test_claude_is_not_required(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path / "repo")
+
+        def selective_which(name: str) -> str | None:
+            if name == "claude":
+                return None
+            return f"/usr/bin/{name}"
+
+        with patch("autofix.init.shutil.which", side_effect=selective_which):
+            result = cmd_init(root=repo, home_dir=tmp_path / "home")
+        assert result.exit_code == 0
 
     def test_no_files_created_when_prerequisites_missing(self, tmp_path: Path) -> None:
         """No .autofix/ directory or repos.json created when tools are missing."""

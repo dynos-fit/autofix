@@ -11,7 +11,7 @@ from autofix.repo import _load_repos, _save_repos
 from autofix.state import default_autofix_policy
 
 
-REQUIRED_TOOLS = ("git", "gh", "claude")
+REQUIRED_TOOLS = ("git", "gh")
 
 
 @dataclass

@@ -165,18 +165,18 @@ _default_scan_logger = logging.getLogger("autofix.daemon.scan")
 def _default_scan_fn(root: Path, config: dict[str, Any]) -> None:
     """Default scan function that invokes the real scan pipeline.
 
-    Calls scan_locked directly instead of cmd_scan to avoid the
-    fcntl.flock in cmd_scan — that lock can leak to child processes
-    (e.g. claude subprocess) and block subsequent daemon scan cycles.
-    The daemon already ensures only one instance runs via PID file.
+    Uses the same repo lock as foreground scans so manual scans and daemon
+    scans cannot overlap for the same repository.
     """
     try:
         from autofix.app import runtime_factory
-        from autofix.scanner import scan_locked
+        from autofix.scanner import run_scan_with_lock
 
         resolved = root.resolve()
         max_findings = int(config.get("max_findings", 100))
-        scan_locked(resolved, max_findings, runtime_factory(root=resolved))
+        run_scan_with_lock(resolved, max_findings, runtime_factory(root=resolved))
+    except RuntimeError:
+        _default_scan_logger.info("Skipping scan cycle: scan already running")
     except Exception as exc:
         _default_scan_logger.exception("Scan cycle failed: %s", exc)
 

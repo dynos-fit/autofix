@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import shutil
@@ -11,11 +10,14 @@ import subprocess
 from pathlib import Path
 
 from autofix.cli import build_parser, standalone_scan, standalone_sync_outcomes
-from autofix.config import config_show, config_set
+from autofix.config import config_show, config_set, resolve_config
 from autofix.daemon import daemon_start, daemon_stop, daemon_status
 from autofix.defaults import (
     BATCH_MIN_GROUP_SIZE,
     GH_API_TIMEOUT,
+    LLM_INVOCATION_TIMEOUT,
+    LLM_REVIEW_CHUNK_LINES,
+    LLM_REVIEW_FILE_TRUNCATION,
     MAX_ATTEMPTS,
     MIN_CONF_AUTOFIX,
     PR_FEEDBACK_REWARD_CLOSED,
@@ -23,6 +25,7 @@ from autofix.defaults import (
     QLEARN_EPSILON,
     SCAN_TIMEOUT_SECONDS,
 )
+from autofix.llm_backend import LLMBackendConfig
 from autofix.detectors import (
     detect_architectural_drift,
     detect_dead_code,
@@ -49,7 +52,7 @@ from autofix.runtime.dynos import (
 from autofix.init import cmd_init
 from autofix.repo import repo_add, repo_remove, repo_list
 from autofix.scan_all import cmd_scan_all
-from autofix.scanner import ScannerRuntime, sync_outcomes
+from autofix.scanner import ScannerRuntime, run_scan_with_lock, sync_outcomes
 from autofix.state import (
     build_autofix_benchmarks,
     default_category_policy,
@@ -73,47 +76,14 @@ def _log(msg: str) -> None:
     print(f"[autofix] {msg}", flush=True, file=__import__("sys").stderr)
 
 
-def _cleanup_merged_branches(root: Path) -> None:
-    if not shutil.which("gh") or not shutil.which("git"):
-        return
-    try:
-        result = subprocess.run(
-            ["git", "branch", "-r"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=str(root),
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return
-    if result.returncode != 0:
-        return
-
-    remote_branches = [
-        line.strip()
-        for line in result.stdout.splitlines()
-        if "dynos/auto-fix-" in line.strip()
-    ]
-    for remote_ref in remote_branches:
-        branch_name = remote_ref.replace("origin/", "", 1)
-        try:
-            pr_result = subprocess.run(
-                ["gh", "pr", "list", "--search", f"{branch_name} in:head", "--state", "merged", "--json", "number"],
-                capture_output=True,
-                text=True,
-                timeout=GH_API_TIMEOUT,
-                cwd=str(root),
-            )
-            if pr_result.returncode != 0:
-                continue
-        except (subprocess.TimeoutExpired, OSError):
-            continue
-
-
 def runtime_factory(root: Path | None = None) -> ScannerRuntime:
-    from autofix.config import resolve_config
-
     cfg = resolve_config(root) if root else {}
+    backend_config = LLMBackendConfig(
+        backend=str(cfg.get("llm_backend", "claude_cli") or "claude_cli"),
+        base_url=str(cfg.get("llm_base_url", "") or ""),
+        api_key=str(cfg.get("llm_api_key", "") or ""),
+    )
+    review_model = str(cfg.get("review_model", "default") or "default")
     backend = create_dynos_backend(
         load_policy=load_autofix_policy,
         log=_log,
@@ -122,6 +92,15 @@ def runtime_factory(root: Path | None = None) -> ScannerRuntime:
         build_import_graph_fn=build_import_graph,
         get_neighbor_file_contents_fn=get_neighbor_file_contents,
         find_matching_template_fn=find_matching_template,
+        llm_backend_config=backend_config,
+        review_model=review_model,
+        fix_model=str(cfg.get("fix_model", review_model) or review_model),
+        llm_timeout=int(cfg.get("llm_timeout", LLM_INVOCATION_TIMEOUT)),
+        llm_max_steps=int(cfg.get("llm_max_steps", 12)),
+        review_file_truncation=int(cfg.get("review_file_truncation", LLM_REVIEW_FILE_TRUNCATION)),
+        fix_surrounding_lines=int(cfg.get("fix_surrounding_lines", 20)),
+        fix_neighbor_files=int(cfg.get("fix_neighbor_files", 5)),
+        fix_neighbor_lines=int(cfg.get("fix_neighbor_lines", 100)),
     )
     return ScannerRuntime(
         log=_log,
@@ -151,10 +130,19 @@ def runtime_factory(root: Path | None = None) -> ScannerRuntime:
         detect_dependency_vulns=lambda root: detect_dependency_vulns(root, log=_log),
         detect_dead_code=detect_dead_code,
         detect_architectural_drift=lambda root: detect_architectural_drift(root, log=_log),
-        detect_llm_review=lambda root, **kwargs: detect_llm_review(root, log=_log, **kwargs),
+        detect_llm_review=lambda root, **kwargs: detect_llm_review(
+            root,
+            log=_log,
+            backend_config=backend_config,
+            review_model=review_model,
+            llm_timeout=int(cfg.get("llm_timeout", LLM_INVOCATION_TIMEOUT)),
+            llm_max_steps=int(cfg.get("llm_max_steps", 12)),
+            review_chunk_lines=int(cfg.get("review_chunk_lines", LLM_REVIEW_CHUNK_LINES)),
+            review_file_truncation=int(cfg.get("review_file_truncation", LLM_REVIEW_FILE_TRUNCATION)),
+            **kwargs,
+        ),
         autofix_finding=backend.autofix_finding,
         open_github_issue=backend.open_github_issue,
-        cleanup_merged_branches=_cleanup_merged_branches,
         encode_autofix_state=encode_autofix_state,
         load_autofix_q_table=load_autofix_q_table,
         save_autofix_q_table=save_autofix_q_table,
@@ -188,17 +176,10 @@ def _classify_fixability(finding: dict) -> str:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    if not args.dry_run and not shutil.which("claude"):
+    cfg = resolve_config(root)
+    llm_backend = str(cfg.get("llm_backend", "claude_cli") or "claude_cli")
+    if llm_backend == "claude_cli" and not args.dry_run and not shutil.which("claude"):
         print(json.dumps({"ok": False, "error": "claude CLI not found"}))
-        return 1
-    lock_path = root / ".autofix" / "scan.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = open(lock_path, "w")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print(json.dumps({"error": "scan already running"}))
-        lock_fd.close()
         return 1
     try:
         scan_id = new_scan_id()
@@ -218,7 +199,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         )
         if args.dry_run:
             os.environ["AUTOFIX_DRY_RUN"] = "1"
-        result = standalone_scan(args, runtime_factory)
+        result = run_scan_with_lock(root, int(args.max_findings), runtime_factory(root=root))
         write_scan_artifact(
             root,
             "manifest.json",
@@ -234,12 +215,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
             },
         )
         return result
+    except RuntimeError:
+        print(json.dumps({"error": "scan already running"}))
+        return 1
     finally:
         if args.dry_run:
             os.environ.pop("AUTOFIX_DRY_RUN", None)
         os.environ.pop("AUTOFIX_SCAN_ID", None)
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
 
 
 def cmd_sync_outcomes(args: argparse.Namespace) -> int:

@@ -58,10 +58,8 @@ class TestParseInterval:
             parse_interval("")
 
     def test_zero_minutes(self) -> None:
-        """Zero interval should either raise or return 0 -- either is acceptable."""
-        # Implementation may choose to reject 0 as invalid
-        result = parse_interval("0m")
-        assert result == 0
+        with pytest.raises(ValueError):
+            parse_interval("0m")
 
     def test_negative_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -132,6 +130,20 @@ class TestConfigSet:
         config = json.loads((repo / ".autofix" / "config.json").read_text())
         assert config["min_confidence"] == 0.8
 
+    def test_set_llm_backend_key(self, tmp_path: Path) -> None:
+        repo = _setup_repo(tmp_path / "repo")
+        result = config_set(root=repo, key="llm_backend", value="openai_compatible")
+        assert result.exit_code == 0
+        config = json.loads((repo / ".autofix" / "config.json").read_text())
+        assert config["llm_backend"] == "openai_compatible"
+
+    def test_set_llm_max_steps_key(self, tmp_path: Path) -> None:
+        repo = _setup_repo(tmp_path / "repo")
+        result = config_set(root=repo, key="llm_max_steps", value="12")
+        assert result.exit_code == 0
+        config = json.loads((repo / ".autofix" / "config.json").read_text())
+        assert config["llm_max_steps"] == 12
+
     def test_set_invalid_key_fails(self, tmp_path: Path) -> None:
         repo = _setup_repo(tmp_path / "repo")
         result = config_set(root=repo, key="nonexistent_key", value="42")
@@ -187,6 +199,25 @@ class TestResolveConfig:
         # Keys not in config.json should come from defaults
         assert "scan_timeout" in config
 
+    def test_backend_overrides_are_preserved(self, tmp_path: Path) -> None:
+        repo = _setup_repo(tmp_path / "repo")
+        config_file = repo / ".autofix" / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "llm_backend": "openai_compatible",
+                    "llm_base_url": "http://127.0.0.1:11434/v1",
+                    "fix_model": "qwen2.5-coder",
+                    "llm_max_steps": 9,
+                }
+            )
+        )
+        config = resolve_config(root=repo)
+        assert config["llm_backend"] == "openai_compatible"
+        assert config["llm_base_url"] == "http://127.0.0.1:11434/v1"
+        assert config["fix_model"] == "qwen2.5-coder"
+        assert config["llm_max_steps"] == 9
+
 
 # ---------------------------------------------------------------------------
 # Supported keys validation
@@ -202,10 +233,20 @@ class TestSupportedKeys:
             "max_findings",
             "scan_timeout",
             "llm_timeout",
+            "llm_backend",
+            "llm_base_url",
+            "llm_api_key",
             "min_confidence",
             "max_open_prs",
             "max_prs_per_day",
             "review_model",
+            "fix_model",
+            "llm_max_steps",
+            "review_chunk_lines",
+            "review_file_truncation",
+            "fix_surrounding_lines",
+            "fix_neighbor_files",
+            "fix_neighbor_lines",
             "dry_run",
         }
         assert expected == set(SUPPORTED_KEYS)

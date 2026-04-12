@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +75,6 @@ class ScannerRuntime:
     detect_llm_review: Callable[..., list[dict]]
     autofix_finding: Callable[[dict, Path, dict | None], dict]
     open_github_issue: Callable[[dict, Path, dict | None], dict]
-    cleanup_merged_branches: Callable[[Path], None]
     encode_autofix_state: Callable[[str, str, str, str], str]
     load_autofix_q_table: Callable[[Path], dict]
     save_autofix_q_table: Callable[[Path, dict], None]
@@ -88,6 +89,31 @@ class ScannerRuntime:
     qlearn_epsilon: float
     pr_feedback_reward_merged: float
     pr_feedback_reward_closed: float
+
+
+@contextmanager
+def scan_lock(root: Path):
+    lock_path = root / ".autofix" / "scan.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            lock_fd.close()
+            raise RuntimeError("scan already running") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fd.close()
+
+
+def run_scan_with_lock(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
+    with scan_lock(root):
+        return scan_locked(root, max_findings, runtime)
 
 
 def sync_outcomes(
@@ -527,7 +553,6 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
 
     runtime.log(f"Starting proactive scan on {root}")
     policy = runtime.load_policy(root)
-    runtime.cleanup_merged_branches(root)
 
     existing_findings = runtime.load_findings(root)
     if policy.get("pr_feedback_loop", True):
