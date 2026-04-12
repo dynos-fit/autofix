@@ -218,7 +218,10 @@ class DynosAutofixBackend:
                 dest = dest_dir / child.name
                 if child.is_dir():
                     if dest.exists():
-                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                        if dest.is_dir():
+                            self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                        else:
+                            dest.unlink()
                     self.shutil_module.copytree(str(child), str(dest))
                 else:
                     self.shutil_module.copy2(str(child), str(dest))
@@ -231,7 +234,10 @@ class DynosAutofixBackend:
             dest = target_task_dir / child.name
             if child.is_dir():
                 if dest.exists():
-                    self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                    if dest.is_dir():
+                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
+                    else:
+                        dest.unlink()
                 self.shutil_module.copytree(str(child), str(dest))
             else:
                 self.shutil_module.copy2(str(child), str(dest))
@@ -517,6 +523,8 @@ class DynosAutofixBackend:
                 timeout=GIT_DELETE_TIMEOUT,
                 cwd=worktree_path,
             )
+            if diff_result.returncode != 0:
+                return False, f"git diff failed: {diff_result.stderr.strip()}", report
             changed_files = [f.strip() for f in diff_result.stdout.splitlines() if f.strip()]
         except (self.subprocess_module.TimeoutExpired, OSError):
             return False, "could not determine changed files", report
@@ -854,7 +862,7 @@ class DynosAutofixBackend:
             if reviewer:
                 issue_body += f"**Detected by:** {reviewer}\n"
             issue_body += "\n"
-            if "attempt" in str(finding.get("attempt_count", 0)) or finding.get("attempt_count", 0) > 1:
+            if finding.get("attempt_count", 0) > 1:
                 issue_body += (
                     "### Why this is an issue (not a PR)\n\n"
                     f"The autofix scanner attempted to fix this automatically ({finding.get('attempt_count', 0)} attempts) "
@@ -1178,7 +1186,7 @@ class DynosAutofixBackend:
                 enriched_context += detector_context
             related_findings = finding.get("related_findings", [])
             if isinstance(related_findings, list) and related_findings:
-                related_json = json.dumps(related_findings, indent=2)
+                related_json = json.dumps(related_findings, indent=2, default=str)
                 enriched_context += (
                     "\n## Related Findings In Same File\n"
                     "Address all of these findings in the same patch when they can be fixed together safely.\n\n"
@@ -1447,6 +1455,7 @@ class DynosAutofixBackend:
                 if push_result.returncode != 0:
                     finding["status"] = "failed"
                     finding["fail_reason"] = f"git_push_failed: {push_result.stderr.strip()}"
+                    finding["processed_at"] = now_iso()
                     self.log(f"Push failed for {finding_id}: {push_result.stderr.strip()}")
                     self._write_task_metadata(
                         root,
@@ -1656,13 +1665,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: retrospective copy failed: {exc}")
 
             try:
-                self.subprocess_module.run(
+                wt_result = self.subprocess_module.run(
                     ["git", "worktree", "remove", "--force", worktree_path],
                     capture_output=True,
                     text=True,
                     timeout=GIT_BRANCH_TIMEOUT,
                     cwd=str(root),
                 )
+                if wt_result.returncode != 0:
+                    raise OSError(f"git worktree remove failed: {wt_result.stderr.strip()}")
                 self.log(f"Cleaned up worktree {worktree_path}")
             except (self.subprocess_module.TimeoutExpired, OSError) as exc:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
