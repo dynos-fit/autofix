@@ -92,16 +92,36 @@ The agent system prompts live in [`autofix/llm_io/prompts/`](/Users/hassam/Docum
 
 ## Benchmarking
 
-The agent benchmark harness lives under [`benchmarks/agent_efficiency/`](/Users/hassam/Documents/autofix-standalone/benchmarks/agent_efficiency).
+The benchmark integration lives under [`benchmarks/agent_bench/`](/Users/hassam/Documents/autofix-standalone/benchmarks/agent_bench).
 
-It can benchmark:
+It benchmarks the real `autofix` review and fix loops through source-level `agent-bench` instrumentation instead of runtime monkey patching.
 
-- the real `autofix` review and fix loops through a zero-touch adapter
-- external agent loops through decorators or runtime monkeypatching
+Example smoke run with the local `agent-bench` checkout and `claude_cli`:
 
-See [`benchmarks/agent_efficiency/README.md`](/Users/hassam/Documents/autofix-standalone/benchmarks/agent_efficiency/README.md) for setup, metrics, and task format details.
+```bash
+conda run -n autofix python -m benchmarks.agent_bench.run_autofix_benchmark \
+  --agent-bench-root ../agent-bench \
+  --backend claude_cli \
+  --model default \
+  --only bugfix_take_limit \
+  --output-dir benchmarks/agent_bench/out/claude-tiktoken-smoke
+```
 
-There is also a source-instrumented `agent-bench` integration under [`benchmarks/agent_bench/`](/Users/hassam/Documents/autofix-standalone/benchmarks/agent_bench), which decorates the real `autofix` seams instead of monkey patching them at runtime.
+Example full local suite run:
+
+```bash
+conda run -n autofix python -m benchmarks.agent_bench.run_autofix_benchmark \
+  --agent-bench-root ../agent-bench \
+  --backend claude_cli \
+  --model default \
+  --output-dir benchmarks/agent_bench/out/claude-tiktoken-full
+```
+
+To inspect the results, open:
+
+- `benchmarks/agent_bench/out/.../summary.md`
+- `benchmarks/agent_bench/out/.../run.json`
+
 ## Operations
 
 See [`docs/AUTOFIX_STANDALONE.md`](/home/hassam/autofix-standalone/docs/AUTOFIX_STANDALONE.md).

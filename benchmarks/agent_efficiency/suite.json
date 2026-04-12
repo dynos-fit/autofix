@@ -1,9 +1,0 @@
-{
-  "name": "agent-efficiency-starter",
-  "version": 1,
-  "tasks": [
-    "tasks/bugfix_take_limit/task.json",
-    "tasks/feature_todo_done_filter/task.json",
-    "tasks/bugfix_port_parser/task.json"
-  ]
-}

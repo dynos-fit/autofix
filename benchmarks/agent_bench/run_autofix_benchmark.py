@@ -13,7 +13,7 @@ from pathlib import Path
 from benchmarks.agent_bench.tasks_to_fixtures import materialize_agent_bench_fixtures
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TASKS_ROOT = REPO_ROOT / "benchmarks" / "agent_efficiency" / "tasks"
+DEFAULT_TASKS_ROOT = REPO_ROOT / "benchmarks" / "agent_bench" / "tasks"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "benchmarks" / "agent_bench" / "out"
 DEFAULT_SIBLING_AGENT_BENCH = REPO_ROOT.parent / "agent-bench"
 

@@ -1,5 +1,0 @@
-{
-  "name": "autofix-standalone",
-  "model_hint": "default",
-  "command_template": "{python_executable} {repo_root}/benchmarks/agent_efficiency/adapters/autofix_standalone.py --task-id {task_id} --task-file {task_file} --workdir {workdir} --usage-file {usage_file} --trace-file {trace_file}"
-}

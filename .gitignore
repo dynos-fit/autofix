@@ -5,3 +5,4 @@ __pycache__/
 .dynos/
 latest-llm-prompt.txt
 latest-llm-prompts/
+benchmarks/agent_bench/out/
