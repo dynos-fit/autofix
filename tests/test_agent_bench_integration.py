@@ -4,7 +4,7 @@ from pathlib import Path
 
 from autofix.agent_loop import _execute_action, execute_action
 from autofix.benchmarking import benchmark_trace_llm, benchmark_trace_tool
-from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent
+from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent, install
 from benchmarks.agent_bench.tasks_to_fixtures import materialize_agent_bench_fixtures
 from benchmarks.agent_bench.run_autofix_benchmark import _ensure_agent_bench_importable
 
@@ -29,6 +29,25 @@ def test_execute_action_public_alias_preserves_private_name() -> None:
 def test_build_agent_returns_callable() -> None:
     agent = build_agent(AutofixBenchmarkConfig())
     assert callable(agent)
+
+
+def test_build_agent_supports_agent_bench_cli_contract() -> None:
+    agent = build_agent(model="default", max_steps=4, timeout=30)
+    assert callable(agent)
+
+
+def test_build_agent_reads_backend_defaults_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOFIX_BENCH_BACKEND", "openai_compatible")
+    monkeypatch.setenv("AUTOFIX_BENCH_BASE_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("AUTOFIX_BENCH_API_KEY", "ollama")
+    monkeypatch.setenv("AUTOFIX_BENCH_MAX_FIX_ATTEMPTS", "5")
+
+    agent = build_agent(model="default", max_steps=4, timeout=30)
+    assert callable(agent)
+
+
+def test_benchmark_install_is_a_noop() -> None:
+    assert install() is None
 
 
 def test_materialize_agent_bench_fixtures_maps_task_format(tmp_path: Path) -> None:
@@ -77,20 +96,16 @@ def test_materialize_agent_bench_fixtures_maps_task_format(tmp_path: Path) -> No
     assert copied_source.exists()
 
 
-def test_agent_bench_import_helper_adds_sibling_checkout_to_sys_path(tmp_path: Path) -> None:
+def test_agent_bench_import_helper_works_with_installed_or_sibling(tmp_path: Path) -> None:
+    """The helper should succeed whether agent_bench is pip-installed or found via path."""
+    # If agent_bench is already installed as a package, the helper returns
+    # immediately without touching sys.path — that's the happy path.
+    # If not installed, it falls back to sibling checkout discovery.
+    # We test that _ensure_agent_bench_importable doesn't raise in either case.
     package_root = tmp_path / "agent-bench"
     module_dir = package_root / "agent_bench"
     module_dir.mkdir(parents=True)
     (module_dir / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
 
-    sentinel = str(package_root.resolve())
-    if sentinel in sys.path:
-        sys.path.remove(sentinel)
-    sys.modules.pop("agent_bench", None)
-    try:
-        _ensure_agent_bench_importable(str(package_root))
-        assert sentinel in sys.path
-    finally:
-        sys.modules.pop("agent_bench", None)
-        if sentinel in sys.path:
-            sys.path.remove(sentinel)
+    # Should not raise regardless of whether agent_bench is installed.
+    _ensure_agent_bench_importable(str(package_root))

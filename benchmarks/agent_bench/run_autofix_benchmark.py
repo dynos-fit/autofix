@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run the real autofix loops against agent-bench fixtures."""
+"""Run the real autofix loops against agent-bench fixtures.
+
+Can be invoked two ways:
+    python -m benchmarks.agent_bench.run_autofix_benchmark [flags]
+    python benchmarks/agent_bench/run_autofix_benchmark.py [flags]
+"""
 
 from __future__ import annotations
 
@@ -10,12 +15,18 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Ensure the repo root is on sys.path so both `benchmarks.*` and `autofix.*`
+# imports work regardless of how this script is invoked (direct or via -m).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from benchmarks.agent_bench.tasks_to_fixtures import materialize_agent_bench_fixtures
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TASKS_ROOT = REPO_ROOT / "benchmarks" / "agent_bench" / "tasks"
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "benchmarks" / "agent_bench" / "out"
-DEFAULT_SIBLING_AGENT_BENCH = REPO_ROOT.parent / "agent-bench"
+DEFAULT_TASKS_ROOT = _REPO_ROOT / "benchmarks" / "agent_bench" / "tasks"
+DEFAULT_OUTPUT_ROOT = _REPO_ROOT / "benchmarks" / "agent_bench" / "out"
+DEFAULT_SIBLING_AGENT_BENCH = _REPO_ROOT.parent / "agent-bench"
 
 
 def _ensure_agent_bench_importable(agent_bench_root: str) -> None:
@@ -70,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     from agent_bench.metrics import DEFAULT_PRICING, summarize
     from agent_bench.reporter import write_report
     from agent_bench.runner import FixtureRunner, RunnerConfig
-    from benchmarks.agent_bench.autofix_adapter import AutofixBenchmarkConfig, build_agent
+    from benchmarks.agent_bench.autofix_adapter import build_agent
 
     only = [item.strip() for item in args.only.split(",") if item.strip()] or None
     output_dir = _output_dir(args.output_dir)
@@ -84,14 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         agent = build_agent(
-            AutofixBenchmarkConfig(
-                backend=args.backend,
-                base_url=args.base_url,
-                api_key=args.api_key,
-                model=args.model or None,
-                max_steps=args.max_steps,
-                timeout=args.timeout,
-            )
+            model=args.model or None,
+            max_steps=args.max_steps,
+            timeout=args.timeout,
+            backend=args.backend,
+            base_url=args.base_url,
+            api_key=args.api_key,
         )
         runner = FixtureRunner(
             agent=agent,

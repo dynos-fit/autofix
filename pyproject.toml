@@ -12,6 +12,13 @@ authors = [
 [project.scripts]
 autofix = "autofix.app:main"
 
+[project.optional-dependencies]
+benchmark = [
+    # agent-bench is a sibling repo; install with:
+    #   pip install -e ../agent-bench
+    # or point --agent-bench-root at the checkout directory.
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
