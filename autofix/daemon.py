@@ -74,7 +74,9 @@ def _remove_pid_file(root: Path) -> None:
     try:
         pid_path.unlink(missing_ok=True)
     except OSError:
-        pass
+        logging.getLogger("autofix.daemon").warning(
+            "Failed to remove PID file %s", pid_path, exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +238,11 @@ def _redirect_stdio(root: Path) -> None:
     os.close(devnull)
 
     log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    os.dup2(log_fd, sys.stdout.fileno())
-    os.dup2(log_fd, sys.stderr.fileno())
-    os.close(log_fd)
+    try:
+        os.dup2(log_fd, sys.stdout.fileno())
+        os.dup2(log_fd, sys.stderr.fileno())
+    finally:
+        os.close(log_fd)
 
 
 def daemon_start(
@@ -345,7 +349,10 @@ def daemon_stop(*, root: Path) -> DaemonResult:
             break
         time.sleep(0.2)
 
+    still_alive = is_process_alive(pid)
     _remove_pid_file(root)
+    if still_alive:
+        return DaemonResult(exit_code=1, message=f"Daemon (PID {pid}) did not stop after SIGTERM.")
     return DaemonResult(exit_code=0, message=f"Daemon (PID {pid}) stopped.")
 
 
