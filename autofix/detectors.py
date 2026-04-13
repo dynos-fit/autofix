@@ -542,6 +542,13 @@ def detect_llm_review(
         log("All files recently scanned, skipping LLM review this cycle")
         return findings
 
+    if backend_config.backend == "claude_cli" and not shutil.which("claude"):
+        log("Skipping LLM review: claude CLI not available")
+        return findings
+    if backend_config.backend == "openai_compatible" and not backend_config.base_url.strip():
+        log("Skipping LLM review: llm_base_url is required for openai_compatible backend")
+        return findings
+
     write_scan_artifact(
         root,
         "selected-files.json",
@@ -552,13 +559,6 @@ def detect_llm_review(
         },
     )
     save_scan_coverage(root, coverage)
-
-    if backend_config.backend == "claude_cli" and not shutil.which("claude"):
-        log("Skipping LLM review: claude CLI not available")
-        return findings
-    if backend_config.backend == "openai_compatible" and not backend_config.base_url.strip():
-        log("Skipping LLM review: llm_base_url is required for openai_compatible backend")
-        return findings
 
     log(f"File scores (top 10): {[(item['path'], round(float(item['score']), 1)) for item in scored_files[:10]]}")
     log(

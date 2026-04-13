@@ -94,7 +94,26 @@ The agent system prompts live in [`autofix/llm_io/prompts/`](/Users/hassam/Docum
 
 The benchmark integration lives under [`benchmarks/agent_bench/`](/Users/hassam/Documents/autofix-standalone/benchmarks/agent_bench).
 
-It benchmarks the real `autofix` review and fix loops through source-level `agent-bench` instrumentation instead of runtime monkey patching.
+It benchmarks the real `autofix` review and fix loops through source-level `agent-bench` instrumentation instead of runtime monkey patching. The LLM and tool seams are already decorated in `autofix/llm_backend.py` and `autofix/agent_loop.py`; the benchmark adapter is only a thin `(workdir, fixture)` bridge.
+
+Direct `agent-bench` CLI usage works with the generic adapter contract:
+
+```bash
+AUTOFIX_BENCH_BACKEND=claude_cli \
+conda run -n autofix python -m agent_bench run \
+  --adapter benchmarks.agent_bench.autofix_adapter:build_agent \
+  --fixtures /path/to/agent-bench/fixtures/python_small \
+  --only bugfix_take_limit \
+  --model default
+```
+
+For `openai_compatible`, set:
+
+```bash
+export AUTOFIX_BENCH_BACKEND=openai_compatible
+export AUTOFIX_BENCH_BASE_URL=http://127.0.0.1:11434/v1
+export AUTOFIX_BENCH_API_KEY=ollama
+```
 
 Example smoke run with the local `agent-bench` checkout and `claude_cli`:
 

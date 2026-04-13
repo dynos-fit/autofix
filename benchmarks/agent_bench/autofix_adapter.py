@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -75,18 +75,80 @@ def _fallback_file_hint(description: str, allowed_files: list[str]) -> str:
     return ""
 
 
-@dataclass(frozen=True)
 class AutofixBenchmarkConfig:
-    backend: str = "claude_cli"
-    base_url: str = ""
-    api_key: str = ""
-    model: str | None = None
-    max_steps: int = 12
-    timeout: int = 300
-    max_fix_attempts: int = 3
+    """Resolved Autofix runtime config for the benchmark bridge."""
+
+    def __init__(
+        self,
+        *,
+        backend: str = "claude_cli",
+        base_url: str = "",
+        api_key: str = "",
+        model: str | None = None,
+        max_steps: int = 12,
+        timeout: int = 300,
+        max_fix_attempts: int = 3,
+    ) -> None:
+        self.backend = backend
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
+        self.max_steps = max_steps
+        self.timeout = timeout
+        self.max_fix_attempts = max_fix_attempts
 
 
-def build_agent(config: AutofixBenchmarkConfig) -> Callable[[Path, "Fixture"], None]:
+def install() -> None:
+    """No-op hook for agent-bench CLI compatibility.
+
+    Autofix uses source-level decorators in `autofix.benchmarking`, so there is
+    nothing to monkey-patch at benchmark startup.
+    """
+
+
+def _env_str(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _coerce_config(
+    model: AutofixBenchmarkConfig | str | None = None,
+    *,
+    max_steps: int = 12,
+    timeout: int = 300,
+    backend: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    max_fix_attempts: int | None = None,
+) -> AutofixBenchmarkConfig:
+    if isinstance(model, AutofixBenchmarkConfig):
+        return model
+    return AutofixBenchmarkConfig(
+        backend=backend or _env_str("AUTOFIX_BENCH_BACKEND", "claude_cli"),
+        base_url=base_url if base_url is not None else _env_str("AUTOFIX_BENCH_BASE_URL", ""),
+        api_key=api_key if api_key is not None else _env_str("AUTOFIX_BENCH_API_KEY", ""),
+        model=model,
+        max_steps=max_steps,
+        timeout=timeout,
+        max_fix_attempts=max_fix_attempts
+        if max_fix_attempts is not None
+        else _env_int("AUTOFIX_BENCH_MAX_FIX_ATTEMPTS", 3),
+    )
+
+
+def _build_agent(config: AutofixBenchmarkConfig) -> Callable[[Path, "Fixture"], None]:
     def agent(workdir: Path, fixture: "Fixture") -> None:
         backend_config = LLMBackendConfig(
             backend=config.backend,
@@ -159,3 +221,29 @@ def build_agent(config: AutofixBenchmarkConfig) -> Callable[[Path, "Fixture"], N
             )
 
     return agent
+
+
+def build_agent(
+    model: AutofixBenchmarkConfig | str | None = None,
+    max_steps: int = 12,
+    timeout: int = 300,
+    **kwargs: Any,
+) -> Callable[[Path, "Fixture"], None]:
+    """Return an agent-bench AgentCallable for Autofix.
+
+    Supports both contracts:
+    - `build_agent(model=..., max_steps=..., timeout=...)` for agent-bench CLI.
+    - `build_agent(AutofixBenchmarkConfig(...))` for local programmatic callers.
+    """
+
+    return _build_agent(
+        _coerce_config(
+            model,
+            max_steps=max_steps,
+            timeout=timeout,
+            backend=kwargs.get("backend"),
+            base_url=kwargs.get("base_url"),
+            api_key=kwargs.get("api_key"),
+            max_fix_attempts=kwargs.get("max_fix_attempts"),
+        )
+    )

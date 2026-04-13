@@ -13,7 +13,6 @@ from autofix.output import (
     format_suppressions,
 )
 from autofix.platform import write_json
-from autofix.scanner import resolve_scan_args, scan_locked
 from autofix.state import (
     build_autofix_benchmarks,
     findings_path,
@@ -251,13 +250,6 @@ def cmd_suppress_remove(args: argparse.Namespace) -> int:
     save_autofix_policy(root, policy)
     print(json.dumps({"removed": len(before) - len(remaining), "remaining": remaining}, indent=2))
     return 0
-
-
-def standalone_scan(args: argparse.Namespace, runtime_factory) -> int:
-    root, max_findings = resolve_scan_args(args)
-    return scan_locked(root, max_findings, runtime_factory(root=root))
-
-
 def standalone_sync_outcomes(args: argparse.Namespace, sync_outcomes_fn, runtime_factory) -> int:
     root = Path(args.root).resolve()
     findings = load_findings(root)

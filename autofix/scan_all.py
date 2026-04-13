@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autofix.config import resolve_config
 from autofix.repo import _load_repos, _repos_file
 from autofix.scanner import run_scan_with_lock
 
@@ -26,15 +27,14 @@ def run_scan(root: Path, **kwargs: object) -> int:
     This is the real implementation invoked during production runs.
     Tests patch this function to avoid heavy scanner dependencies.
     """
-    try:
-        from autofix.app import runtime_factory
+    from autofix.app import runtime_factory
 
-        max_findings = int(kwargs.get("max_findings", 0)) if kwargs.get("max_findings") else 0
-        return run_scan_with_lock(root.resolve(), max_findings=max_findings, runtime=runtime_factory(root=root.resolve()))
-    except RuntimeError:
-        return 1
-    except Exception:
-        return 1
+    resolved = root.resolve()
+    if kwargs.get("max_findings") is not None:
+        max_findings = int(kwargs["max_findings"])
+    else:
+        max_findings = int(resolve_config(resolved).get("max_findings", 100))
+    return run_scan_with_lock(resolved, max_findings=max_findings, runtime=runtime_factory(root=resolved))
 
 
 def cmd_scan_all(*, home_dir: Path) -> ScanAllResult:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import json
 import shutil
@@ -793,8 +792,3 @@ def scan_locked(root: Path, max_findings: int, runtime: ScannerRuntime) -> int:
     )
     print(json.dumps(output, indent=2))
     return 0
-
-
-def resolve_scan_args(args: argparse.Namespace) -> tuple[Path, int]:
-    """Normalize argparse scan inputs for thin CLI wrappers."""
-    return Path(args.root).resolve(), int(args.max_findings)

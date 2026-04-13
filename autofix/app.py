@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from autofix.cli import build_parser, standalone_scan, standalone_sync_outcomes
+from autofix.cli import build_parser, standalone_sync_outcomes
 from autofix.config import config_show, config_set, resolve_config
 from autofix.daemon import daemon_start, daemon_stop, daemon_status
 from autofix.defaults import (
@@ -52,7 +52,7 @@ from autofix.runtime.dynos import (
 from autofix.init import cmd_init
 from autofix.repo import repo_add, repo_remove, repo_list
 from autofix.scan_all import cmd_scan_all
-from autofix.scanner import ScannerRuntime, run_scan_with_lock, sync_outcomes
+from autofix.scanner import ScannerRuntime, scan_lock, scan_locked, sync_outcomes
 from autofix.state import (
     build_autofix_benchmarks,
     default_category_policy,
@@ -182,39 +182,40 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": "claude CLI not found"}))
         return 1
     try:
-        scan_id = new_scan_id()
-        started_at = now_iso()
-        os.environ["AUTOFIX_SCAN_ID"] = scan_id
-        write_scan_artifact(
-            root,
-            "manifest.json",
-            {
-                "scan_id": scan_id,
-                "root": str(root),
-                "started_at": started_at,
-                "completed": False,
-                "dry_run": bool(args.dry_run),
-                "max_findings": int(args.max_findings),
-            },
-        )
-        if args.dry_run:
-            os.environ["AUTOFIX_DRY_RUN"] = "1"
-        result = run_scan_with_lock(root, int(args.max_findings), runtime_factory(root=root))
-        write_scan_artifact(
-            root,
-            "manifest.json",
-            {
-                "scan_id": scan_id,
-                "root": str(root),
-                "started_at": started_at,
-                "completed": True,
-                "completed_at": now_iso(),
-                "dry_run": bool(args.dry_run),
-                "max_findings": int(args.max_findings),
-                "exit_code": result,
-            },
-        )
-        return result
+        with scan_lock(root):
+            scan_id = new_scan_id()
+            started_at = now_iso()
+            os.environ["AUTOFIX_SCAN_ID"] = scan_id
+            write_scan_artifact(
+                root,
+                "manifest.json",
+                {
+                    "scan_id": scan_id,
+                    "root": str(root),
+                    "started_at": started_at,
+                    "completed": False,
+                    "dry_run": bool(args.dry_run),
+                    "max_findings": int(args.max_findings),
+                },
+            )
+            if args.dry_run:
+                os.environ["AUTOFIX_DRY_RUN"] = "1"
+            result = scan_locked(root, int(args.max_findings), runtime_factory(root=root))
+            write_scan_artifact(
+                root,
+                "manifest.json",
+                {
+                    "scan_id": scan_id,
+                    "root": str(root),
+                    "started_at": started_at,
+                    "completed": True,
+                    "completed_at": now_iso(),
+                    "dry_run": bool(args.dry_run),
+                    "max_findings": int(args.max_findings),
+                    "exit_code": result,
+                },
+            )
+            return result
     except RuntimeError:
         print(json.dumps({"error": "scan already running"}))
         return 1

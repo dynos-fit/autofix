@@ -89,6 +89,20 @@ class TestScanAll:
         mock_runtime_factory.assert_called_once_with(root=repo.resolve())
         mock_run_scan_with_lock.assert_called_once_with(repo.resolve(), max_findings=7, runtime=runtime)
 
+    def test_run_scan_uses_repo_config_default_max_findings(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path / "repo")
+        runtime = object()
+        (repo / ".autofix" / "config.json").write_text(json.dumps({"max_findings": 11}))
+
+        with (
+            patch("autofix.app.runtime_factory", return_value=runtime),
+            patch("autofix.scan_all.run_scan_with_lock", return_value=0) as mock_run_scan_with_lock,
+        ):
+            exit_code = run_scan(repo)
+
+        assert exit_code == 0
+        mock_run_scan_with_lock.assert_called_once_with(repo.resolve(), max_findings=11, runtime=runtime)
+
 
 # ---------------------------------------------------------------------------
 # Criterion 20: missing repo skip with warning
@@ -192,6 +206,17 @@ class TestExitCodePropagation:
             result = cmd_scan_all(home_dir=home)
 
         assert result.exit_code == 0
+
+    def test_scan_exception_is_reported_in_output(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        _write_repos_json(home, [{"path": str(repo)}])
+
+        with patch("autofix.scan_all.run_scan", side_effect=ValueError("boom")):
+            result = cmd_scan_all(home_dir=home)
+
+        assert result.exit_code == 1
+        assert "boom" in result.output
 
     def test_empty_repos_json(self, tmp_path: Path) -> None:
         home = tmp_path / "home"

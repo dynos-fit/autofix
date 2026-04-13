@@ -42,66 +42,6 @@ def format_findings(findings: list[dict[str, Any]], *, as_json: bool = False) ->
         lines.append("")
 
     return "\n".join(lines)
-
-
-def format_repos(repos: list[dict[str, Any]], *, as_json: bool = False) -> str:
-    """Format a list of repos as JSON or human-readable text."""
-    if as_json:
-        return json.dumps(repos, indent=2)
-
-    if not repos:
-        return "No repositories registered."
-
-    lines: list[str] = []
-    for entry in repos:
-        path = entry.get("path", "")
-        lines.append(path)
-
-    return "\n".join(lines)
-
-
-def format_config(config: dict[str, Any], *, as_json: bool = False) -> str:
-    """Format a config dict as JSON or human-readable text."""
-    if as_json:
-        return json.dumps(config, indent=2, sort_keys=True)
-
-    if not config:
-        return "No configuration."
-
-    lines: list[str] = []
-    for key in sorted(config):
-        lines.append(f"{key} = {config[key]}")
-
-    return "\n".join(lines)
-
-
-def format_scan_all_summary(summary: dict[str, Any], *, as_json: bool = False) -> str:
-    """Format a scan-all summary as JSON or human-readable text."""
-    if as_json:
-        return json.dumps(summary, indent=2)
-
-    total = summary.get("total", 0)
-    succeeded = summary.get("succeeded", 0)
-    failed = summary.get("failed", 0)
-    skipped = summary.get("skipped", 0)
-
-    lines: list[str] = [
-        f"Scan-all summary: {total} total, {succeeded} succeeded, {failed} failed, {skipped} skipped",
-    ]
-
-    repos = summary.get("repos", [])
-    for repo in repos:
-        path = repo.get("path", "")
-        status = repo.get("status", "")
-        reason = repo.get("reason", "")
-        line = f"  {path}: {status}"
-        if reason:
-            line += f" ({reason})"
-        lines.append(line)
-
-    return "\n".join(lines)
-
-
 def format_benchmarks(benchmarks: dict[str, Any], *, as_json: bool = False) -> str:
     """Format benchmark data as JSON or human-readable text."""
     if as_json:
