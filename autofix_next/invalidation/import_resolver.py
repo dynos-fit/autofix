@@ -96,6 +96,7 @@ def resolve(
     *,
     repo_root: Path,
     all_paths: frozenset[str],
+    source_file: Optional[str] = None,
 ) -> Optional[ResolvedImport]:
     """Resolve an :class:`ImportRecord` to a repo-relative target path.
 
@@ -130,6 +131,7 @@ def resolve(
             record=record,
             repo_root=repo_root,
             all_paths=all_paths,
+            source_file=source_file,
         )
 
     # Any other statement shape (expression, assignment, etc.) is not an
@@ -172,21 +174,47 @@ def _resolve_import_from(
     record: ImportRecord,
     repo_root: Path,
     all_paths: frozenset[str],
+    source_file: Optional[str] = None,
 ) -> Optional[ResolvedImport]:
     """Handle ``from pkg.sub import name [as alias]``.
 
-    Relative imports (``stmt.level > 0``) are a documented non-goal.
-    Star imports are also a non-goal; the symbol-table builder already
-    filters them but we belt-and-brace here.
+    Relative imports (``stmt.level > 0``) resolve against ``source_file``'s
+    parent package when ``source_file`` is provided; otherwise they return
+    None (documented non-goal fallback). Star imports are always a non-goal.
     """
 
     if stmt.level > 0:
-        # Relative import — documented non-goal.
-        return None
-    if stmt.module is None:
-        # ``from . import x`` parses with module=None; also covered by the
-        # level check above. Keep the guard for clarity.
-        return None
+        # Relative import — resolve against source_file's package context if available.
+        if source_file is None:
+            return None
+        # source_file is a repo-relative POSIX path to a .py file. The package
+        # context is the chain of parent directories. For stmt.level=1, the
+        # package root is source_file's containing directory; level=2 is that
+        # directory's parent; etc.
+        src_parts = source_file.split("/")
+        if not src_parts or not src_parts[-1].endswith(".py"):
+            return None
+        # Drop the .py filename; the remaining parts form the package chain.
+        pkg_chain = src_parts[:-1]
+        # Ascend stmt.level levels (level=1 means current package; level=2 is parent, etc.)
+        if stmt.level > len(pkg_chain):
+            return None
+        base_parts = pkg_chain[: len(pkg_chain) - stmt.level + 1]
+        # If stmt.module is set, append its dotted parts to the base.
+        if stmt.module:
+            base_parts = base_parts + stmt.module.split(".")
+        # Build an absolute-style module name and delegate to the shared resolution logic.
+        dotted = ".".join(p for p in base_parts if p)
+        if not dotted:
+            return None
+        # Reuse the name-resolution below with a synthetic absolute module reference.
+        stmt_module_effective: Optional[str] = dotted
+    else:
+        if stmt.module is None:
+            # ``from . import x`` parses with module=None AND level=0 only if
+            # malformed. Guard retained for clarity.
+            return None
+        stmt_module_effective = stmt.module
     if not stmt.names:
         return None
 
@@ -208,7 +236,7 @@ def _resolve_import_from(
             return None
 
     imported_name = chosen.name
-    module_dotted = stmt.module
+    module_dotted = stmt_module_effective
     if not imported_name or not module_dotted:
         return None
 

@@ -110,11 +110,11 @@ def test_canonical_json_bytes_deterministic() -> None:
 
 
 def test_grep_no_other_json_dumps_in_hash_path() -> None:
-    """AC #17: canonical_json_bytes is the only JSON-to-bytes serializer for
-    hash inputs. All json.dumps usages under autofix_next/ must live in
-    evidence/fingerprints.py, telemetry/sarif.py, or telemetry/events_log.py
-    (SARIF and events.jsonl outputs are not hash inputs). Any json.dumps in
-    any other module under autofix_next/ is forbidden."""
+    """AC #17 (task-002): canonical_json_bytes is the only JSON-to-bytes
+    serializer for **hash inputs**. json.dumps usages under autofix_next/
+    are allowed in modules whose JSON output is explicitly NOT a hash input
+    (SARIF, events.jsonl, SCIP shards, manifest + sidecar persistence).
+    Any json.dumps in any other module under autofix_next/ is forbidden."""
     pkg = REPO_ROOT / "autofix_next"
     assert pkg.is_dir(), f"autofix_next/ must exist: {pkg}"
 
@@ -122,6 +122,9 @@ def test_grep_no_other_json_dumps_in_hash_path() -> None:
         pkg / "evidence" / "fingerprints.py",
         pkg / "telemetry" / "sarif.py",
         pkg / "telemetry" / "events_log.py",
+        # task-004 SCIP indexing — persistent shard output, not hash inputs:
+        pkg / "indexing" / "scip_emitter.py",
+        pkg / "indexing" / "scip_index.py",
     }
 
     # subprocess grep per task instruction.
@@ -145,8 +148,9 @@ def test_grep_no_other_json_dumps_in_hash_path() -> None:
             offending.append(line)
 
     assert not offending, (
-        "json.dumps found outside the allowed hash/output modules "
-        "(evidence/fingerprints.py, telemetry/sarif.py, telemetry/events_log.py):\n"
+        "json.dumps found outside the allowed output modules "
+        "(evidence/fingerprints.py, telemetry/sarif.py, telemetry/events_log.py, "
+        "indexing/scip_emitter.py, indexing/scip_index.py):\n"
         + "\n".join(offending)
     )
 

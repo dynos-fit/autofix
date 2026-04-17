@@ -123,6 +123,15 @@ def _emit_invalidation_computed_event(
         "affected_symbol_count": len(invalidation.affected_symbols),
         "affected_file_count": len(invalidation.affected_files),
     }
+    # Seg-2 (AC #13) — thread the SCIP-index cache mode signal into the
+    # envelope row when ``build_from_root`` raised it. ``None`` means the
+    # index persisted cleanly; ``"fallback_concurrent_writer"`` means a
+    # flock timeout forced us to skip the cache write this run. We only
+    # add the key when it's set, so clean runs keep the original 10-key
+    # payload shape.
+    cache_mode = getattr(graph, "last_cache_mode", None)
+    if cache_mode is not None:
+        payload["index_cache_mode"] = cache_mode
     try:
         events_log.append_event(root, "InvalidationComputed", payload)
     except OSError:

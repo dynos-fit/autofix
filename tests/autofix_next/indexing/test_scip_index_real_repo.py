@@ -193,11 +193,21 @@ def test_symbol_record_subset_equivalence(tmp_path: Path) -> None:
                 scip_edges.add((src_path, target_path))
 
     # 4. Subset check: every legacy edge must be covered. We allow a
-    #    small tolerance for edges that reference stdlib / third-party
-    #    modules (which the SCIP index correctly skips because they're
-    #    outside the repo tree).
+    #    small tolerance for:
+    #      - edges that reference stdlib / third-party modules (which
+    #        the SCIP index correctly skips because they're outside the
+    #        repo tree);
+    #      - file-self-edges that build_import_graph emits as a textual-
+    #        match artifact (a file whose docstring mentions its own
+    #        dotted path is not a semantic self-import; SCIP correctly
+    #        skips such edges at line 191 of this test).
     missing: list[tuple[str, str]] = []
     for src, tgt in legacy_edges:
+        # Skip file-self "imports" — legacy false positive from regex
+        # scanning of docstrings / strings mentioning the module's own
+        # dotted path. Not a semantic edge.
+        if src == tgt:
+            continue
         # Only compare in-repo targets — stdlib / third-party modules
         # are out of scope for the symbol-level edge set.
         if not (tmp_path / tgt).exists() and not tgt.endswith(".py"):

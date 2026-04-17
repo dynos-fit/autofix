@@ -260,31 +260,23 @@ def test_manifest_save_fsyncs_parent_dir(
     real_fsync = os.fsync
 
     def recording_fsync(fd: int) -> None:
-        try:
-            # /proc on Linux, fcntl.F_GETPATH on darwin — fall back to
-            # os.readlink("/proc/self/fd/<fd>") which is Linux-only. On
-            # macOS we use fcntl F_GETPATH; both are tried best-effort.
-            import sys
-
-            if sys.platform == "darwin":
+        # fd → path resolution that works on both Linux and macOS.
+        # /dev/fd/<N> is a symlink on both platforms; readlink returns the path.
+        resolved: str | None = None
+        for candidate in (f"/dev/fd/{fd}", f"/proc/self/fd/{fd}"):
+            try:
+                resolved = os.readlink(candidate)
+                break
+            except OSError:
+                continue
+        if resolved is None:
+            # macOS final fallback: F_GETPATH with bytes buffer (Python 3.11+ syntax)
+            try:
                 import fcntl as _fcntl
-                import struct
-
-                try:
-                    buf = bytearray(1024)
-                    _fcntl.fcntl(fd, _fcntl.F_GETPATH, buf)
-                    path = bytes(buf).rstrip(b"\x00").decode("utf-8", errors="replace")
-                    fsynced_paths.append(path)
-                except (OSError, AttributeError):
-                    fsynced_paths.append(f"<fd:{fd}>")
-            else:
-                try:
-                    path = os.readlink(f"/proc/self/fd/{fd}")
-                    fsynced_paths.append(path)
-                except OSError:
-                    fsynced_paths.append(f"<fd:{fd}>")
-        except Exception:
-            fsynced_paths.append(f"<fd:{fd}>")
+                resolved = _fcntl.fcntl(fd, _fcntl.F_GETPATH, b"\x00" * 1024).rstrip(b"\x00").decode("utf-8", errors="replace")
+            except (OSError, AttributeError, ValueError):
+                resolved = f"<fd:{fd}>"
+        fsynced_paths.append(resolved)
         real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", recording_fsync)
