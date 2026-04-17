@@ -41,7 +41,8 @@ def test_all_subpackages_have_init() -> None:
 
 
 def test_new_event_names_are_exact_set() -> None:
-    """AC #13: NEW_EVENT_NAMES is exactly the 6-camelCase set."""
+    """AC #20: NEW_EVENT_NAMES is exactly the 7-camelCase set after
+    task-003's ``InvalidationComputed`` extension (AC #19)."""
     from autofix_next.events import schema as events_schema
 
     expected = frozenset(
@@ -52,6 +53,7 @@ def test_new_event_names_are_exact_set() -> None:
             "LLMCallGated",
             "SARIFEmitted",
             "ScanCompleted",
+            "InvalidationComputed",
         }
     )
     assert hasattr(events_schema, "NEW_EVENT_NAMES"), (
@@ -59,6 +61,40 @@ def test_new_event_names_are_exact_set() -> None:
     )
     assert isinstance(events_schema.NEW_EVENT_NAMES, (set, frozenset))
     assert frozenset(events_schema.NEW_EVENT_NAMES) == expected
+
+
+def test_new_event_names_includes_invalidation_computed() -> None:
+    """AC #19: ``InvalidationComputed`` is in ``NEW_EVENT_NAMES`` and the
+    set has exactly 7 names after the task-003 extension."""
+    from autofix_next.events import schema as events_schema
+
+    assert "InvalidationComputed" in events_schema.NEW_EVENT_NAMES
+    assert len(events_schema.NEW_EVENT_NAMES) == 7
+
+
+def test_changeset_gains_is_fresh_instance_field() -> None:
+    """AC #1: ``ChangeSet`` gains an ``is_fresh_instance: bool = False``
+    field; existing 2-positional construction continues to work."""
+    from autofix_next.events.schema import ChangeSet
+
+    # 2-positional construction (existing API) must still yield a valid
+    # instance; the new field defaults to False.
+    cs_default = ChangeSet(("a.py",), "diff-head1")
+    assert cs_default.paths == ("a.py",)
+    assert cs_default.watcher_confidence == "diff-head1"
+    assert getattr(cs_default, "is_fresh_instance", None) is False
+
+    # Keyword-only construction without the new field stays valid.
+    cs_kw_default = ChangeSet(paths=(), watcher_confidence="full-sweep")
+    assert cs_kw_default.is_fresh_instance is False
+
+    # Explicit True is honored.
+    cs_true = ChangeSet(
+        paths=("b.py",),
+        watcher_confidence="full-sweep-fallback",
+        is_fresh_instance=True,
+    )
+    assert cs_true.is_fresh_instance is True
 
 
 def test_new_event_names_no_collision_with_legacy() -> None:
