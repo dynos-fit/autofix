@@ -8,9 +8,14 @@ readme = "README.md"
 authors = [
     { name = "Hassam Sheikh", email = "hassamsheikh1@gmail.com" },
 ]
+dependencies = [
+    "tree-sitter>=0.21,<0.22",
+    "tree-sitter-python>=0.21,<0.22",
+]
 
 [project.scripts]
 autofix = "autofix.app:main"
+autofix-next = "autofix_next.cli.main:main"
 
 [project.optional-dependencies]
 benchmark = [
@@ -24,12 +29,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["autofix*"]
+include = ["autofix*", "autofix_next*"]
 
 [tool.setuptools.package-data]
 "autofix.llm_io" = ["prompts/*.md"]
+"autofix_next.llm" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
+# --import-mode=importlib prevents tests/<name>/__init__.py from shadowing a
+# same-named top-level package at repo root (e.g. tests/autofix_next/ vs
+# autofix_next/). Without this, pytest inserts tests/ at sys.path[0] under
+# the default "prepend" importmode and the test-dir package wins.
+addopts = "--import-mode=importlib"
 markers = [
     "integration: end-to-end integration tests that exercise multiple subsystems",
     "requires_claude_cli: tests that require the real claude CLI on PATH (skipped by default)",
