@@ -28,3 +28,9 @@ include = ["autofix*"]
 
 [tool.setuptools.package-data]
 "autofix.llm_io" = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: end-to-end integration tests that exercise multiple subsystems",
+    "requires_claude_cli: tests that require the real claude CLI on PATH (skipped by default)",
+]
