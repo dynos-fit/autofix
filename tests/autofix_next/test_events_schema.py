@@ -41,8 +41,10 @@ def test_all_subpackages_have_init() -> None:
 
 
 def test_new_event_names_are_exact_set() -> None:
-    """AC #20: NEW_EVENT_NAMES is exactly the 7-camelCase set after
-    task-003's ``InvalidationComputed`` extension (AC #19)."""
+    """task-006 AC #34: NEW_EVENT_NAMES is exactly the 14-camelCase set
+    after the language-adapter extensions add ``AdapterRegistered``,
+    ``AdapterPrecisionUnavailable``, and ``LanguageShardPersisted``
+    (growing the set 11 -> 14)."""
     from autofix_next.events import schema as events_schema
 
     expected = frozenset(
@@ -54,6 +56,13 @@ def test_new_event_names_are_exact_set() -> None:
             "SARIFEmitted",
             "ScanCompleted",
             "InvalidationComputed",
+            "PriorityScored",
+            "FindingDeduped",
+            "DedupEmbeddingTierStatus",
+            "ClusterStorePersisted",
+            "AdapterRegistered",
+            "AdapterPrecisionUnavailable",
+            "LanguageShardPersisted",
         }
     )
     assert hasattr(events_schema, "NEW_EVENT_NAMES"), (
@@ -64,12 +73,13 @@ def test_new_event_names_are_exact_set() -> None:
 
 
 def test_new_event_names_includes_invalidation_computed() -> None:
-    """AC #19: ``InvalidationComputed`` is in ``NEW_EVENT_NAMES`` and the
-    set has exactly 7 names after the task-003 extension."""
+    """task-006 AC #35: ``InvalidationComputed`` is still in
+    ``NEW_EVENT_NAMES`` and the set has exactly 14 names after the
+    language-adapter extension (11 + 3 new names)."""
     from autofix_next.events import schema as events_schema
 
     assert "InvalidationComputed" in events_schema.NEW_EVENT_NAMES
-    assert len(events_schema.NEW_EVENT_NAMES) == 7
+    assert len(events_schema.NEW_EVENT_NAMES) == 14
 
 
 def test_changeset_gains_is_fresh_instance_field() -> None:

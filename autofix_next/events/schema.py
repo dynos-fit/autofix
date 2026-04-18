@@ -22,6 +22,13 @@ EventType = Literal[
     "SARIFEmitted",
     "ScanCompleted",
     "InvalidationComputed",
+    "PriorityScored",
+    "FindingDeduped",
+    "DedupEmbeddingTierStatus",
+    "ClusterStorePersisted",
+    "AdapterRegistered",
+    "AdapterPrecisionUnavailable",
+    "LanguageShardPersisted",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -33,6 +40,13 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "SARIFEmitted",
         "ScanCompleted",
         "InvalidationComputed",
+        "PriorityScored",
+        "FindingDeduped",
+        "DedupEmbeddingTierStatus",
+        "ClusterStorePersisted",
+        "AdapterRegistered",
+        "AdapterPrecisionUnavailable",
+        "LanguageShardPersisted",
     }
 )
 

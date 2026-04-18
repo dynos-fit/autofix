@@ -6,3 +6,6 @@ __pycache__/
 latest-llm-prompt.txt
 latest-llm-prompts/
 benchmarks/agent_bench/out/
+
+# Test-run byproduct: scip-go state dir created inside the fixture tree
+tests/autofix_next/languages/fixtures/mixed_repo/go/.autofix-next/

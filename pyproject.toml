@@ -23,6 +23,12 @@ benchmark = [
     #   pip install -e ../agent-bench
     # or point --agent-bench-root at the checkout directory.
 ]
+dedup = [
+    "sentence-transformers>=3,<4",
+    "hnswlib>=0.8,<0.9",
+]
+jsts = ["tree-sitter-typescript>=0.21,<0.22"]
+go = ["tree-sitter-go>=0.21,<0.22"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -44,4 +50,6 @@ addopts = "--import-mode=importlib"
 markers = [
     "integration: end-to-end integration tests that exercise multiple subsystems",
     "requires_claude_cli: tests that require the real claude CLI on PATH (skipped by default)",
+    "requires_dedup_extras: tests that require the [dedup] optional extras (skipped when deps unavailable)",
+    "requires_scip_binaries: tests that invoke scip-typescript/scip-go subprocesses (skipped when AUTOFIX_NEXT_OFFLINE=1 or ensure_binary raises BinaryUnavailableError)",
 ]

@@ -22,7 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autofix_next import languages
 from autofix_next.analyzers.cheap.unused_import import analyze as _analyze_unused
+from autofix_next.dedup.cascade import DedupCascade, DedupDecision
+from autofix_next.dedup.cluster_store import ClusterStore
 from autofix_next.evidence.builder import build_packet
 from autofix_next.evidence.schema import CandidateFinding
 from autofix_next.events.schema import ChangeSet
@@ -35,6 +38,7 @@ from autofix_next.invalidation.planner import (
 )
 from autofix_next.llm.scheduler import ScheduleDecision, Scheduler
 from autofix_next.parsing.tree_sitter import parse_file
+from autofix_next.ranking.priority_scorer import PriorityScore, PriorityScorer
 from autofix_next.telemetry import events_log
 
 
@@ -141,13 +145,128 @@ def _emit_invalidation_computed_event(
         pass
 
 
-def _analyze_one_file(
+def _emit_priority_scored_event(
+    root: Path,
+    *,
+    scan_id: str,
+    score: PriorityScore,
+) -> None:
+    """Append one ``PriorityScored`` envelope row per finding (AC #31).
+
+    Telemetry loss is swallowed with the same OSError-only discipline used
+    by :func:`_emit_packet_built_event` and
+    :func:`_emit_invalidation_computed_event`: the scan must continue even
+    if the events.jsonl write fails.
+    """
+    payload = {
+        "event_type": "PriorityScored",
+        "repo_id": root.name,
+        "scan_id": scan_id,
+        "finding_id": score.finding_id,
+        "priority": score.priority,
+        "breakdown": dict(score.breakdown),
+    }
+    try:
+        events_log.append_event(root, "PriorityScored", payload)
+    except OSError:
+        pass
+
+
+def _emit_finding_deduped_event(
+    root: Path,
+    *,
+    scan_id: str,
+    finding_id: str,
+    decision: DedupDecision,
+) -> None:
+    """Append one ``FindingDeduped`` envelope row per finding (AC #31).
+
+    The payload carries the cascade tier that matched (0 = new cluster,
+    1/2/3 = cascade tier), the cluster id, the novelty score, and the
+    ``is_new_cluster`` flag. OSError is swallowed.
+    """
+    payload = {
+        "event_type": "FindingDeduped",
+        "repo_id": root.name,
+        "scan_id": scan_id,
+        "finding_id": finding_id,
+        "cluster_id": decision.cluster_id,
+        "tier_matched": decision.tier,
+        "novelty": decision.novelty,
+        "is_new_cluster": decision.is_new_cluster,
+    }
+    try:
+        events_log.append_event(root, "FindingDeduped", payload)
+    except OSError:
+        pass
+
+
+def _emit_dedup_tier_status_event(
+    root: Path,
+    *,
+    scan_id: str,
+    available: bool,
+    reason: str,
+) -> None:
+    """Append one ``DedupEmbeddingTierStatus`` envelope row per scan (AC #31).
+
+    Emitted exactly once per :func:`run_scan` invocation regardless of
+    whether any findings are produced. The ``reason`` is one of the
+    sentinel strings returned by
+    :func:`autofix_next.dedup.embedding.probe_embedding_tier`
+    (``"available"``, ``"deps_missing"``,
+    ``"model_cache_missing_offline"``).
+    """
+    payload = {
+        "event_type": "DedupEmbeddingTierStatus",
+        "repo_id": root.name,
+        "scan_id": scan_id,
+        "available": available,
+        "reason": reason,
+    }
+    try:
+        events_log.append_event(root, "DedupEmbeddingTierStatus", payload)
+    except OSError:
+        pass
+
+
+def _emit_cluster_store_persisted_event(
+    root: Path,
+    *,
+    scan_id: str,
+    cluster_count: int,
+    tier3_enabled: bool,
+    cache_mode: str,
+) -> None:
+    """Append one ``ClusterStorePersisted`` envelope row per scan (AC #31).
+
+    Emitted after :meth:`ClusterStore.save` regardless of whether the
+    save wrote cleanly or landed in fallback-concurrent-writer mode.
+    ``cache_mode`` reflects ``ClusterStore.last_cache_mode`` (defaulting
+    to ``"ok"`` when it is ``None``, i.e. a clean write).
+    """
+    payload = {
+        "event_type": "ClusterStorePersisted",
+        "repo_id": root.name,
+        "scan_id": scan_id,
+        "cluster_count": cluster_count,
+        "tier3_enabled": tier3_enabled,
+        "cache_mode": cache_mode,
+    }
+    try:
+        events_log.append_event(root, "ClusterStorePersisted", payload)
+    except OSError:
+        pass
+
+
+def _analyze_one_file_python(
     root: Path, relpath: str
 ) -> list[CandidateFinding]:
-    """Run parse → symbol-table → analyzer for one path; skip IO failures.
+    """Run parse → symbol-table → analyzer for one Python path.
 
-    A missing or non-Python file is not a scan-stopping error — it is
-    simply a path with zero findings. Parser-level load errors
+    Extracted byte-identically from the pre-task-006 ``_analyze_one_file``
+    body. A missing or non-Python file is not a scan-stopping error — it
+    is simply a path with zero findings. Parser-level load errors
     (tree-sitter ABI mismatch, etc.) are re-raised so the operator can
     fix the environment; we only swallow per-file IO issues.
     """
@@ -160,6 +279,49 @@ def _analyze_one_file(
         return []
     symbol_table = build_symbol_table(parse_result)
     return _analyze_unused(parse_result, symbol_table)
+
+
+def _analyze_one_file(
+    root: Path, relpath: str
+) -> list[CandidateFinding]:
+    """Dispatch to the registered language adapter for ``relpath``.
+
+    Task-006 (AC #30 / #45): the funnel orchestrator no longer hard-codes
+    the Python analyzer chain. Instead, it looks up the adapter by file
+    extension via :func:`autofix_next.languages.lookup_by_extension`.
+
+    * Unknown extension → ``[]`` (no warning).
+    * ``adapter.language == "python"`` → delegate to
+      :func:`_analyze_one_file_python`, which preserves the exact
+      pre-task-006 behavior (AC #31 byte-identical output).
+    * Any other adapter → call ``adapter.parse_cheap(...)`` for its side
+      effect (telemetry / caches) and return ``[]``. No per-language
+      analyzer is registered for JS/TS or Go today (AC #45).
+
+    Per-file IO errors raised by a non-Python adapter's ``parse_cheap``
+    (``FileNotFoundError`` / ``PermissionError`` / ``OSError``) are
+    swallowed: they are not scan-stopping bugs.
+    """
+    adapter = languages.lookup_by_extension(Path(relpath).suffix)
+    if adapter is None:
+        return []
+    if adapter.language == "python":
+        return _analyze_one_file_python(root, relpath)
+    # Non-Python adapter: parse for side effect only; no analyzer
+    # registered today. Swallow per-file IO errors and grammar-missing
+    # NotImplementedError (design-decisions.md §4: cheap path may raise
+    # this when the tree-sitter grammar is unavailable, ``available`` is
+    # False on the adapter).
+    target = root / relpath
+    if not target.is_file():
+        return []
+    try:
+        _ = adapter.parse_cheap(target.read_bytes())
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    except NotImplementedError:
+        pass
+    return []
 
 
 def run_scan(
@@ -229,8 +391,33 @@ def run_scan(
 
     resolved_scheduler = scheduler if scheduler is not None else Scheduler(root=root)
 
+    # Seg-6 (AC #31): load the persistent cluster store once per scan,
+    # emit the one-shot DedupEmbeddingTierStatus envelope, and construct
+    # the scorer + cascade that the analyzer loop below will drive. The
+    # load is non-locking (AC #22 from seg-4); a missing store on the
+    # first scan yields an empty :class:`ClusterStore` whose
+    # ``is_empty`` is True so ``compute_novelty`` resolves to 1.0 for
+    # every finding produced (AC #33).
+    cluster_store = ClusterStore.load(root)
+    _emit_dedup_tier_status_event(
+        root,
+        scan_id=scan_id,
+        available=cluster_store.embedding_tier_available,
+        reason=cluster_store.embedding_tier_reason,
+    )
+    scorer = PriorityScorer()
+    cascade = DedupCascade()
+
     all_findings: list[CandidateFinding] = []
-    decisions: list[ScheduleDecision] = []
+    # Seg-6 (AC #31): we can no longer append to ``decisions`` inside the
+    # analyzer loop because the scheduler dispatch is deferred until
+    # after we sort the collected packets by priority (descending). We
+    # collect the per-finding quad here and build the index-aligned
+    # decisions list below, after the scheduler has been driven in
+    # priority order.
+    scored_items: list[
+        tuple[CandidateFinding, object, PriorityScore, DedupDecision]
+    ] = []
 
     # AC #21: iterate invalidation.affected_files instead of
     # changeset.paths — the planner has already unioned in every file
@@ -255,8 +442,57 @@ def run_scan(
                 finding=finding,
                 prompt_prefix_hash=packet.prompt_prefix_hash,
             )
-            decision = resolved_scheduler.schedule(packet)
-            decisions.append(decision)
+            # Seg-6 (AC #31): score first, then classify. The scorer
+            # reads cluster-store state purely to resolve novelty, so it
+            # must run before the cascade mutates the store (tier 2/3
+            # match -> update_on_match; no-match -> register_new_cluster).
+            score = scorer.score(finding, graph, cluster_store)
+            _emit_priority_scored_event(root, scan_id=scan_id, score=score)
+            decision = cascade.classify(finding, score, cluster_store)
+            _emit_finding_deduped_event(
+                root,
+                scan_id=scan_id,
+                finding_id=finding.finding_id,
+                decision=decision,
+            )
+            scored_items.append((finding, packet, score, decision))
+
+    # Seg-6 (AC #31): persist the cluster store exactly once per scan,
+    # AFTER every finding has been classified (so every register /
+    # update has been applied) and BEFORE scheduler dispatch. The
+    # persisted envelope is emitted unconditionally — even on a scan
+    # with zero findings — so replayers see a deterministic one-per-scan
+    # row. ``last_cache_mode`` is ``None`` on a clean atomic write and
+    # ``"fallback_concurrent_writer"`` on a flock timeout (seg-4 AC #21).
+    cluster_store.save(root)
+    _emit_cluster_store_persisted_event(
+        root,
+        scan_id=scan_id,
+        cluster_count=cluster_store.cluster_count,
+        tier3_enabled=cluster_store.embedding_tier_available,
+        cache_mode=cluster_store.last_cache_mode or "ok",
+    )
+
+    # Seg-6 (AC #31): sort the collected packets by priority DESCENDING
+    # and dispatch to the scheduler in that order so the scheduler's
+    # dedup gate honours priority precedence (the highest-priority
+    # duplicate wins the LLM budget). Ties retain traversal order by
+    # virtue of Python's stable sort.
+    scored_items.sort(key=lambda item: -item[2].priority)
+    decision_by_fp: dict[str, ScheduleDecision] = {}
+    for finding, packet, _score, _dedup_decision in scored_items:
+        decision_by_fp[finding.finding_id] = resolved_scheduler.schedule(packet)
+
+    # Seg-6 (AC #31): re-align the schedule decisions with
+    # ``all_findings`` (analyzer traversal order) so
+    # :attr:`ScanResult.schedule_decisions` stays index-aligned with
+    # :attr:`ScanResult.findings` as documented in the dataclass
+    # docstring. The scheduler was driven in priority order; the return
+    # value is flipped back so downstream consumers (CLI / SARIF) do not
+    # need to care about the ordering change.
+    decisions: list[ScheduleDecision] = [
+        decision_by_fp[f.finding_id] for f in all_findings
+    ]
 
     return ScanResult(
         scan_id=scan_id,
