@@ -1,0 +1,10 @@
+{
+  "name": "autofix-next-mixed-repo-ts-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fixture TypeScript package for task-20260417-006 JSTSAdapter tests.",
+  "main": "index.ts",
+  "scripts": {
+    "noop": "echo 'fixture only; no build step'"
+  }
+}
