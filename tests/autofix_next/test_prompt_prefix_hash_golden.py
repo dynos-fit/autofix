@@ -37,8 +37,10 @@ _SAMPLE_PACKET: dict = {
 }
 
 
-# Resolved at implementation time — one-shot compute against _SAMPLE_PACKET.
-GOLDEN: str = "<to-be-filled-at-implementation>"
+# Resolved at implementation time by running compute_prompt_prefix_hash
+# against _SAMPLE_PACKET verbatim. Regenerate only after a deliberate
+# SCHEMA_VERSION bump.
+GOLDEN: str = "523b6c76606997c979c9e90eaf5a2e5b3c49e662678351c1eda9e942bda8cae3"
 
 
 def test_prompt_prefix_hash_golden_value() -> None:

@@ -97,9 +97,50 @@ class CandidateFinding:
     analyzer_confidence: float = field(default=1.0, kw_only=True)
 
 
+# -- Frozen v1 field-order contracts (task-20260417-007) --------------------
+#
+# These two tuples are the machine-readable contract for the v1 dataclass
+# shapes. Any add / remove / rename / reorder of a field on ``EvidencePacket``
+# or ``CandidateFinding`` must be paired with an explicit update to the
+# corresponding ``_FIELD_ORDER`` tuple here AND a ``SCHEMA_VERSION`` bump.
+# The conformance tests at
+# ``tests/autofix_next/test_evidence_schema_conformance.py`` enforce the
+# pairing: they introspect ``dataclasses.fields(...)`` and assert equality
+# against the tuples below. Changing the dataclasses without updating these
+# constants is designed to trip CI.
+#
+# ``analyzer_confidence`` is declared ``kw_only=True`` on ``CandidateFinding``
+# (task-20260417-005); Python places kw-only fields last in the
+# ``fields()`` iteration order, so it appears last here.
+
+EVIDENCE_V1_FIELD_ORDER: tuple[str, ...] = (
+    "schema_version",
+    "rule_id",
+    "primary_symbol",
+    "changed_slice",
+    "supporting_symbols",
+    "analyzer_traces",
+    "prompt_prefix_hash",
+)
+
+CANDIDATE_FINDING_V1_FIELD_ORDER: tuple[str, ...] = (
+    "rule_id",
+    "path",
+    "symbol_name",
+    "normalized_import",
+    "start_line",
+    "end_line",
+    "changed_slice",
+    "finding_id",
+    "analyzer_confidence",
+)
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "AnalyzerTrace",
     "EvidencePacket",
     "CandidateFinding",
+    "EVIDENCE_V1_FIELD_ORDER",
+    "CANDIDATE_FINDING_V1_FIELD_ORDER",
 ]
