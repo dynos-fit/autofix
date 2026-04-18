@@ -13,7 +13,7 @@ packet or on an analyzer trace is a contract violation; tests at
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 SCHEMA_VERSION: str = "evidence_v1"
@@ -94,6 +94,7 @@ class CandidateFinding:
     end_line: int
     changed_slice: str
     finding_id: str
+    analyzer_confidence: float = field(default=1.0, kw_only=True)
 
 
 __all__ = [
