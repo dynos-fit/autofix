@@ -23,6 +23,21 @@ def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+def _validate_path_component(value: str) -> str:
+    """Validate that a value is safe for use as a single path component.
+
+    Rejects path separators and '..' sequences to prevent path traversal.
+    Raises ValueError if the value is unsafe.
+    """
+    if not value:
+        raise ValueError("empty path component")
+    if "/" in value or "\\" in value or "\0" in value:
+        raise ValueError(f"path component contains separator: {value!r}")
+    if value in (".", "..") or ".." in value.split(os.sep):
+        raise ValueError(f"path component contains traversal: {value!r}")
+    return value
+
+
 def new_scan_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
 
@@ -60,6 +75,7 @@ def current_scan_dir(root: Path) -> Path | None:
     scan_id = os.environ.get("AUTOFIX_SCAN_ID", "").strip()
     if not scan_id:
         return None
+    scan_id = _validate_path_component(scan_id)
     return scans_root(root) / scan_id
 
 
@@ -67,6 +83,7 @@ def write_scan_artifact(root: Path, name: str, data: object) -> Path | None:
     scan_dir = current_scan_dir(root)
     if scan_dir is None:
         return None
+    name = _validate_path_component(name)
     path = scan_dir / name
     write_json(path, data)
     return path
@@ -76,10 +93,12 @@ def current_state_history_dir(root: Path) -> Path | None:
     scan_id = os.environ.get("AUTOFIX_SCAN_ID", "").strip()
     if not scan_id:
         return None
+    scan_id = _validate_path_component(scan_id)
     return state_history_root(root) / scan_id
 
 
 def write_state_snapshot(root: Path, name: str, data: object) -> Path:
+    name = _validate_path_component(name)
     current_path = current_state_dir(root) / name
     write_json(current_path, data)
     history_dir = current_state_history_dir(root)
@@ -91,7 +110,11 @@ def write_state_snapshot(root: Path, name: str, data: object) -> Path:
 def persistent_project_dir(root: Path) -> Path:
     explicit = os.environ.get("AUTOFIX_PERSISTENT_DIR")
     if explicit:
-        path = Path(explicit)
+        path = Path(explicit).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ValueError(
+                f"AUTOFIX_PERSISTENT_DIR ({path}) is outside project root ({root.resolve()})"
+            )
         path.mkdir(parents=True, exist_ok=True)
         return path
     path = runtime_state_dir(root)
