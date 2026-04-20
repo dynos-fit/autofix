@@ -13,6 +13,7 @@ import ast
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -148,6 +149,16 @@ class DynosAutofixBackend:
                 try:
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     if manifest.get("autofix_finding_id") == finding_id:
+                        self._finding_task_map[finding_id] = task_dir
+                        return task_dir
+                except (json.JSONDecodeError, OSError):
+                    pass
+            # Also check autofix-run.json which _write_task_metadata writes
+            run_path = task_dir / "autofix-run.json"
+            if run_path.is_file():
+                try:
+                    run_meta = json.loads(run_path.read_text(encoding="utf-8"))
+                    if run_meta.get("finding_id") == finding_id:
                         self._finding_task_map[finding_id] = task_dir
                         return task_dir
                 except (json.JSONDecodeError, OSError):
@@ -698,10 +709,16 @@ class DynosAutofixBackend:
                     report["rescan"] = {"skipped": True, "reason": str(exc)}
 
         if evidence_file and changed_files and evidence_file not in changed_files:
-            evidence_dir = str(Path(evidence_file).parent)
+            evidence_dir = Path(evidence_file).parent
             for changed in changed_files:
+                changed_path = Path(changed)
+                try:
+                    in_evidence_dir = changed_path.is_relative_to(evidence_dir)
+                except AttributeError:
+                    # Python < 3.9 fallback
+                    in_evidence_dir = str(changed_path).startswith(str(evidence_dir) + "/") or changed_path == evidence_dir
                 if (
-                    not changed.startswith(evidence_dir)
+                    not in_evidence_dir
                     and not changed.startswith("tests/")
                     and not changed.startswith("test/")
                     and changed != evidence_file
@@ -739,7 +756,7 @@ class DynosAutofixBackend:
                 self.log(f"Running full test suite for {severity} severity finding")
                 try:
                     test_result = self.subprocess_module.run(
-                        test_command.split(),
+                        shlex.split(test_command),
                         capture_output=True,
                         text=True,
                         timeout=300,
@@ -756,13 +773,14 @@ class DynosAutofixBackend:
                     report["full_test_suite"] = {"command": test_command, "returncode": None, "timed_out": True}
                 except OSError as exc:
                     self.log(f"Could not run test suite: {exc}")
+                    report["full_test_suite"] = {"command": test_command, "returncode": None, "error": str(exc)}
             else:
                 targeted_test_paths = [str(path) for path in candidate_tests if path.exists()]
                 if targeted_test_paths:
                     self.log(f"Running targeted tests for {severity} severity finding: {targeted_test_paths}")
                     try:
                         test_result = self.subprocess_module.run(
-                            test_command.split() + targeted_test_paths,
+                            shlex.split(test_command) + targeted_test_paths,
                             capture_output=True,
                             text=True,
                             timeout=120,
@@ -1679,12 +1697,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError):
+                    pass
 
         return finding
 
