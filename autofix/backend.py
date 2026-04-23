@@ -224,6 +224,8 @@ class DynosAutofixBackend:
                             dest.unlink()
                     self.shutil_module.copytree(str(child), str(dest))
                 else:
+                    if dest.is_dir():
+                        self.shutil_module.rmtree(str(dest), ignore_errors=True)
                     self.shutil_module.copy2(str(child), str(dest))
             self.log(f"Copied task artifacts from worktree: {task_dir.name}")
 
@@ -240,6 +242,8 @@ class DynosAutofixBackend:
                         dest.unlink()
                 self.shutil_module.copytree(str(child), str(dest))
             else:
+                if dest.is_dir():
+                    self.shutil_module.rmtree(str(dest), ignore_errors=True)
                 self.shutil_module.copy2(str(child), str(dest))
 
     def _tag_synced_manifests(self, root: Path, finding_id: str) -> None:
@@ -718,13 +722,25 @@ class DynosAutofixBackend:
         for test_path in candidate_tests:
             if not test_path.exists():
                 continue
-            result = self.subprocess_module.run(
-                ["python3", "-m", "pytest", "-q", str(test_path)],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                cwd=worktree_path,
-            )
+            try:
+                result = self.subprocess_module.run(
+                    ["python3", "-m", "pytest", "-q", str(test_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    cwd=worktree_path,
+                )
+            except self.subprocess_module.TimeoutExpired:
+                self.log(f"Targeted test timed out: {test_path.name}")
+                report["targeted_tests"].append({
+                    "path": str(test_path.relative_to(Path(worktree_path))),
+                    "returncode": None,
+                    "timed_out": True,
+                })
+                continue
+            except OSError as exc:
+                self.log(f"Could not run targeted test {test_path.name}: {exc}")
+                continue
             report["targeted_tests"].append({
                 "path": str(test_path.relative_to(Path(worktree_path))),
                 "returncode": result.returncode,
@@ -1032,13 +1048,15 @@ class DynosAutofixBackend:
             self.shutil_module.rmtree(worktree_path, ignore_errors=True)
 
         try:
-            self.subprocess_module.run(
+            fetch_result = self.subprocess_module.run(
                 ["git", "fetch", "origin", base_branch],
                 capture_output=True,
                 text=True,
                 timeout=GH_API_TIMEOUT,
                 cwd=str(root),
             )
+            if fetch_result.returncode != 0:
+                self.log(f"git fetch failed for {base_branch}: {fetch_result.stderr.strip()}")
             self.log(f"Creating worktree at {worktree_path}")
             self.subprocess_module.run(
                 ["git", "worktree", "add", "--detach", worktree_path, f"origin/{base_branch}"],
@@ -1074,7 +1092,10 @@ class DynosAutofixBackend:
 
             evidence = finding.get("evidence", {})
             evidence_file = str(evidence.get("file", ""))
-            evidence_line = int(evidence.get("line", 0) or 0)
+            try:
+                evidence_line = int(evidence.get("line", 0) or 0)
+            except (ValueError, TypeError):
+                evidence_line = 0
             detector_context = self._build_detector_context(root, evidence_file)
 
             import_context = ""
@@ -1679,12 +1700,15 @@ class DynosAutofixBackend:
                 self.log(f"Warning: worktree cleanup failed: {exc}")
                 if Path(worktree_path).exists():
                     self.shutil_module.rmtree(worktree_path, ignore_errors=True)
-                self.subprocess_module.run(
-                    ["git", "worktree", "prune"],
-                    capture_output=True,
-                    timeout=GIT_DELETE_TIMEOUT,
-                    cwd=str(root),
-                )
+                try:
+                    self.subprocess_module.run(
+                        ["git", "worktree", "prune"],
+                        capture_output=True,
+                        timeout=GIT_DELETE_TIMEOUT,
+                        cwd=str(root),
+                    )
+                except (self.subprocess_module.TimeoutExpired, OSError) as prune_exc:
+                    self.log(f"Warning: worktree prune failed: {prune_exc}")
 
         return finding
 
