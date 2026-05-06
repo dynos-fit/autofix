@@ -12,6 +12,7 @@ Covers:
 These tests MUST FAIL until production code at autofix_next/cli/policy_command.py
 lands.
 """
+# seg-6 validated under task-20260506-002 (clean-slate-cli-cutover).
 
 from __future__ import annotations
 

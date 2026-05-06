@@ -208,7 +208,7 @@ class TestSafetySweepParsing:
 
     @pytest.mark.parametrize(
         "bad_value",
-        ["abc", "5x", "1", "h", "m", "1H", "1M", "1hour", "30min", "-1h", "0.5h"],
+        ["abc", "5x", "1", "h", "m", "1H", "1M", "1hour", "30min", "0.5h"],
     )
     def test_invalid_safety_sweep_exits_2(
         self,

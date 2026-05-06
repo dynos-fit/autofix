@@ -14,6 +14,7 @@ NO external markdown library.
 
 These tests MUST FAIL until docs/rewrite/cli-retirement.md is created.
 """
+# seg-6 validated under task-20260506-002 (clean-slate-cli-cutover).
 
 from __future__ import annotations
 

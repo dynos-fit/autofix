@@ -10,6 +10,7 @@ Covers:
 These tests MUST FAIL until production code in autofix_next/cli/main.py
 and autofix_next/cli/watch_command.py lands.
 """
+# seg-6 validated under task-20260506-002 (clean-slate-cli-cutover).
 
 from __future__ import annotations
 

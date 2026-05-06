@@ -33,6 +33,7 @@ jsts = ["tree-sitter-typescript>=0.21,<0.22"]
 go = ["tree-sitter-go>=0.21,<0.22"]
 telemetry-otlp = ["opentelemetry-exporter-otlp-proto-http>=1.20,<2"]
 test = ["jsonschema>=4.20,<5"]
+watch = ["pywatchman>=1.4,<2"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -11,7 +11,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from autofix_next.cli import export_sarif_command, replay_command, scan_command
+from autofix_next.cli import (
+    export_sarif_command,
+    policy_command,
+    replay_command,
+    scan_command,
+    watch_command,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -73,6 +79,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_sarif_command.add_arguments(export_sarif_parser)
     export_sarif_parser.set_defaults(_runner=export_sarif_command.run)
+
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="Watchman-backed long-running scanner.",
+        description=watch_command.HELP_DESCRIPTION,
+        epilog=watch_command.HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    watch_command.add_arguments(watch_parser)
+    watch_parser.set_defaults(_runner=watch_command.run)
+
+    policy_parser = subparsers.add_parser(
+        "policy",
+        help="Inspect or validate the locked .autofix/autofix-policy.json.",
+        description=policy_command.HELP_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    policy_command.add_arguments(policy_parser)
+    policy_parser.set_defaults(_runner=policy_command.run)
 
     return parser
 

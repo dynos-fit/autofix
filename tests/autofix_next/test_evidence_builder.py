@@ -130,6 +130,9 @@ def test_grep_no_other_json_dumps_in_hash_path() -> None:
         # task-010 seg-3 atomic JSON write helper — persistent output for
         # scheduler cache / scip_index shards, not a hash input:
         pkg / "telemetry" / "atomic.py",
+        # task-20260506-002 clean-slate-cli-cutover — `policy --show`
+        # output formatter, not a hash input:
+        pkg / "cli" / "policy_command.py",
     }
 
     # subprocess grep per task instruction.

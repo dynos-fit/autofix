@@ -232,7 +232,7 @@ def test_replay_runnable(
     )
 
     with patch(
-        "autofix_next.telemetry.replay.replay",
+        "autofix_next.cli.replay_command.replay",
         return_value=stub_run,
     ):
         from autofix_next.cli.main import main
