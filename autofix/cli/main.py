@@ -13,6 +13,7 @@ import sys
 
 from autofix.cli import (
     export_sarif_command,
+    fix_command,
     policy_command,
     replay_command,
     scan_command,
@@ -49,6 +50,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scan_command.add_arguments(scan_parser)
     scan_parser.set_defaults(_runner=scan_command.run)
+
+    fix_parser = subparsers.add_parser(
+        "fix",
+        help="Apply autofix's deterministic fixes (default dry-run; --apply to write).",
+        description=fix_command.HELP_DESCRIPTION,
+        epilog=fix_command.HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    fix_command.add_arguments(fix_parser)
+    fix_parser.set_defaults(_runner=fix_command.run)
 
     replay_parser = subparsers.add_parser(
         "replay",
