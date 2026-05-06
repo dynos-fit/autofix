@@ -123,6 +123,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "<UTC-timestamp>-<8-hex-chars> generated at invocation time."
         ),
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Suppress per-stage progress lines on stderr. The final "
+            "summary (and any errors) are still printed."
+        ),
+    )
 
 
 def _mint_scan_id() -> str:
@@ -251,6 +259,13 @@ def run(args: argparse.Namespace) -> int:
     root: Path = args.root
     full_sweep: bool = bool(args.full_sweep)
     scan_id: str = args.scan_id or _mint_scan_id()
+    quiet: bool = bool(getattr(args, "quiet", False))
+
+    def _progress(msg: str) -> None:
+        """Emit one stderr progress line unless --quiet was passed."""
+        if quiet:
+            return
+        print(f"autofix: {msg}", file=sys.stderr, flush=True)
 
     # SEC-01: reject path-traversal / absolute-path scan_id before it reaches
     # the filesystem. Auto-minted ids always match the pattern; user-supplied
@@ -281,6 +296,10 @@ def run(args: argparse.Namespace) -> int:
             stack.enter_context(set_commit_sha(commit_sha))
 
         # --- 1. Change detection -------------------------------------------------
+        _progress(
+            f"Detecting changes in {root} "
+            f"({'full sweep' if full_sweep else 'incremental'})..."
+        )
         try:
             changeset, watcher_confidence = detect(root, full_sweep=full_sweep)
         except (GitUnavailableError, NotAGitRepoError) as exc:
@@ -353,9 +372,15 @@ def run(args: argparse.Namespace) -> int:
         if event_id:
             stack.enter_context(set_event_id(event_id))
 
+        path_count = len(changeset.paths)
+        _progress(
+            f"{path_count} candidate path{'' if path_count == 1 else 's'} "
+            f"(mode={watcher_confidence})"
+        )
+
         # --- 3. Funnel -----------------------------------------------------------
         try:
-            result = run_scan(root, changeset, scan_id)
+            result = run_scan(root, changeset, scan_id, progress=_progress)
         except Exception as exc:
             traceback_str = traceback.format_exc()
             print(
@@ -391,6 +416,7 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        _progress(f"Writing SARIF to {sarif_path}...")
         try:
             emit_sarif(scan_id, result.findings, sarif_path)
         except Exception as exc:
