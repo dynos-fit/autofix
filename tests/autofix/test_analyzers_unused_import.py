@@ -47,6 +47,43 @@ def test_unused_import_produces_one_finding(tmp_path: Path) -> None:
     )
 
 
+def test_import_used_inside_fstring_interpolation_no_finding(tmp_path: Path) -> None:
+    """An import referenced ONLY from inside an f-string interpolation
+    counts as used — the symbol-table walker descends into f-string
+    interpolations, which contain real Python code (not string contents).
+
+    Regression: prior to the fix, the walker bailed out at the ``string``
+    boundary and missed identifiers in ``f"{os.urandom(4).hex()}"``,
+    producing a false-positive ``unused-import: os`` finding.
+    """
+    src = 'import os\n\nx = f"{os.urandom(4).hex()}"\n'
+    findings = list(_run_analyzer(tmp_path, src))
+    assert findings == [], (
+        f"f-string interpolation must count as a use; got {findings!r}"
+    )
+
+
+def test_import_used_inside_nested_fstring_no_finding(tmp_path: Path) -> None:
+    """Nested f-string call attribute access (``f"{a.b().c}"``) still
+    descends into every identifier inside the interpolation."""
+    src = 'import hashlib\n\nx = f"{hashlib.sha256(b\\"\\").hexdigest()}"\n'
+    findings = list(_run_analyzer(tmp_path, src))
+    assert findings == [], (
+        f"deep f-string interpolation must count as a use; got {findings!r}"
+    )
+
+
+def test_import_used_only_in_string_literal_still_flagged(tmp_path: Path) -> None:
+    """An import whose name appears only inside a regular (non-f) string
+    literal IS still flagged as unused — strings without interpolation
+    are not Python code. Documents the boundary."""
+    src = 'import os\n\nx = "os.path"\n'
+    findings = list(_run_analyzer(tmp_path, src))
+    assert len(findings) == 1, (
+        f"string-only mention must NOT count as a use; got {findings!r}"
+    )
+
+
 def test_all_reexport_suppresses_finding(tmp_path: Path) -> None:
     """A name listed in module __all__ counts as used; no finding is emitted."""
     src = 'import helpers\n\n__all__ = ["helpers"]\n'
