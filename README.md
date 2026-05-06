@@ -31,9 +31,7 @@ The script creates a venv at `.venv/` (override with `--venv <path>`
 or disable with `--no-venv`), installs the package in editable mode,
 and verifies the `autofix` console script resolves.
 
-**Python**: 3.11 or 3.12. The current dep pins
-(`tree-sitter-python<0.22`) don't ship 3.13 wheels; override with
-`PYTHON=python3.13 ./install.sh` once the pins move forward.
+**Python**: 3.11, 3.12, or 3.13.
 
 **For `--with-watch`**: also install the Watchman daemon binary
 (`brew install watchman` on macOS, `apt install watchman` on
@@ -158,7 +156,7 @@ conda run -n autofix python -m agent_bench run \
 
 ## Requirements
 
-- Python **3.11** or **3.12** (3.13 blocked by current pins)
+- Python **3.11**, **3.12**, or **3.13**
 - `git`
 - `gh` for issues and PRs (CI integration)
 - `claude` for autonomous fixes (when using the `claude_cli` backend)

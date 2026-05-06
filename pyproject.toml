@@ -9,8 +9,8 @@ authors = [
     { name = "Hassam Sheikh", email = "hassamsheikh1@gmail.com" },
 ]
 dependencies = [
-    "tree-sitter>=0.21,<0.22",
-    "tree-sitter-python>=0.21,<0.22",
+    "tree-sitter>=0.21,<0.26",
+    "tree-sitter-python>=0.21,<0.26",
     "opentelemetry-api>=1.20,<2",
     "opentelemetry-sdk>=1.20,<2",
 ]
@@ -28,8 +28,8 @@ dedup = [
     "sentence-transformers>=3,<4",
     "hnswlib>=0.8,<0.9",
 ]
-jsts = ["tree-sitter-typescript>=0.21,<0.22"]
-go = ["tree-sitter-go>=0.21,<0.22"]
+jsts = ["tree-sitter-typescript>=0.21,<0.26"]
+go = ["tree-sitter-go>=0.21,<0.26"]
 telemetry-otlp = ["opentelemetry-exporter-otlp-proto-http>=1.20,<2"]
 test = ["jsonschema>=4.20,<5"]
 watch = ["pywatchman>=1.4,<2"]
