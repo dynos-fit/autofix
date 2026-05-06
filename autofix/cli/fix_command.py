@@ -101,6 +101,12 @@ _SAFE_IMPORT_RE = re.compile(
 # Sentinel used by --apply to write through a sibling tempfile.
 _TEMPFILE_SUFFIX = ".autofix-tmp"
 
+# Audit S5: hard cap on findings consumed per run. Past this count the
+# command refuses to proceed rather than buffering an unbounded list.
+# 50_000 is well above any realistic single-rule scan and keeps the
+# in-memory dedup set bounded at ~few-MB.
+_MAX_FINDINGS_PER_RUN = 50_000
+
 
 # Policy literal threaded into ``run_scan`` (AC-7). Embedding sidecar is
 # disabled so a fix run never produces a SARIF or sidecar artefact;
@@ -250,7 +256,21 @@ def _apply_deletions(
                 del kept_lines[idx]
         # Plan §1: byte-exact write.
         payload = b"\n".join(kept_lines) + (b"\n" if had_trailing_newline else b"")
-        tmp.write_bytes(payload)
+        # Audit S4: write tempfile with explicit owner-only permissions
+        # (0o600) before populating it, so the window between create and
+        # replace cannot expose contents to a same-host attacker even
+        # under a permissive umask. ``os.open(O_CREAT|O_WRONLY|O_EXCL,
+        # 0o600)`` refuses pre-existing files (covers the symlink-attack
+        # variant where an attacker pre-creates ``<file>.autofix-tmp``).
+        fd = os.open(
+            str(tmp),
+            os.O_CREAT | os.O_WRONLY | os.O_EXCL | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
         tmp.replace(file_path)
     except BaseException:
         # Best-effort tempfile cleanup. We swallow the unlink failure so
@@ -348,6 +368,16 @@ def run(args: argparse.Namespace) -> int:
 
     # AC-8: only ``result.findings`` is consumed. ``schedule_decisions`` is
     # never read.
+    # Audit S5: refuse to proceed if the analyzer emitted more findings
+    # than the per-run cap. Done BEFORE the dedup pass so a pathological
+    # scan cannot exhaust memory in the dedup set.
+    if len(result.findings) > _MAX_FINDINGS_PER_RUN:
+        print(
+            f"autofix: refusing to process {len(result.findings)} findings "
+            f"(cap={_MAX_FINDINGS_PER_RUN}); rerun with a narrower scope",
+            file=sys.stderr,
+        )
+        return 1
     #
     # The analyzer emits one finding per *name* in a multi-name import, so
     # ``from pathlib import Path, PurePath`` produces two findings sharing
@@ -419,7 +449,31 @@ def run(args: argparse.Namespace) -> int:
 
         # ``finding.path`` is a relpath string under root — see
         # ParseResult.relpath in autofix/languages/python.py.
-        file_path = (root / rel).resolve()
+        # Audit S1 + S2: validate containment + reject symlinks before any
+        # filesystem operation. ``resolve()`` follows symlinks; the
+        # ``relative_to`` raises if the resolved path escapes root.
+        try:
+            resolved_root = root.resolve()
+            file_path = (root / rel).resolve()
+            file_path.relative_to(resolved_root)
+        except (ValueError, OSError):
+            print(
+                f"{rel}:{start_line}  ?  <out-of-tree>  [error: path escape]",
+                file=sys.stderr,
+            )
+            unsafe_count += 1
+            continue
+        # Audit S2: a symlink whose target lives inside root is still
+        # rewritable, but a symlink-followed write changes the target's
+        # bytes, not the symlink. Refuse to operate on symlinks at all —
+        # safer than the dance of decoding-vs-replacing the link target.
+        if file_path.is_symlink() or (root / rel).is_symlink():
+            print(
+                f"{rel}:{start_line}  ?  <symlink>  [error: symlink]",
+                file=sys.stderr,
+            )
+            unsafe_count += 1
+            continue
 
         # Plan §4: byte-mode read with strict UTF-8 decode.
         try:
