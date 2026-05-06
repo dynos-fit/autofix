@@ -97,34 +97,38 @@ class TestDeferredPywatchmanImport:
 
 
 # ---------------------------------------------------------------------------
-# AC 12 + C-05: exactly 5 subcommands in specified order
+# AC 12 + C-05: subcommand registration in specified order. The set has
+# grown over time — task-20260506-004 (autofix fix) inserted the `fix`
+# subparser between scan and replay per its AC-2.
 # ---------------------------------------------------------------------------
 
 
 class TestMainSubcommandRegistration:
-    """AC 12 + C-05 — _build_parser() must register exactly 5 subcommands in
-    the order: scan, replay, export-sarif, watch, policy."""
+    """_build_parser() must register the documented subcommands in the
+    canonical order: scan, fix, replay, export-sarif, watch, policy."""
 
-    def test_exactly_five_subcommands(self) -> None:
-        """AC 12: parser exposes exactly 5 subcommands."""
+    def test_subcommand_count_matches_expected_set(self) -> None:
+        """The parser exposes exactly the documented set of subcommands."""
         from autofix.cli.main import _build_parser
 
         parser = _build_parser()
-        # Walk the parser's subactions to find the subcommand names
         subcommand_names = _get_subcommand_names(parser)
-        assert len(subcommand_names) == 5, (
-            f"expected 5 subcommands, got {len(subcommand_names)}: {subcommand_names}"
+        expected = {"scan", "fix", "replay", "export-sarif", "watch", "policy"}
+        assert set(subcommand_names) == expected, (
+            f"expected {sorted(expected)}, got {subcommand_names}"
         )
 
     def test_subcommands_order_is_correct(self) -> None:
-        """AC 12 + C-05: subcommands appear in order: scan, replay, export-sarif,
-        watch, policy."""
+        """Subcommands appear in canonical order; `fix` is between scan and
+        replay per task-20260506-004 AC-2."""
         from autofix.cli.main import _build_parser
 
         parser = _build_parser()
         subcommand_names = _get_subcommand_names(parser)
 
-        expected_order = ["scan", "replay", "export-sarif", "watch", "policy"]
+        expected_order = [
+            "scan", "fix", "replay", "export-sarif", "watch", "policy"
+        ]
         assert subcommand_names == expected_order, (
             f"expected subcommand order {expected_order}, got {subcommand_names}"
         )
