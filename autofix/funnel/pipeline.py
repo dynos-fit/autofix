@@ -20,6 +20,7 @@ so the CLI can derive SARIF + human output without re-running analysis.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -590,6 +591,7 @@ def run_scan(
     scheduler: Scheduler | None = None,
     graph: CallGraph | None = None,
     policy: dict | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> ScanResult:
     """Analyze the invalidation-planned paths and schedule each finding.
 
@@ -623,11 +625,17 @@ def run_scan(
     """
     root = Path(root)
 
+    def _p(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     # AC #21: build the graph once if the caller didn't supply one. This
     # is the production path — the CLI doesn't cache across invocations,
     # and the graph is only meaningful for a single scan window anyway.
     if graph is None:
+        _p("Building call graph...")
         graph = CallGraph.build_from_root(root)
+    _p("Planning invalidation...")
 
     # AC #21: new planner signature — (graph, changeset, *, max_depth).
     # The old 1-arg identity stub is gone; passing just ``changeset``
@@ -743,7 +751,16 @@ def run_scan(
     # AC #21: iterate invalidation.affected_files instead of
     # changeset.paths — the planner has already unioned in every file
     # touched transitively by the callers of the changeset's symbols.
-    for relpath in invalidation.affected_files:
+    affected_total = len(invalidation.affected_files)
+    _p(f"Analyzing {affected_total} file{'' if affected_total == 1 else 's'}...")
+    for file_idx, relpath in enumerate(invalidation.affected_files, start=1):
+        # Report per-file only when there are enough files to make
+        # silence look like a hang. Below 10, the milestone above is
+        # sufficient and a per-file line just adds stderr noise.
+        if affected_total >= 10 and (
+            file_idx == 1 or file_idx == affected_total or file_idx % 10 == 0
+        ):
+            _p(f"  [{file_idx}/{affected_total}] {relpath}")
         for finding in _analyze_one_file(root, relpath):
             all_findings.append(finding)
             packet = build_packet(
@@ -819,7 +836,20 @@ def run_scan(
     # virtue of Python's stable sort.
     scored_items.sort(key=lambda item: -item[2].priority)
     decision_by_fp: dict[str, ScheduleDecision] = {}
-    for finding, packet, _score, _dedup_decision in scored_items:
+    triage_total = len(scored_items)
+    if triage_total:
+        _p(
+            f"Triaging {triage_total} finding{'' if triage_total == 1 else 's'} "
+            "with LLM scheduler..."
+        )
+    for triage_idx, (finding, packet, _score, _dedup_decision) in enumerate(
+        scored_items, start=1
+    ):
+        if triage_total >= 5:
+            _p(
+                f"  [{triage_idx}/{triage_total}] {finding.path}:"
+                f"{finding.start_line} {finding.rule_id}"
+            )
         decision_by_fp[finding.finding_id] = resolved_scheduler.schedule(packet)
 
     # Seg-6 (AC #31): re-align the schedule decisions with
