@@ -97,3 +97,4 @@ Historical state snapshots live under:
 Historical per-scan artifacts live under:
 
 - `.autofix/scans/<scan-id>/`
+

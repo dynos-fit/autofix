@@ -1,186 +1,134 @@
-# autofix-scanner
+# autofix
 
-Standalone codebase scanner with two CLIs:
+Deterministic, git-scoped codebase scanner. Reads a commit-range
+changeset, runs incremental analysis through a 5-layer funnel, and
+emits SARIF + an append-only event log.
 
-- **`autofix-next`** — clean-slate, deterministic, git-scoped scanner. The
-  recommended entry point for new work. Five subcommands: `scan`,
-  `replay`, `export-sarif`, `watch`, `policy`. State and policy live
-  under the locked `.autofix/` tree; new artifacts land under
-  `.autofix-next/`.
-- **`autofix`** (legacy) — the original repository scanner and Dynos
-  repair runner. Continues to function side-by-side with `autofix-next`
-  through the cutover window. Retirement schedule:
-  [`docs/rewrite/cli-retirement.md`](docs/rewrite/cli-retirement.md).
-
-The full rewrite roadmap is at
-[`docs/rewrite/roadmap.md`](docs/rewrite/roadmap.md). All twelve roadmap
-tasks are complete; the new loop is feature-complete and tested
-(563 tests passing, 0 blocking findings on the final audit).
-
----
+```bash
+autofix scan --root .              # diff HEAD~1..HEAD
+autofix scan --root . --full-sweep # every tracked *.py
+autofix policy --show --root .     # pretty-print .autofix/autofix-policy.json
+autofix replay --scan-id <id>      # reproduce a past scan deterministically
+autofix export-sarif --scan-id <id> --out findings.sarif
+autofix watch --root . --safety-sweep 30m   # Watchman-backed long-running scanner
+```
 
 ## Install
 
 ```bash
-./install.sh                    # base install (scan, replay, export-sarif, policy)
-./install.sh --with-watch       # + Watchman-backed long-running watcher
-./install.sh --with-dedup       # + sentence-transformers / hnswlib semantic dedup
-./install.sh --with-jsts        # + TypeScript adapter
-./install.sh --with-go          # + Go adapter
-./install.sh --with-otlp        # + OpenTelemetry OTLP exporter
-./install.sh --dev              # + jsonschema (test extras)
-./install.sh --all              # everything except --dev
-./install.sh --help             # full flag reference
+./install.sh                     # base install
+./install.sh --with-watch        # + Watchman-backed watcher
+./install.sh --with-dedup        # + sentence-transformers / hnswlib semantic dedup
+./install.sh --with-jsts         # + TypeScript adapter
+./install.sh --with-go           # + Go adapter
+./install.sh --with-otlp         # + OpenTelemetry OTLP exporter
+./install.sh --dev               # + jsonschema (test extras)
+./install.sh --all               # everything except --dev
+./install.sh --help              # full flag reference
 ```
 
-The script creates a venv at `.venv/` (override with `--venv <path>` or
-disable with `--no-venv`), installs the package in editable mode, and
-verifies both `autofix` and `autofix-next` console scripts resolve.
+The script creates a venv at `.venv/` (override with `--venv <path>`
+or disable with `--no-venv`), installs the package in editable mode,
+and verifies the `autofix` console script resolves.
 
-**Python version**: 3.11 or 3.12. The current dep pins
-(`tree-sitter-python<0.22`) don't ship 3.13 wheels. Override the
-auto-detected interpreter with `PYTHON=python3.13 ./install.sh` once the
-pins move forward.
+**Python**: 3.11 or 3.12. The current dep pins
+(`tree-sitter-python<0.22`) don't ship 3.13 wheels; override with
+`PYTHON=python3.13 ./install.sh` once the pins move forward.
 
 **For `--with-watch`**: also install the Watchman daemon binary
 (`brew install watchman` on macOS, `apt install watchman` on
 Debian/Ubuntu, [official docs](https://facebook.github.io/watchman/docs/install.html)).
-Without it, `autofix-next watch` fails fast with a clear diagnostic and
-the other subcommands are unaffected.
+Without it, `autofix watch` fails fast with a clear diagnostic; the
+other subcommands are unaffected.
 
----
+## Subcommands
 
-## Usage — `autofix-next`
-
-### One-off scan
+### `autofix scan`
 
 ```bash
-cd /path/to/your/repo
-autofix-next scan --root .                  # diff HEAD~1..HEAD
-autofix-next scan --root . --full-sweep     # every tracked *.py
+autofix scan --root .                  # diff HEAD~1..HEAD, *.py only
+autofix scan --root . --full-sweep     # every tracked *.py
+autofix scan --root . --fresh-instance # bounded full sweep over known graph symbols
 ```
 
 Outputs:
 
-- `.autofix-next/scans/<scan-id>/findings.sarif` — SARIF 2.1.0 with
+- `.autofix/scans-next/<scan-id>/findings.sarif` — SARIF 2.1.0 with
   stable `partialFingerprints` across line moves.
-- `.autofix/events.jsonl` — append-only envelope rows (the locked
-  observability surface).
+- `.autofix/events.jsonl` — append-only envelope rows.
 
 Working-tree edits are ignored on purpose; commit first.
 
-### Inspect the policy
+### `autofix policy`
 
 ```bash
-autofix-next policy --show --root .       # pretty-print sorted JSON
-autofix-next policy --validate --root .   # type-check 4 known top-level keys
+autofix policy --show --root .       # pretty-print sorted JSON
+autofix policy --validate --root .   # type-check 4 known top-level keys
 ```
 
-The policy lives at `.autofix/autofix-policy.json` (locked, optional;
+The policy file lives at `.autofix/autofix-policy.json` (optional;
 absence falls back to defaults).
 
-### Replay a past scan (no LLM, no writes)
+### `autofix replay`
 
 ```bash
-autofix-next replay --scan-id <scan-id-from-events.jsonl> --root .
+autofix replay --scan-id <scan-id>   # reproduce historical scan; reports match | mismatch | version_drift
 ```
 
-Reproduces the historical scan deterministically and reports
-`match` / `mismatch` / `version_drift`. Used to debug CI failures.
+Used to debug CI failures. No LLM, no writes.
 
-### Export SARIF for a past scan
+### `autofix export-sarif`
 
 ```bash
-autofix-next export-sarif --scan-id <scan-id> --out findings.sarif
+autofix export-sarif --scan-id <scan-id> --out findings.sarif
 ```
 
-### Long-running watcher
+Reconstructs SARIF for a previously recorded scan from
+`.autofix/events.jsonl`.
 
-Requires `--with-watch` and a running `watchman` daemon.
+### `autofix watch`
 
 ```bash
-autofix-next watch --root . --safety-sweep 30m
+autofix watch --root . --safety-sweep 30m
 ```
 
-Watchman's `is_fresh_instance` signal flows into the change detector to
-trigger a bounded full sweep on cold starts. `--safety-sweep <Nh|Nm>`
-forces a full sweep when the wall-clock delta since the last one
-exceeds the threshold (e.g. `30m`, `1h`, `24h`).
-
----
-
-## Usage — legacy `autofix`
-
-The legacy CLI continues to work in parallel. Twelve subcommands are
-mapped 1:1 to `autofix-next` equivalents in
-[`docs/rewrite/cli-retirement.md`](docs/rewrite/cli-retirement.md).
-Highlights:
-
-```bash
-autofix scan --root /path/to/repo                  # → autofix-next scan
-autofix policy --root /path/to/repo                # → autofix-next policy --show
-autofix daemon start --root /path/to/repo          # → autofix-next watch
-autofix list --root /path/to/repo                  # → autofix-next show finding (planned)
-```
-
-Cron example (legacy, hourly):
-
-```cron
-0 * * * * cd /path/to/autofix-standalone && \
-  /path/to/autofix-standalone/.venv/bin/autofix scan \
-  --root /path/to/target-repo >> /var/log/autofix.log 2>&1
-```
-
-For dry-run (no PRs/issues opened):
-
-```cron
-0 * * * * cd /path/to/autofix-standalone && \
-  /path/to/autofix-standalone/.venv/bin/autofix scan \
-  --root /path/to/target-repo --dry-run >> /var/log/autofix.log 2>&1
-```
-
----
+Watchman-backed long-running scanner. The Watchman `is_fresh_instance`
+signal flows into the change detector to trigger a bounded full sweep
+on cold starts. `--safety-sweep <Nh|Nm>` forces a full sweep when the
+wall-clock delta since the last one exceeds the threshold.
 
 ## On-disk layout
 
 ```
-<target-repo>/
-  .autofix/                          # locked, shared by both CLIs
-    autofix-policy.json              #   policy (read-only from autofix-next)
-    events.jsonl                     #   append-only event envelope
-    state/current/findings.json      #   legacy aggregate state
-    state/history/<scan-id>/         #   legacy historical snapshots
-    scans/<scan-id>/                 #   legacy per-scan artifacts
-  .autofix-next/                     # autofix-next only
-    scans/<scan-id>/findings.sarif   #   SARIF outputs
-    state/index/                     #   SCIP shards
-    state/embedding-sidecar/         #   HNSW ANN index (with --with-dedup)
+<repo>/
+  .autofix/
+    autofix-policy.json              # policy (read-only)
+    events.jsonl                     # append-only event envelope
+    state/current/findings.json      # legacy snapshot (read-only; consumed by migration)
+    state/index/                     # SCIP shards
+    state/embedding-sidecar/         # HNSW ANN index (with --with-dedup)
+    scans-next/<scan-id>/            # SARIF + per-scan artifacts
 ```
-
-`.autofix/**` is a locked surface — `autofix-next` never writes to it
-except through the documented `events.jsonl` append seam.
-
----
 
 ## Architecture
 
-The new loop is a 5-layer funnel: event ingress → incremental code
-intelligence → deterministic analyzers → ranking + dedup → LLM
-explanation. Reference docs:
+A 5-layer funnel:
 
-- [`docs/rewrite/target-architecture.md`](docs/rewrite/target-architecture.md) — module boundaries, language registry, clean-slate CLI surface, deprecated CLI surface, locked surfaces, config compatibility.
-- [`docs/rewrite/roadmap.md`](docs/rewrite/roadmap.md) — the 12 sequenced migration tasks (all DONE).
-- [`docs/rewrite/cli-retirement.md`](docs/rewrite/cli-retirement.md) — legacy → `autofix-next` mapping + T+0/T+30/T+90 retirement calendar + operator FAQ.
-- [`docs/rewrite/rollback.md`](docs/rewrite/rollback.md) — how to disable `autofix-next` and verify the legacy CLI still works.
+1. **Event ingress** — git diff → ChangeSet
+2. **Incremental code intelligence** — Tree-sitter parse, SCIP
+   symbol/reference index, embedding sidecar, call graph
+3. **Deterministic analyzers** — cheap (lint/regex), semantic (when
+   the index is hot), impact estimator
+4. **Ranking + triage** — priority scorer, 3-tier dedup (exact
+   fingerprint, SimHash, embedding cosine), suppression engine,
+   evidence packet builder
+5. **LLM explanation** — tiered scheduler (small-model triage,
+   large-model report writer), prompt-prefix cache
 
----
+The full pipeline is reproducible from `.autofix/events.jsonl`
+(`autofix replay`).
 
-## LLM backends (legacy)
-
-The legacy `autofix` supports two backends through repo-local config:
-`claude_cli` and `openai_compatible`. See
-[`docs/AGENTIC_LLM_BACKENDS.md`](docs/AGENTIC_LLM_BACKENDS.md).
-Example local-model setup:
+## LLM backend
 
 ```bash
 python3 -m autofix config set --root /path/to/repo llm_backend openai_compatible
@@ -190,19 +138,14 @@ python3 -m autofix config set --root /path/to/repo review_model qwen2.5-coder:7b
 python3 -m autofix config set --root /path/to/repo fix_model qwen2.5-coder:7b-16k
 ```
 
-`autofix-next` reuses the locked LLM seam at
-`autofix.llm_backend.run_prompt`, so backend configuration is shared
-across both CLIs.
-
----
+See [`docs/AGENTIC_LLM_BACKENDS.md`](docs/AGENTIC_LLM_BACKENDS.md).
 
 ## Benchmarking
 
 The benchmark integration lives under
 [`benchmarks/agent_bench/`](benchmarks/agent_bench). The adapter
 contract (`build_agent(model, max_steps, timeout) -> AgentCallable`)
-is preserved byte-identically across the rewrite; existing fixtures
-keep running against either loop.
+exercises the real review and fix loops via `autofix.agent_loop`.
 
 ```bash
 AUTOFIX_BENCH_BACKEND=claude_cli \
@@ -213,50 +156,32 @@ conda run -n autofix python -m agent_bench run \
   --model default
 ```
 
-For `openai_compatible`:
-
-```bash
-export AUTOFIX_BENCH_BACKEND=openai_compatible
-export AUTOFIX_BENCH_BASE_URL=http://127.0.0.1:11434/v1
-export AUTOFIX_BENCH_API_KEY=ollama
-```
-
----
-
 ## Requirements
 
-- Python **3.11** or **3.12** (3.13 blocked by current pins; see Install)
+- Python **3.11** or **3.12** (3.13 blocked by current pins)
 - `git`
-- `gh` for issues and PRs (legacy autofix only)
+- `gh` for issues and PRs (CI integration)
 - `claude` for autonomous fixes (when using the `claude_cli` backend)
-- `watchman` daemon (only for `autofix-next watch`)
-
----
+- `watchman` daemon (only for `autofix watch`)
 
 ## Development
 
 ```bash
-./install.sh --dev --all          # everything + test extras
-pytest tests/autofix_next/        # 563 passing, 11 skipped, 2 env-dependent (scip-go/scip-python binaries)
-pytest tests/                     # full suite
+./install.sh --dev --all
+pytest tests/autofix/
 ```
 
 The test suite enforces:
 
-- Locked-surface contracts (no writes to `autofix/llm_io/**`,
-  `autofix/agent_loop.py`, `autofix/llm_backend.py`, `.autofix/state/**`,
-  `.autofix/autofix-policy.json`, `.autofix/events.jsonl`,
-  `benchmarks/agent_bench/**`).
-- Deferred-import discipline for `pywatchman` (`autofix-next` loads
-  cleanly on hosts without watchman).
 - Stable SARIF fingerprints across line-move-only commits.
+- Deferred-import discipline for `pywatchman` (the package loads on
+  hosts without watchman).
 - Tier-1 dedup match semantics on shared `finding_id`.
 - Security regression tests for legacy-state ingress (path traversal,
   rule_id allowlist).
-
----
+- Read-only contract on `.autofix/state/current/findings.json` and
+  `.autofix/autofix-policy.json`.
 
 ## Operations
 
-See [`docs/AUTOFIX_STANDALONE.md`](docs/AUTOFIX_STANDALONE.md) for the
-operations runbook covering both CLIs.
+See [`docs/AUTOFIX_STANDALONE.md`](docs/AUTOFIX_STANDALONE.md).

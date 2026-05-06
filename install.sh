@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# install.sh — set up autofix-scanner (legacy `autofix` + clean-slate
-# `autofix-next` CLIs) in a Python venv and verify both entry points work.
+# install.sh — set up the autofix CLI in a Python venv and verify the
+# entry point resolves.
 #
 # Usage:
 #   ./install.sh                      # base install (scan, replay, export-sarif, policy)
@@ -106,7 +106,7 @@ if [[ " ${EXTRAS[*]:-} " == *" watch "* ]]; then
   if ! command -v watchman >/dev/null 2>&1; then
     echo
     echo "WARNING: --with-watch installed pywatchman but the \`watchman\` daemon binary"
-    echo "         is NOT on PATH. autofix-next watch will fail at invocation time"
+    echo "         is NOT on PATH. autofix watch will fail at invocation time"
     echo "         with a clear diagnostic. Install the daemon:"
     echo
     echo "           macOS:        brew install watchman"
@@ -116,14 +116,11 @@ if [[ " ${EXTRAS[*]:-} " == *" watch "* ]]; then
   fi
 fi
 
-# Smoke-test both console scripts.
-echo "==> Verifying entry points"
+# Smoke-test the console script.
+echo "==> Verifying entry point"
 autofix --help >/dev/null 2>&1 \
-  && echo "    legacy:     $(command -v autofix) ✓" \
-  || { echo "    legacy autofix entry point FAILED" >&2; exit 1; }
-autofix-next --help >/dev/null 2>&1 \
-  && echo "    clean-slate: $(command -v autofix-next) ✓" \
-  || { echo "    autofix-next entry point FAILED" >&2; exit 1; }
+  && echo "    autofix: $(command -v autofix) ✓" \
+  || { echo "    autofix entry point FAILED" >&2; exit 1; }
 
 cat <<'NEXT'
 
@@ -135,20 +132,17 @@ Next steps:
   source .venv/bin/activate
 
   # one-off scan against a target repo:
-  autofix-next scan --root /path/to/repo
-
-  # inspect the policy (read-only):
-  autofix-next policy --show --root /path/to/repo
-
-  # long-running watcher (needs --with-watch + watchman daemon):
-  autofix-next watch --root /path/to/repo --safety-sweep 30m
-
-  # legacy CLI continues to work in parallel until the cutover release:
   autofix scan --root /path/to/repo
 
+  # inspect the policy (read-only):
+  autofix policy --show --root /path/to/repo
+
+  # long-running watcher (needs --with-watch + watchman daemon):
+  autofix watch --root /path/to/repo --safety-sweep 30m
+
 Docs:
-  - README.md                     (overview + roadmap status)
-  - docs/rewrite/cli-retirement.md (legacy → autofix-next mapping + retirement calendar)
-  - docs/rewrite/rollback.md       (how to disable autofix-next)
-  - docs/rewrite/target-architecture.md (architecture reference)
+  - README.md                     (overview)
+  - CHANGELOG.md                  (recent cleanup notes)
+  - docs/AGENTIC_LLM_BACKENDS.md  (LLM backend config)
+  - docs/AUTOFIX_STANDALONE.md    (operations runbook)
 NEXT
