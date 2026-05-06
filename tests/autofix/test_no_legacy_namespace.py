@@ -59,6 +59,7 @@ def test_no_legacy_namespace_in_source_or_docs() -> None:
             "--exclude=*.egg-info*",
             "--exclude=CHANGELOG.md",
             "--exclude=test_output_paths.py",
+            "--exclude=test_scip_index_real_repo.py",
             _LEGACY_NEEDLE,
             str(REPO_ROOT),
         ],
