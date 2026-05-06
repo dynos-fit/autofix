@@ -43,13 +43,13 @@ python3 -m autofix scan --root /path/to/target-repo --dry-run
 Example: run every hour and append logs.
 
 ```cron
-0 * * * * cd /home/hassam/autofix-standalone && /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
+0 * * * * cd /path/to/autofix-standalone && /path/to/autofix-standalone/.venv/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
 ```
 
 Example: run every 15 minutes with explicit runtime directories for the target repo.
 
 ```cron
-*/15 * * * * cd /home/hassam/autofix-standalone && AUTOFIX_RUNTIME_DIR=/path/to/target-repo/.autofix AUTOFIX_PERSISTENT_DIR=/path/to/target-repo/.autofix /home/hassam/autofix-standalone/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
+*/15 * * * * cd /path/to/autofix-standalone && AUTOFIX_RUNTIME_DIR=/path/to/target-repo/.autofix AUTOFIX_PERSISTENT_DIR=/path/to/target-repo/.autofix /path/to/autofix-standalone/.venv/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
 ```
 
 ## Behavior

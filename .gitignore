@@ -9,3 +9,8 @@ benchmarks/agent_bench/out/
 
 # Test-run byproduct: scip-go state dir created inside the fixture tree
 tests/autofix_next/languages/fixtures/mixed_repo/go/.autofix-next/
+
+# install.sh / pip editable build artifacts
+autofix_scanner.egg-info/
+# dynos-work calibration output (auto-regenerated)
+benchmarks/generated/

@@ -4,8 +4,8 @@ This document explains the low-token LLM execution model added to `autofix`.
 
 The agent system prompts are stored as prompt assets, not inline strings:
 
-- [agent_fix_system.md](/Users/hassam/Documents/autofix-standalone/autofix/llm_io/prompts/agent_fix_system.md)
-- [agent_review_system.md](/Users/hassam/Documents/autofix-standalone/autofix/llm_io/prompts/agent_review_system.md)
+- [agent_fix_system.md](../autofix/llm_io/prompts/agent_fix_system.md)
+- [agent_review_system.md](../autofix/llm_io/prompts/agent_review_system.md)
 
 ## Why this exists
 
