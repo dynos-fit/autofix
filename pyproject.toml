@@ -16,8 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-autofix = "autofix.app:main"
-autofix-next = "autofix_next.cli.main:main"
+autofix = "autofix.cli.main:main"
 
 [project.optional-dependencies]
 benchmark = [
@@ -40,21 +39,21 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["autofix*", "autofix_next*"]
+include = ["autofix*"]
 
 [tool.setuptools.package-data]
 "autofix.llm_io" = ["prompts/*.md"]
-"autofix_next.llm" = ["prompts/*.md"]
+"autofix.llm" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 # --import-mode=importlib prevents tests/<name>/__init__.py from shadowing a
-# same-named top-level package at repo root (e.g. tests/autofix_next/ vs
-# autofix_next/). Without this, pytest inserts tests/ at sys.path[0] under
+# same-named top-level package at repo root (e.g. tests/autofix/ vs
+# autofix/). Without this, pytest inserts tests/ at sys.path[0] under
 # the default "prepend" importmode and the test-dir package wins.
 addopts = "--import-mode=importlib"
 markers = [
     "integration: end-to-end integration tests that exercise multiple subsystems",
     "requires_claude_cli: tests that require the real claude CLI on PATH (skipped by default)",
     "requires_dedup_extras: tests that require the [dedup] optional extras (skipped when deps unavailable)",
-    "requires_scip_binaries: tests that invoke scip-typescript/scip-go subprocesses (skipped when AUTOFIX_NEXT_OFFLINE=1 or ensure_binary raises BinaryUnavailableError)",
+    "requires_scip_binaries: tests that invoke scip-typescript/scip-go subprocesses (skipped when AUTOFIX_OFFLINE=1 or ensure_binary raises BinaryUnavailableError)",
 ]

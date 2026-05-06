@@ -124,3 +124,4 @@ If you change the agent loop, keep these priorities in order:
 4. Add tests for every new tool action or backend-specific branch.
 
 When changing agent behavior, prefer editing the prompt files first and only change Python when the tool contract or control flow really needs to change.
+

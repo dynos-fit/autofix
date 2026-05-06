@@ -247,3 +247,4 @@ def build_agent(
             max_fix_attempts=kwargs.get("max_fix_attempts"),
         )
     )
+# task-20260506-003: locked seam relocated
