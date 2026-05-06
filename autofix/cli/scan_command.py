@@ -437,7 +437,39 @@ def run(args: argparse.Namespace) -> int:
             },
         )
 
+        _print_summary(result.findings, sarif_path)
         return 0
+
+
+def _print_summary(findings: list, sarif_path: Path) -> None:
+    """Print a human-readable scan summary to stderr.
+
+    Lists each finding (capped at 20) followed by the SARIF path. Goes
+    to stderr so scripts that pipe `autofix scan` into something else
+    keep getting clean output channels.
+    """
+    if findings:
+        for finding in findings[:20]:
+            path = getattr(finding, "path", "?")
+            line = getattr(finding, "start_line", "?")
+            rule = getattr(finding, "rule_id", "?")
+            symbol = getattr(finding, "symbol_name", "")
+            print(
+                f"{path}:{line}  warning  {rule}  {symbol}".rstrip(),
+                file=sys.stderr,
+            )
+        if len(findings) > 20:
+            print(
+                f"... and {len(findings) - 20} more "
+                "(see SARIF for the full list)",
+                file=sys.stderr,
+            )
+    summary = (
+        f"{len(findings)} finding"
+        f"{'' if len(findings) == 1 else 's'} "
+        f"written to {sarif_path}"
+    )
+    print(summary, file=sys.stderr)
 
 
 __all__ = ["HELP_DESCRIPTION", "HELP_EPILOG", "add_arguments", "run"]

@@ -1,7 +1,7 @@
 [project]
 name = "autofix-scanner"
 version = "0.1.0"
-description = "Standalone codebase scanner and Dynos-backed autofix runner"
+description = "Git-aware code scanner that explains findings with an LLM"
 requires-python = ">=3.11"
 license = "MIT"
 readme = "README.md"

@@ -1,201 +1,257 @@
 # autofix
 
-Deterministic, git-scoped codebase scanner. Reads a commit-range
-changeset, runs incremental analysis through a 5-layer funnel, and
-emits SARIF + an append-only event log.
+A code scanner for `git diff`. It looks at what you changed, finds
+problems, and asks an LLM to explain them.
 
-```bash
-autofix scan --root .              # diff HEAD~1..HEAD
-autofix scan --root . --full-sweep # every tracked *.py
-autofix policy --show --root .     # pretty-print .autofix/autofix-policy.json
-autofix replay --scan-id <id>      # reproduce a past scan deterministically
-autofix export-sarif --scan-id <id> --out findings.sarif
-autofix watch --root . --safety-sweep 30m   # Watchman-backed long-running scanner
 ```
+$ autofix scan --root .
+calculator.py:1   warning  unused-import.intra-file  Unused import: os
+calculator.py:3   warning  unused-import.intra-file  Unused import: sys
+calculator.py:4   warning  unused-import.intra-file  Unused import: List
+calculator.py:4   warning  unused-import.intra-file  Unused import: Dict
+calculator.py:4   warning  unused-import.intra-file  Unused import: Optional
+
+5 findings written to .autofix/scans/20260506T195913Z-9f3636a9/findings.sarif
+```
+
+With an LLM backend configured, every finding also gets a one-paragraph
+explanation: what it is, why it matters in your context, and whether
+it's safe to remove.
+
+## Status
+
+**Alpha.** Today it ships:
+
+- One Python analyzer: `unused-import.intra-file`
+- A real LLM scheduler that routes findings through Claude, GPT, or any
+  OpenAI-compatible endpoint (Ollama, llama.cpp, vLLM)
+- SARIF 2.1.0 output you can drop into GitHub Code Scanning, Sonar, or
+  any CI dashboard
+- A long-running watcher backed by Watchman
+- Deterministic replay — re-run any past scan from the event log to
+  debug a flaky CI failure
+
+What's on the roadmap (the funnel architecture is already built; only
+the analyzers are missing): security checks, dead-code detection, and
+cross-file semantic analyzers via SCIP for Python, Go, and TypeScript.
+
+If you need a finished linter today, use [ruff](https://docs.astral.sh/ruff/)
+or [semgrep](https://semgrep.dev/). If you want to see how an LLM-narrated
+scanner feels and you're comfortable on alpha, keep reading.
 
 ## Install
 
 ```bash
-./install.sh                     # base install
-./install.sh --with-watch        # + Watchman-backed watcher
-./install.sh --with-dedup        # + sentence-transformers / hnswlib semantic dedup
-./install.sh --with-jsts         # + TypeScript adapter
-./install.sh --with-go           # + Go adapter
-./install.sh --with-otlp         # + OpenTelemetry OTLP exporter
-./install.sh --dev               # + jsonschema (test extras)
-./install.sh --all               # everything except --dev
-./install.sh --help              # full flag reference
+git clone https://github.com/dynos-fit/autofix
+cd autofix
+./install.sh
 ```
 
-The script creates a venv at `.venv/` (override with `--venv <path>`
-or disable with `--no-venv`), installs the package in editable mode,
-and verifies the `autofix` console script resolves.
+Creates `.venv/`, installs in editable mode, verifies the `autofix`
+console script. Python 3.11–3.13.
 
-**Python**: 3.11, 3.12, or 3.13.
-
-**For `--with-watch`**: also install the Watchman daemon binary
-(`brew install watchman` on macOS, `apt install watchman` on
-Debian/Ubuntu, [official docs](https://facebook.github.io/watchman/docs/install.html)).
-Without it, `autofix watch` fails fast with a clear diagnostic; the
-other subcommands are unaffected.
-
-## External binaries (auto-managed)
-
-Some language adapters delegate to external indexer binaries:
-
-- **`scip-go`** (Go adapter): auto-downloaded on first scan of a Go
-  repo. Cached under `~/.cache/autofix/bin/scip-go/<version>/`. SHA256
-  is pinned per release; mismatch aborts the scan. Override the cache
-  location with `AUTOFIX_BIN_CACHE=/path`. Supported platforms:
-  darwin-arm64, linux-x86_64, linux-arm64. Intel Mac users: install
-  manually via `go install github.com/scip-code/scip-go/cmd/scip-go@latest`.
-- **`scip-typescript`** (JS/TS adapter): no auto-install — Sourcegraph
-  publishes scip-typescript only via npm. Install with
-  `npm install -g @sourcegraph/scip-typescript` if you scan TypeScript
-  repos. Without it, the JS/TS adapter degrades to a non-precision
-  path (Tree-sitter parse only, no symbol/reference index).
-
-## Subcommands
-
-### `autofix scan`
+Optional extras:
 
 ```bash
-autofix scan --root .                  # diff HEAD~1..HEAD, *.py only
-autofix scan --root . --full-sweep     # every tracked *.py
-autofix scan --root . --fresh-instance # bounded full sweep over known graph symbols
+./install.sh --with-watch    # long-running watcher (needs `watchman` daemon)
+./install.sh --with-dedup    # semantic dedup (sentence-transformers)
+./install.sh --all           # everything
+./install.sh --help          # full flag list
 ```
 
-Outputs:
-
-- `.autofix/scans-next/<scan-id>/findings.sarif` — SARIF 2.1.0 with
-  stable `partialFingerprints` across line moves.
-- `.autofix/events.jsonl` — append-only envelope rows.
-
-Working-tree edits are ignored on purpose; commit first.
-
-### `autofix policy`
+## 30-second quickstart
 
 ```bash
-autofix policy --show --root .       # pretty-print sorted JSON
-autofix policy --validate --root .   # type-check 4 known top-level keys
+cd /path/to/your/python/repo
+git commit -am "your latest changes"     # autofix only scans committed code
+autofix scan --root .
 ```
 
-The policy file lives at `.autofix/autofix-policy.json` (optional;
-absence falls back to defaults).
+That's it. Findings land in:
 
-### `autofix replay`
+- `.autofix/scans/<scan-id>/findings.sarif` — machine-readable
+- stdout — human-readable summary
+
+## Examples
+
+### Scan the latest commit
 
 ```bash
-autofix replay --scan-id <scan-id>   # reproduce historical scan; reports match | mismatch | version_drift
+$ autofix scan --root .
+sample.py:2   warning  unused-import.intra-file  Unused import: json
+2 findings written to .autofix/scans/...
 ```
 
-Used to debug CI failures. No LLM, no writes.
-
-### `autofix export-sarif`
+### Scan everything (not just the diff)
 
 ```bash
-autofix export-sarif --scan-id <scan-id> --out findings.sarif
+$ autofix scan --root . --full-sweep
 ```
 
-Reconstructs SARIF for a previously recorded scan from
-`.autofix/events.jsonl`.
+Useful for the first run on a new repo, or after a long gap.
 
-### `autofix watch`
+### Inspect or validate your policy
 
 ```bash
-autofix watch --root . --safety-sweep 30m
+$ autofix policy --show --root .
+{
+  "llm_tiered": false,
+  "min_priority_for_llm_triage": 2
+}
+
+$ autofix policy --validate --root .
+# exits 0 on success, 2 with diagnostics on a bad policy file
 ```
 
-Watchman-backed long-running scanner. The Watchman `is_fresh_instance`
-signal flows into the change detector to trigger a bounded full sweep
-on cold starts. `--safety-sweep <Nh|Nm>` forces a full sweep when the
-wall-clock delta since the last one exceeds the threshold.
+The policy file is `.autofix/autofix-policy.json`. It's optional.
+
+### Replay a past scan (for debugging)
+
+CI reported a finding you can't reproduce locally? Replay the exact
+scan from its event log:
+
+```bash
+$ autofix replay --scan-id 20260506T195913Z-9f3636a9 --root .
+verdict: match
+scan_id: 20260506T195913Z-9f3636a9
+commit_sha: a3a708cf...
+```
+
+Verdicts: `match` (deterministic; same finding ids), `mismatch`
+(something changed in the analyzer), `version_drift` (your toolchain
+changed — pinned versions don't match).
+
+### Export SARIF after the fact
+
+```bash
+$ autofix export-sarif --scan-id 20260506T195913Z-9f3636a9 --out findings.sarif
+```
+
+For uploading to GitHub Code Scanning or feeding another tool.
+
+### Run continuously (with Watchman)
+
+```bash
+$ autofix watch --root . --safety-sweep 30m
+```
+
+Re-scans on every commit. The `--safety-sweep` flag forces a full
+sweep if no incremental scan has run in the last 30 minutes — protects
+against subtle desync bugs.
+
+## LLM backend
+
+Today, the LLM seam shells out to `claude` (Claude Code CLI) by
+default. If you have `claude` on your PATH, scans get explanations
+automatically — no configuration needed.
+
+Other backends (OpenAI, Ollama, vLLM, etc.) are supported by the
+underlying library (`autofix.llm_backend`) but there is no operator-
+facing CLI to switch them yet. Tracking issue:
+[#TODO](https://github.com/dynos-fit/autofix/issues). Workaround:
+edit `.autofix/autofix-policy.json` for thresholds and budgets, then
+configure the backend by environment variables read by your shell
+wrapper around `autofix scan`.
+
+If you don't have an LLM backend, autofix still runs end-to-end. You
+get the SARIF and the deduped findings; you just don't get the
+narrated explanations.
+
+More on the policy file shape: [`docs/AGENTIC_LLM_BACKENDS.md`](docs/AGENTIC_LLM_BACKENDS.md).
+
+## Multi-language scans
+
+Python is the default. To scan Go or TypeScript, install the optional
+adapter:
+
+```bash
+./install.sh --with-go    # then: autofix scan --root /your/go/repo
+./install.sh --with-jsts  # then: autofix scan --root /your/ts/repo
+```
+
+The Go adapter auto-downloads `scip-go` on first use. The TypeScript
+adapter requires `scip-typescript` from npm:
+
+```bash
+npm install -g @sourcegraph/scip-typescript
+```
+
+Without these binaries, the language adapter falls back to a
+Tree-sitter-only path (still works, less precise).
+
+## Command reference
+
+```bash
+autofix scan          # scan the latest commit (default: HEAD~1..HEAD)
+autofix watch         # long-running scanner (needs watchman)
+autofix replay        # reproduce a past scan
+autofix export-sarif  # write SARIF for a past scan
+autofix policy        # inspect or validate .autofix/autofix-policy.json
+autofix --help        # full flag reference
+```
+
+Every subcommand accepts `--help` for its flags.
+
+## Cron / CI
+
+Hourly cron:
+
+```cron
+0 * * * * cd /repo && /path/to/.venv/bin/autofix scan --root . \
+  >> /var/log/autofix.log 2>&1
+```
+
+GitHub Actions:
+
+```yaml
+- run: |
+    pip install -e .
+    autofix scan --root .
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: .autofix/scans/*/findings.sarif
+```
 
 ## On-disk layout
 
 ```
-<repo>/
-  .autofix/
-    autofix-policy.json              # policy (read-only)
-    events.jsonl                     # append-only event envelope
-    state/current/findings.json      # legacy snapshot (read-only; consumed by migration)
-    state/index/                     # SCIP shards
-    state/embedding-sidecar/         # HNSW ANN index (with --with-dedup)
-    scans-next/<scan-id>/            # SARIF + per-scan artifacts
+<repo>/.autofix/
+  events.jsonl                       # append-only event log (used for replay)
+  autofix-policy.json                # your policy (optional)
+  scans/<scan-id>/findings.sarif     # SARIF output
+  state/index/                       # SCIP symbol/reference index
+  state/embedding-sidecar/           # semantic dedup index (with --with-dedup)
 ```
 
-## Architecture
-
-A 5-layer funnel:
-
-1. **Event ingress** — git diff → ChangeSet
-2. **Incremental code intelligence** — Tree-sitter parse, SCIP
-   symbol/reference index, embedding sidecar, call graph
-3. **Deterministic analyzers** — cheap (lint/regex), semantic (when
-   the index is hot), impact estimator
-4. **Ranking + triage** — priority scorer, 3-tier dedup (exact
-   fingerprint, SimHash, embedding cosine), suppression engine,
-   evidence packet builder
-5. **LLM explanation** — tiered scheduler (small-model triage,
-   large-model report writer), prompt-prefix cache
-
-The full pipeline is reproducible from `.autofix/events.jsonl`
-(`autofix replay`).
-
-## LLM backend
-
-```bash
-python3 -m autofix config set --root /path/to/repo llm_backend openai_compatible
-python3 -m autofix config set --root /path/to/repo llm_base_url http://127.0.0.1:11434/v1
-python3 -m autofix config set --root /path/to/repo llm_api_key ollama
-python3 -m autofix config set --root /path/to/repo review_model qwen2.5-coder:7b-16k
-python3 -m autofix config set --root /path/to/repo fix_model qwen2.5-coder:7b-16k
-```
-
-See [`docs/AGENTIC_LLM_BACKENDS.md`](docs/AGENTIC_LLM_BACKENDS.md).
-
-## Benchmarking
-
-The benchmark integration lives under
-[`benchmarks/agent_bench/`](benchmarks/agent_bench). The adapter
-contract (`build_agent(model, max_steps, timeout) -> AgentCallable`)
-exercises the real review and fix loops via `autofix.agent_loop`.
-
-```bash
-AUTOFIX_BENCH_BACKEND=claude_cli \
-conda run -n autofix python -m agent_bench run \
-  --adapter benchmarks.agent_bench.autofix_adapter:build_agent \
-  --fixtures /path/to/agent-bench/fixtures/python_small \
-  --only bugfix_take_limit \
-  --model default
-```
+You probably want to add `.autofix/scans/` and `.autofix/state/` to
+your `.gitignore`. Keep `.autofix/autofix-policy.json` checked in.
 
 ## Requirements
 
-- Python **3.11**, **3.12**, or **3.13**
-- `git`
-- `gh` for issues and PRs (CI integration)
-- `claude` for autonomous fixes (when using the `claude_cli` backend)
-- `watchman` daemon (only for `autofix watch`)
+- Python 3.11, 3.12, or 3.13
+- `git` (the tool reads `git diff`)
+- `claude` CLI **or** any OpenAI-compatible endpoint, for LLM explanations
+- `watchman` daemon, only if you use `autofix watch`
 
-## Development
+## Documentation
+
+- [`docs/AGENTIC_LLM_BACKENDS.md`](docs/AGENTIC_LLM_BACKENDS.md) — LLM
+  backend setup (Claude, OpenAI, Ollama, vLLM)
+- [`docs/AUTOFIX_STANDALONE.md`](docs/AUTOFIX_STANDALONE.md) — operations
+  runbook (cron, daemon, log rotation)
+- [`docs/architecture.md`](docs/architecture.md) — how it works
+  internally (the 5-layer funnel, SCIP indexing, SARIF emission,
+  replay determinism). Read this if you're contributing or curious.
+
+## Contributing
 
 ```bash
 ./install.sh --dev --all
 pytest tests/autofix/
 ```
 
-The test suite enforces:
+Bug reports and PRs welcome at https://github.com/dynos-fit/autofix.
 
-- Stable SARIF fingerprints across line-move-only commits.
-- Deferred-import discipline for `pywatchman` (the package loads on
-  hosts without watchman).
-- Tier-1 dedup match semantics on shared `finding_id`.
-- Security regression tests for legacy-state ingress (path traversal,
-  rule_id allowlist).
-- Read-only contract on `.autofix/state/current/findings.json` and
-  `.autofix/autofix-policy.json`.
+## License
 
-## Operations
-
-See [`docs/AUTOFIX_STANDALONE.md`](docs/AUTOFIX_STANDALONE.md).
+MIT.
