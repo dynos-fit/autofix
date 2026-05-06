@@ -15,6 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from autofix_next.events.schema import ScanEvent
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 
 def ingest_cli_invocation(
@@ -64,16 +66,24 @@ def ingest_cli_invocation(
     if not isinstance(scan_id, str) or not scan_id:
         raise ValueError("scan_id must be a non-empty string")
 
-    return ScanEvent(
-        event_type="ScanStarted",
+    with span(
+        "autofix_next.ingress",
+        scan_id=scan_id,
         repo_id=root.name,
+        full_sweep=bool(full_sweep),
         commit_sha=commit_sha,
         base_sha=base_sha,
-        watcher_confidence=watcher_confidence,
-        source="cli",
-        scan_id=scan_id,
-        extra={"full_sweep": bool(full_sweep)},
-    )
+    ):
+        return ScanEvent(
+            event_type="ScanStarted",
+            repo_id=root.name,
+            commit_sha=commit_sha,
+            base_sha=base_sha,
+            watcher_confidence=watcher_confidence,
+            source="cli",
+            scan_id=scan_id,
+            extra={"full_sweep": bool(full_sweep)},
+        )
 
 
 __all__ = ["ingest_cli_invocation"]

@@ -24,7 +24,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from opentelemetry.trace import get_current_span
+
 from autofix_next.events.schema import ChangeSet
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 
 class NotAGitRepoError(RuntimeError):
@@ -158,58 +162,71 @@ def detect(root: Path, full_sweep: bool) -> tuple[ChangeSet, str]:
     GitUnavailableError
         ``git`` is not available on ``PATH``.
     """
-    root = Path(root)
-    _assert_is_git_repo(root)
+    with span(
+        "autofix_next.change_detect",
+        scan_id=current_scan_id(),
+        full_sweep=bool(full_sweep),
+        commit_sha=current_commit_sha(),
+    ):
+        root = Path(root)
+        _assert_is_git_repo(root)
 
-    if full_sweep:
-        paths = _list_all_python_files(root)
-        # AC #2: an explicit --full-sweep is NOT a fresh-instance event.
-        # The operator asked for every tracked file, but the planner should
-        # still use the incremental path (seeds + callers) — only the
-        # fallback branch below signals "cold start".
-        changeset = ChangeSet(
-            paths=paths,
-            watcher_confidence="full-sweep",
-            is_fresh_instance=False,
-        )
-        return changeset, "full-sweep"
+        if full_sweep:
+            paths = _list_all_python_files(root)
+            # AC #2: an explicit --full-sweep is NOT a fresh-instance event.
+            # The operator asked for every tracked file, but the planner should
+            # still use the incremental path (seeds + callers) — only the
+            # fallback branch below signals "cold start".
+            changeset = ChangeSet(
+                paths=paths,
+                watcher_confidence="full-sweep",
+                is_fresh_instance=False,
+            )
+            confidence = "full-sweep"
+        else:
+            # Probe HEAD~1 without --check so we can fall back instead of raising.
+            probe = _run_git(root, ["rev-parse", "HEAD~1"])
+            if probe.returncode != 0:
+                # Most commonly: "fatal: ambiguous argument 'HEAD~1'" on a
+                # single-commit repo. Fall back to the full sweep; AC #6 pins
+                # the watcher_confidence label. AC #2: this is the only detector
+                # branch that sets ``is_fresh_instance=True`` — a single-commit
+                # repo has no prior state to diff against, so the planner should
+                # take the bounded full-sweep fast path.
+                paths = _list_all_python_files(root)
+                changeset = ChangeSet(
+                    paths=paths,
+                    watcher_confidence="full-sweep-fallback",
+                    is_fresh_instance=True,
+                )
+                confidence = "full-sweep-fallback"
+            else:
+                diff = _run_git(
+                    root,
+                    ["diff", "--name-only", "--no-renames", "HEAD~1", "HEAD"],
+                )
+                if diff.returncode != 0:
+                    raise RuntimeError(
+                        f"git diff HEAD~1 HEAD failed: returncode={diff.returncode} "
+                        f"stderr={diff.stderr!r}"
+                    )
+                py_paths = tuple(
+                    line
+                    for line in diff.stdout.splitlines()
+                    if line.strip().endswith(".py")
+                )
+                # AC #2: ordinary diff-head1 is the incremental path, not fresh.
+                changeset = ChangeSet(
+                    paths=py_paths,
+                    watcher_confidence="diff-head1",
+                    is_fresh_instance=False,
+                )
+                confidence = "diff-head1"
 
-    # Probe HEAD~1 without --check so we can fall back instead of raising.
-    probe = _run_git(root, ["rev-parse", "HEAD~1"])
-    if probe.returncode != 0:
-        # Most commonly: "fatal: ambiguous argument 'HEAD~1'" on a
-        # single-commit repo. Fall back to the full sweep; AC #6 pins
-        # the watcher_confidence label. AC #2: this is the only detector
-        # branch that sets ``is_fresh_instance=True`` — a single-commit
-        # repo has no prior state to diff against, so the planner should
-        # take the bounded full-sweep fast path.
-        paths = _list_all_python_files(root)
-        changeset = ChangeSet(
-            paths=paths,
-            watcher_confidence="full-sweep-fallback",
-            is_fresh_instance=True,
-        )
-        return changeset, "full-sweep-fallback"
-
-    diff = _run_git(
-        root,
-        ["diff", "--name-only", "--no-renames", "HEAD~1", "HEAD"],
-    )
-    if diff.returncode != 0:
-        raise RuntimeError(
-            f"git diff HEAD~1 HEAD failed: returncode={diff.returncode} "
-            f"stderr={diff.stderr!r}"
-        )
-    py_paths = tuple(
-        line for line in diff.stdout.splitlines() if line.strip().endswith(".py")
-    )
-    # AC #2: ordinary diff-head1 is the incremental path, not fresh.
-    changeset = ChangeSet(
-        paths=py_paths,
-        watcher_confidence="diff-head1",
-        is_fresh_instance=False,
-    )
-    return changeset, "diff-head1"
+        s = get_current_span()
+        s.set_attribute("path_count", len(changeset.paths))
+        s.set_attribute("watcher_confidence", changeset.watcher_confidence)
+        return changeset, confidence
 
 
 __all__ = [

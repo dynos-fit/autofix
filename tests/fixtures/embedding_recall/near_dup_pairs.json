@@ -1,0 +1,15 @@
+{
+  "_comment": "task-012 AC 24 held-out near-dup pairs. Each 'query' text is semantically close to the 'target' seed symbol (same intent, different wording/signature) so the sidecar's recall@5 should surface the target while an exact+SimHash baseline does not.",
+  "pairs": [
+    {"target": "seed-parse-json", "query": "python::load_json_from_disk def load_json_from_disk(filepath: str) -> dict: with open(filepath) as fh: return json.load(fh)"},
+    {"target": "seed-compute-md5", "query": "python::md5_hex def md5_hex(payload: bytes) -> str: return hashlib.md5(payload).hexdigest()"},
+    {"target": "seed-read-csv", "query": "python::load_csv_rows def load_csv_rows(filename: str) -> list: return [row for row in csv.reader(open(filename))]"},
+    {"target": "seed-send-email", "query": "python::dispatch_email def dispatch_email(recipient: str, topic: str, content: str) -> None: mailer.send(recipient, topic, content)"},
+    {"target": "seed-connect-db", "query": "python::open_db_connection def open_db_connection(dsn: str) -> Connection: return psycopg2.connect(dsn)"},
+    {"target": "seed-compute-sha256", "query": "python::sha256_hex def sha256_hex(buf: bytes) -> str: return hashlib.sha256(buf).hexdigest()"},
+    {"target": "seed-encode-base64", "query": "python::b64_encode def b64_encode(raw: bytes) -> str: return base64.b64encode(raw).decode('utf-8')"},
+    {"target": "seed-validate-email", "query": "python::is_valid_email def is_valid_email(candidate: str) -> bool: return EMAIL_REGEX.fullmatch(candidate) is not None"},
+    {"target": "seed-cosine-sim", "query": "python::compute_cosine def compute_cosine(u: list, v: list) -> float: return dot(u,v) / (norm(u) * norm(v))"},
+    {"target": "seed-parse-url", "query": "python::split_url def split_url(link: str) -> dict: return dict(urllib.parse.urlparse(link)._asdict())"}
+  ]
+}

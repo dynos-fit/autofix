@@ -48,6 +48,11 @@ from typing import Any
 # while suppressing the false-positive in-repo edge.
 import importlib as _importlib
 
+from opentelemetry.trace import get_current_span
+
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
+
 try:  # pragma: no cover - exercised only when deps are present
     _tree_sitter_mod = _importlib.import_module("tree_sitter")
     _TS_IMPORT_ERR: ImportError | None = None
@@ -266,47 +271,59 @@ def parse_file(path: Path, repo_root: Path | None = None) -> ParseResult:
         whether such errors are fatal.
     """
 
-    parser = _ensure_parser()
+    with span(
+        "autofix_next.parse",
+        scan_id=current_scan_id(),
+        commit_sha=current_commit_sha(),
+        language="python",
+    ):
+        parser = _ensure_parser()
 
-    try:
-        source_bytes = path.read_bytes()
-    except FileNotFoundError:
-        raise
-    except OSError:
-        raise
-
-    try:
-        tree = parser.parse(source_bytes)
-    except BaseException as exc:  # noqa: BLE001 — grammar can surface odd errors
-        _raise_load_error(exc)
-
-    if repo_root is not None:
         try:
-            relpath = str(path.resolve().relative_to(repo_root.resolve()))
-        except ValueError:
-            # Path is outside repo_root — fall back to an absolute path so
-            # the fingerprint stays unique rather than collapsing to name.
-            relpath = str(path)
-    else:
-        relpath = path.name
+            source_bytes = path.read_bytes()
+        except FileNotFoundError:
+            raise
+        except OSError:
+            raise
 
-    try:
-        text = source_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        # Non-UTF-8 source is rare in Python 3 repos but must surface with
-        # a clean error rather than a raw decode traceback.
-        raise TreeSitterLoadError(
-            f"source file {path} is not valid UTF-8: {exc}"
-        ) from exc
-    lines = text.split("\n")
+        try:
+            tree = parser.parse(source_bytes)
+        except BaseException as exc:  # noqa: BLE001 — grammar can surface odd errors
+            _raise_load_error(exc)
 
-    return ParseResult(
-        path=path,
-        relpath=relpath,
-        source_bytes=source_bytes,
-        tree=tree,
-        lines=lines,
-    )
+        if repo_root is not None:
+            try:
+                relpath = str(path.resolve().relative_to(repo_root.resolve()))
+            except ValueError:
+                # Path is outside repo_root — fall back to an absolute path so
+                # the fingerprint stays unique rather than collapsing to name.
+                relpath = str(path)
+        else:
+            relpath = path.name
+
+        try:
+            text = source_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # Non-UTF-8 source is rare in Python 3 repos but must surface with
+            # a clean error rather than a raw decode traceback.
+            raise TreeSitterLoadError(
+                f"source file {path} is not valid UTF-8: {exc}"
+            ) from exc
+        lines = text.split("\n")
+
+        s = get_current_span()
+        s.set_attribute("path", relpath)
+        s.set_attribute(
+            "has_error", bool(getattr(tree.root_node, "has_error", False))
+        )
+
+        return ParseResult(
+            path=path,
+            relpath=relpath,
+            source_bytes=source_bytes,
+            tree=tree,
+            lines=lines,
+        )
 
 
 class PythonAdapter:

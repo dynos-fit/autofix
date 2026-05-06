@@ -166,6 +166,24 @@ def test_emits_promoted_default_tier_on_priority_none(tmp_path, monkeypatch):
     assert "promoted_default_tier" in _decisions(events)
 
 
+def test_promoted_default_tier_event_carries_reason(tmp_path, monkeypatch):
+    """AC 57: promoted_default_tier LLMCallGated payload must include a non-null reason."""
+    scheduler, fake, events = _build(tmp_path, monkeypatch)
+    scheduler.schedule(_make_packet())
+
+    gated = [e for e in events if e["event"] == "LLMCallGated"]
+    tier_events = [
+        e for e in gated
+        if e["payload"].get("decision") == "promoted_default_tier"
+    ]
+    assert tier_events, "expected at least one promoted_default_tier LLMCallGated event"
+    for e in tier_events:
+        reason = e["payload"].get("reason")
+        assert reason, (
+            f"promoted_default_tier payload must carry a non-null reason; got: {e['payload']!r}"
+        )
+
+
 def test_emits_skipped_suppressed_on_glob_match(tmp_path, monkeypatch):
     """AC 59: ``skipped_suppressed`` fires on a suppression match."""
     scheduler, fake, events = _build(
@@ -461,8 +479,10 @@ def test_new_event_names_contains_llmcallgated_and_has_not_grown():
 
     assert "LLMCallGated" in NEW_EVENT_NAMES
 
-    # Frozen set of event names that existed pre-task-008. New decisions
-    # ride on the existing LLMCallGated event; no new event names.
+    # Frozen set of event names through task-012. New decisions still ride
+    # on the existing LLMCallGated event; no new LLM-gate names. The three
+    # EmbeddingSidecar* names were added by task-012 AC 17/18 — pinned
+    # here so any further growth is explicit.
     expected_baseline = {
         "ScanStarted",
         "SymbolIndexed",
@@ -478,9 +498,14 @@ def test_new_event_names_contains_llmcallgated_and_has_not_grown():
         "AdapterRegistered",
         "AdapterPrecisionUnavailable",
         "LanguageShardPersisted",
+        "ScanExplanation",  # added by task-009 (telemetry-replay-service AC 20)
+        "TracerProviderConfigurationFailed",  # added by task-010 seg-6 (tracer structured-telemetry fallback)
+        "EmbeddingSidecarColdRebuild",  # added by task-012 AC 17
+        "EmbeddingSidecarIncrementalUpdate",  # added by task-012 AC 17
+        "EmbeddingSidecarDegraded",  # added by task-012 AC 18
     }
     assert set(NEW_EVENT_NAMES) == expected_baseline, (
-        f"NEW_EVENT_NAMES must not grow for task-008: "
+        f"NEW_EVENT_NAMES must match the task-012 baseline: "
         f"new={set(NEW_EVENT_NAMES) - expected_baseline}, "
         f"removed={expected_baseline - set(NEW_EVENT_NAMES)}"
     )

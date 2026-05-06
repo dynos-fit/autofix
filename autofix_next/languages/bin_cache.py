@@ -20,6 +20,23 @@ The atomic-install sequence (fsync tmp → fsync parent → ``os.replace`` →
 fsync parent) mirrors :meth:`autofix_next.indexing.scip_index.SCIPIndex._atomic_write_json`
 verbatim (AC #27). Per-cache-directory flock mirrors ``_acquire_lock`` in
 the same module.
+
+Supply-chain integrity
+----------------------
+Every entry in :data:`_PINNED` MUST carry a real 64-character lowercase
+hex SHA256 digest from the upstream release's checksum manifest. Sentinel
+placeholder strings of the form ``"<sha256-placeholder-...>"`` are
+recognized by :func:`_is_placeholder_sha` and cause
+:class:`BinCacheIntegrityError` (a :class:`RuntimeError` subclass) to be
+raised at verification time — a loud hard-fail that supersedes the
+previous behavior of silently accepting placeholder digests.
+
+Operators MUST replace every placeholder with a real digest before the
+corresponding ``(tool, os, arch)`` can be fetched in production.
+``BinCacheIntegrityError`` is intentionally NOT caught by the atomic
+install's best-effort ``OSError`` cleanup paths — a misconfigured pin is
+a policy violation, not a recoverable IO failure, and it must propagate
+to the caller.
 """
 from __future__ import annotations
 
@@ -68,6 +85,28 @@ class BinaryUnavailableError(Exception):
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class BinCacheIntegrityError(RuntimeError):
+    """Raised when a pinned SHA256 is a sentinel placeholder (AC #2).
+
+    Subclasses :class:`RuntimeError` (not :class:`BinaryIntegrityError`)
+    because placeholder gating is a *configuration / policy* defect in
+    :data:`_PINNED`, distinct from a runtime checksum mismatch on real
+    bytes. This exception intentionally propagates past the atomic-install
+    path's best-effort ``OSError`` swallowers: a misconfigured pin must
+    not be silently downgraded.
+    """
+
+
+def _is_placeholder_sha(value: str) -> bool:
+    """Return ``True`` iff ``value`` is a sentinel placeholder digest (AC #1).
+
+    A placeholder is any string that starts with ``"<sha256-placeholder"``
+    and ends with ``">"``. Real 64-character lowercase hex digests never
+    match this pattern.
+    """
+    return value.startswith("<sha256-placeholder") and value.endswith(">")
 
 
 # Pinned (version, sha256) table keyed by (tool, os, arch).
@@ -297,6 +336,17 @@ def ensure_binary(tool: str) -> Path:
         )
     version, expected_sha = _PINNED[pin_key]
 
+    # AC #2: supply-chain integrity gate. If the pinned digest is still a
+    # sentinel placeholder, hard-fail before any cache lookup or download.
+    # A placeholder means the operator has not completed the provenance
+    # step; silently accepting it would let a freshly-downloaded binary
+    # execute without meaningful verification.
+    if _is_placeholder_sha(expected_sha):
+        raise BinCacheIntegrityError(
+            f"pinned sha256 for {tool!r} is a placeholder; "
+            f"set a real 64-char lowercase hex sha256 in _PINNED"
+        )
+
     cache_dir = _cache_root() / tool / version
     final = cache_dir / tool
     lock_path = cache_dir / ".lock"
@@ -410,6 +460,7 @@ def ensure_binary(tool: str) -> Path:
 
 
 __all__ = [
+    "BinCacheIntegrityError",
     "BinaryIntegrityError",
     "BinaryUnavailableError",
     "ensure_binary",
