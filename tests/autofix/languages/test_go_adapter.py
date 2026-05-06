@@ -196,6 +196,14 @@ def test_go_adapter_nested_modules_get_own_shards(
     assert (fixtures_root / "pkg" / "util" / "go.mod").is_file(), (
         "inner go.mod fixture missing"
     )
+    # Clean any cache state left behind by a prior scip-go invocation
+    # (the adapter persists shards under <repo_root>/.autofix/state/index/
+    # which can pollute a checked-in fixture directory). The cache hit
+    # path skips subprocess invocation and would falsely fail this test.
+    # The post-test .autofix dir is harmless to subsequent runs because
+    # this same cleanup runs at the start of every invocation.
+    import shutil
+    shutil.rmtree(fixtures_root / ".autofix", ignore_errors=True)
 
     from autofix.languages import bin_cache
 
