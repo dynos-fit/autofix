@@ -29,8 +29,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from opentelemetry.trace import get_current_span
+
 from autofix_next.events.schema import ChangeSet
 from autofix_next.invalidation.call_graph import CallGraph
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 DEFAULT_CALLER_DEPTH: int = 3
 
@@ -160,103 +164,118 @@ def plan(
         (AC #17) or non-``.py`` paths (AC #18).
     """
 
-    # -- Fresh-instance fast path (AC #14) -------------------------------
-    # The caller graph is NOT traversed here: we use the graph's own
-    # materialized ``all_symbols`` / ``all_paths`` accessors, so cycles in
-    # ``_callers`` are irrelevant and the filesystem is never scanned.
-    if changeset.is_fresh_instance:
-        return Invalidation(
-            affected_symbols=graph.all_symbols,
-            affected_files=tuple(sorted(graph.all_paths)),
-            is_full_sweep=True,
-            depth_used=max_depth,
-            source_changeset=changeset,
+    with span(
+        "autofix_next.invalidation",
+        scan_id=current_scan_id(),
+        commit_sha=current_commit_sha(),
+    ):
+        # -- Fresh-instance fast path (AC #14) -------------------------------
+        # The caller graph is NOT traversed here: we use the graph's own
+        # materialized ``all_symbols`` / ``all_paths`` accessors, so cycles in
+        # ``_callers`` are irrelevant and the filesystem is never scanned.
+        if changeset.is_fresh_instance:
+            invalidation = Invalidation(
+                affected_symbols=graph.all_symbols,
+                affected_files=tuple(sorted(graph.all_paths)),
+                is_full_sweep=True,
+                depth_used=max_depth,
+                source_changeset=changeset,
+            )
+        # -- Empty non-fresh ChangeSet (AC #15) -----------------------------
+        # Never silently upgrade to a full sweep — an empty changeset means
+        # "nothing to do" and the planner respects that.
+        elif not changeset.paths:
+            invalidation = Invalidation(
+                affected_symbols=frozenset(),
+                affected_files=(),
+                is_full_sweep=False,
+                depth_used=max_depth,
+                source_changeset=changeset,
+            )
+        else:
+            # -- Incremental path (AC #13 / #16 / #17 / #18) --------------------
+            root = _graph_root(graph)
+
+            seeds: set[str] = set()
+            # ``local_paths_by_sid`` lets us recover the host path of a seed that
+            # came from an on-the-fly parse (those symbols are not in graph._symbols,
+            # so ``graph[sid].path`` would raise KeyError).
+            local_paths_by_sid: dict[str, str] = {}
+
+            for relpath in changeset.paths:
+                known = graph.symbols_in(relpath)
+                if known:
+                    # Known file — take all its symbols as seeds (AC #13).
+                    # Deleted-file case (AC #17) also lands here when the graph
+                    # still remembers the previously-indexed symbols.
+                    seeds.update(known)
+                    continue
+                # Path not in graph: new file on disk, deleted file, or non-py.
+                # Only try on-the-fly parsing for ``.py`` files that actually
+                # exist on disk. Non-py files (AC #18) and deleted files (AC #17)
+                # both silently pass through with zero new seeds and still appear
+                # in ``affected_files`` below.
+                if root is not None and relpath.endswith(".py"):
+                    abs_path = root / relpath
+                    try:
+                        exists = abs_path.is_file()
+                    except OSError:
+                        # Filesystem error probing the path — treat as missing.
+                        exists = False
+                    if exists:
+                        new_sids = _parse_new_file_symbols(root, relpath)
+                        for sid in new_sids:
+                            seeds.add(sid)
+                            local_paths_by_sid[sid] = relpath
+
+            # -- Transitive caller expansion (AC #13) ---------------------------
+            # ``callers_of`` returns just the upward-reachable callers, excluding
+            # the seeds themselves. Per AC #13 we union the seeds back in.
+            caller_ids = (
+                graph.callers_of(seeds, max_depth) if seeds else frozenset()
+            )
+            affected_symbols = frozenset(seeds | caller_ids)
+
+            # -- Host-path collection (AC #13 / #16 / #17 / #18) ---------------
+            # Every affected symbol contributes its host path; the raw changeset
+            # paths are unioned in verbatim so non-py (AC #18) and deleted paths
+            # (AC #17) pass through even though they have no indexed symbols.
+            host_paths: set[str] = set()
+            for sid in affected_symbols:
+                try:
+                    host_paths.add(graph[sid].path)
+                except KeyError:
+                    # Symbol came from an on-the-fly parse (AC #16) — it is not
+                    # in graph._symbols. Recover the path from our local map.
+                    local = local_paths_by_sid.get(sid)
+                    if local is not None:
+                        host_paths.add(local)
+                    elif "::" in sid:
+                        # Fallback: ``symbol_id`` is ``<path>::<qualified-name>``.
+                        # This branch is defensive only; seeds from on-the-fly
+                        # parses always go through ``local_paths_by_sid`` first.
+                        host_paths.add(sid.rsplit("::", 1)[0])
+
+            affected_files = tuple(sorted(host_paths | set(changeset.paths)))
+
+            invalidation = Invalidation(
+                affected_symbols=affected_symbols,
+                affected_files=affected_files,
+                is_full_sweep=False,
+                depth_used=max_depth,
+                source_changeset=changeset,
+            )
+
+        s = get_current_span()
+        s.set_attribute("is_full_sweep", bool(invalidation.is_full_sweep))
+        s.set_attribute("depth_used", int(invalidation.depth_used))
+        s.set_attribute(
+            "affected_symbol_count", len(invalidation.affected_symbols)
         )
-
-    # -- Empty non-fresh ChangeSet (AC #15) -----------------------------
-    # Never silently upgrade to a full sweep — an empty changeset means
-    # "nothing to do" and the planner respects that.
-    if not changeset.paths:
-        return Invalidation(
-            affected_symbols=frozenset(),
-            affected_files=(),
-            is_full_sweep=False,
-            depth_used=max_depth,
-            source_changeset=changeset,
+        s.set_attribute(
+            "affected_file_count", len(invalidation.affected_files)
         )
-
-    # -- Incremental path (AC #13 / #16 / #17 / #18) --------------------
-    root = _graph_root(graph)
-
-    seeds: set[str] = set()
-    # ``local_paths_by_sid`` lets us recover the host path of a seed that
-    # came from an on-the-fly parse (those symbols are not in graph._symbols,
-    # so ``graph[sid].path`` would raise KeyError).
-    local_paths_by_sid: dict[str, str] = {}
-
-    for relpath in changeset.paths:
-        known = graph.symbols_in(relpath)
-        if known:
-            # Known file — take all its symbols as seeds (AC #13).
-            # Deleted-file case (AC #17) also lands here when the graph
-            # still remembers the previously-indexed symbols.
-            seeds.update(known)
-            continue
-        # Path not in graph: new file on disk, deleted file, or non-py.
-        # Only try on-the-fly parsing for ``.py`` files that actually
-        # exist on disk. Non-py files (AC #18) and deleted files (AC #17)
-        # both silently pass through with zero new seeds and still appear
-        # in ``affected_files`` below.
-        if root is not None and relpath.endswith(".py"):
-            abs_path = root / relpath
-            try:
-                exists = abs_path.is_file()
-            except OSError:
-                # Filesystem error probing the path — treat as missing.
-                exists = False
-            if exists:
-                new_sids = _parse_new_file_symbols(root, relpath)
-                for sid in new_sids:
-                    seeds.add(sid)
-                    local_paths_by_sid[sid] = relpath
-
-    # -- Transitive caller expansion (AC #13) ---------------------------
-    # ``callers_of`` returns just the upward-reachable callers, excluding
-    # the seeds themselves. Per AC #13 we union the seeds back in.
-    caller_ids = (
-        graph.callers_of(seeds, max_depth) if seeds else frozenset()
-    )
-    affected_symbols = frozenset(seeds | caller_ids)
-
-    # -- Host-path collection (AC #13 / #16 / #17 / #18) ---------------
-    # Every affected symbol contributes its host path; the raw changeset
-    # paths are unioned in verbatim so non-py (AC #18) and deleted paths
-    # (AC #17) pass through even though they have no indexed symbols.
-    host_paths: set[str] = set()
-    for sid in affected_symbols:
-        try:
-            host_paths.add(graph[sid].path)
-        except KeyError:
-            # Symbol came from an on-the-fly parse (AC #16) — it is not
-            # in graph._symbols. Recover the path from our local map.
-            local = local_paths_by_sid.get(sid)
-            if local is not None:
-                host_paths.add(local)
-            elif "::" in sid:
-                # Fallback: ``symbol_id`` is ``<path>::<qualified-name>``.
-                # This branch is defensive only; seeds from on-the-fly
-                # parses always go through ``local_paths_by_sid`` first.
-                host_paths.add(sid.rsplit("::", 1)[0])
-
-    affected_files = tuple(sorted(host_paths | set(changeset.paths)))
-
-    return Invalidation(
-        affected_symbols=affected_symbols,
-        affected_files=affected_files,
-        is_full_sweep=False,
-        depth_used=max_depth,
-        source_changeset=changeset,
-    )
+        return invalidation
 
 
 __all__ = [

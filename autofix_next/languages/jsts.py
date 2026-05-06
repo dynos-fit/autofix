@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from autofix_next.languages import bin_cache, register
+from autofix_next.languages.adapter_emission import mark_adapter_registered
 
 
 # Grammar probe — performed once at module import time. The two names
@@ -93,9 +94,10 @@ class _EmptyParseResult:
 # ---------------------------------------------------------------------------
 
 
-# Module-level one-shot flag: ``AdapterRegistered`` is emitted at most
-# once per adapter per process on first use (AC #12).
-_ADAPTER_REGISTERED_EMITTED: bool = False
+# One-shot per-scan emission is tracked via the contextvar-scoped
+# registry in :mod:`autofix_next.languages.adapter_emission` (AC 6-9).
+# The previous module-level ``_ADAPTER_REGISTERED_EMITTED`` global was
+# removed so long-running processes do not leak state across scans.
 
 
 def _emit_adapter_registered(
@@ -112,10 +114,8 @@ def _emit_adapter_registered(
     a lost row must never abort the scan.
     """
 
-    global _ADAPTER_REGISTERED_EMITTED
-    if _ADAPTER_REGISTERED_EMITTED:
+    if not mark_adapter_registered(language):
         return
-    _ADAPTER_REGISTERED_EMITTED = True
     try:
         from autofix_next.telemetry import events_log
 
@@ -474,7 +474,28 @@ class JSTSAdapter:
                         timeout=600,
                         capture_output=True,
                     )
-                except (subprocess.TimeoutExpired, OSError):
+                except subprocess.TimeoutExpired:
+                    # AC 12: timeout is a distinct telemetry signal from a
+                    # non-zero exit — operators need to distinguish a hung
+                    # binary from one that ran to completion with an error.
+                    _emit_adapter_precision_unavailable(
+                        repo_root,
+                        language=self.language,
+                        reason="binary_timeout",
+                    )
+                    try:
+                        tmp.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+                    return None
+                except OSError:
+                    # Spawn-time OSError (e.g., ENOENT on the binary,
+                    # EACCES). Distinct from timeout; reuse the
+                    # ``binary_nonzero_exit`` family as the closest proxy
+                    # for "subprocess invocation did not yield a usable
+                    # artifact" — not a rename failure.
                     _emit_adapter_precision_unavailable(
                         repo_root,
                         language=self.language,
@@ -505,10 +526,13 @@ class JSTSAdapter:
                 try:
                     _atomic_rename(tmp, final, state_dir)
                 except OSError:
+                    # AC 12: atomic-rename OSError is a distinct failure
+                    # mode from a non-zero subprocess exit — the binary
+                    # ran cleanly but the state-dir write failed.
                     _emit_adapter_precision_unavailable(
                         repo_root,
                         language=self.language,
-                        reason="binary_nonzero_exit",
+                        reason="binary_rename_failed",
                     )
                     try:
                         tmp.unlink()

@@ -19,6 +19,7 @@ so the CLI can derive SARIF + human output without re-running analysis.
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from autofix_next.dedup.cluster_store import ClusterStore
 from autofix_next.evidence.builder import build_packet
 from autofix_next.evidence.schema import CandidateFinding
 from autofix_next.events.schema import ChangeSet
+from autofix_next.indexing.embedding import EmbeddingSidecar, SymbolRecall
 from autofix_next.indexing.symbols import build_symbol_table
 from autofix_next.invalidation.call_graph import CallGraph
 from autofix_next.invalidation.planner import (
@@ -37,9 +39,30 @@ from autofix_next.invalidation.planner import (
     plan as _plan_invalidation,
 )
 from autofix_next.llm.scheduler import ScheduleDecision, Scheduler
+from autofix_next.migration import load_legacy_findings
 from autofix_next.parsing.tree_sitter import parse_file
 from autofix_next.ranking.priority_scorer import PriorityScore, PriorityScorer
 from autofix_next.telemetry import events_log
+from autofix_next.telemetry.correlation import (
+    current_commit_sha,
+    current_event_id,
+)
+
+
+def _legacy_migration_enabled(policy: dict) -> bool:
+    """Return whether the legacy-findings injection should run for this scan.
+
+    task-20260506-001 AC 10. The default is ``True`` (no policy / missing
+    key means legacy injection is on). Only the JSON boolean ``false``
+    disables; truthy non-bool values (e.g. the string ``"false"``) leave
+    injection enabled because Python evaluates a non-empty string as True.
+    """
+    if not isinstance(policy, dict):
+        return True
+    state_migration = policy.get("state_migration", {})
+    if not isinstance(state_migration, dict):
+        return True
+    return bool(state_migration.get("legacy_findings_enabled", True))
 
 
 @dataclass(slots=True)
@@ -259,6 +282,140 @@ def _emit_cluster_store_persisted_event(
         pass
 
 
+def _emit_scan_explanation_event(
+    root: Path,
+    *,
+    scan_id: str,
+    invalidation: Invalidation,
+    all_findings: list[CandidateFinding],
+    scored_items: list[tuple[CandidateFinding, object, PriorityScore, DedupDecision]],
+    decisions: list[ScheduleDecision],
+    cluster_store: ClusterStore,
+) -> None:
+    """Append one ``ScanExplanation`` envelope row per scan (AC #21-28).
+
+    Emits a summary row answering the six operator questions (diff wrong,
+    invalidation wrong, analyzer noisy, ranking bad, dedup collision, LLM
+    too permissive). The payload shape is frozen at EXACTLY the 13 top-level
+    keys enumerated in AC #22; adding or removing a key is a contract
+    violation enforced by test.
+
+    Telemetry loss follows the OSError-only discipline of the sibling
+    ``_emit_*_event`` helpers: a failed disk write must not abort the scan.
+    """
+    # AC #22: trace/span id from the currently active OTel span; fall back
+    # to empty strings when no provider is installed or the span context is
+    # invalid. The ``opentelemetry.trace`` API is a hard dependency (seg-1
+    # added it to pyproject); the import is local to keep the helper cheap
+    # when not called.
+    try:
+        from opentelemetry.trace import get_current_span
+
+        span_ctx = get_current_span().get_span_context()
+        if getattr(span_ctx, "is_valid", False):
+            span_id_hex = format(span_ctx.span_id, "016x")
+            trace_id_hex = format(span_ctx.trace_id, "032x")
+        else:
+            span_id_hex = ""
+            trace_id_hex = ""
+    except Exception:
+        # Defensive: any OTel-layer failure must not block telemetry.
+        span_id_hex = ""
+        trace_id_hex = ""
+
+    # AC #23: ``diff_match`` is True iff the change-detector ran (we only
+    # reach this helper when it did — NotAGitRepoError short-circuits the
+    # CLI before ``run_scan`` is called) AND ``current_commit_sha()`` is a
+    # non-empty string. The equality-with-ScanStarted constraint is
+    # satisfied because ``scan_command.py`` stamps the same contextvar
+    # value into the ScanStarted row's ``commit_sha`` field.
+    resolved_commit_sha = current_commit_sha() or ""
+    diff_match = bool(resolved_commit_sha)
+
+    # AC #24: invalidation_plan_size is the FROZENSET length of affected
+    # symbols — NOT the file count.
+    invalidation_plan_size = len(invalidation.affected_symbols)
+
+    # AC #25: pre-rank candidate count (before dedup cascade).
+    analyzer_finding_count = len(all_findings)
+
+    # AC #26: median priority across scored items; 0.0 when empty.
+    if scored_items:
+        ranking_percentile = statistics.median(
+            [score.priority for (_f, _p, score, _d) in scored_items]
+        )
+    else:
+        ranking_percentile = 0.0
+
+    # AC #27: max cluster size across scored items; 0 when empty or when no
+    # matching cluster is found. ``ClusterStore.cluster_size`` does not
+    # exist today (plan "Open Questions" #3), so we fall back to
+    # ``len(cluster.member_fingerprints)`` via a lookup over the cluster
+    # list. The seam is narrow: if the method lands later, callers here
+    # can switch to ``cluster_store.cluster_size(cid)`` unchanged.
+    cluster_by_id: dict[str, object] = {
+        c.cluster_id: c for c in cluster_store.clusters
+    }
+    max_cluster_size = 0
+    for (_f, _p, _s, decision) in scored_items:
+        cluster = cluster_by_id.get(decision.cluster_id)
+        if cluster is None:
+            continue
+        size = len(getattr(cluster, "member_fingerprints", []) or [])
+        if size > max_cluster_size:
+            max_cluster_size = size
+    dedup_cluster_size = max_cluster_size
+
+    # AC #28: bucket ScheduleDecision.decision values into three counts
+    # whose sum equals len(decisions). "confirmed" is the promoted-set;
+    # "rejected" is ``promoted_failed``; everything else (skipped_*,
+    # cache_store_failed) lands in "skipped".
+    _CONFIRMED = {"promoted", "promoted_cache_hit", "promoted_default_tier"}
+    confirmed = 0
+    rejected = 0
+    skipped = 0
+    for d in decisions:
+        verdict = d.decision
+        if verdict in _CONFIRMED:
+            confirmed += 1
+        elif verdict == "promoted_failed":
+            rejected += 1
+        else:
+            skipped += 1
+    llm_verdict_histogram = {
+        "confirmed": confirmed,
+        "rejected": rejected,
+        "skipped": skipped,
+    }
+
+    # AC #22: exactly 13 top-level keys. Key order is preserved here for
+    # diff-friendly events.jsonl rows; JSON serialization is not
+    # order-sensitive, but human readability matters for operators.
+    payload = {
+        "event_type": "ScanExplanation",
+        "repo_id": root.name,
+        "scan_id": scan_id,
+        "commit_sha": resolved_commit_sha,
+        "span_id": span_id_hex,
+        "trace_id": trace_id_hex,
+        "event_id": current_event_id() or "",
+        "diff_match": diff_match,
+        "invalidation_plan_size": invalidation_plan_size,
+        "analyzer_finding_count": analyzer_finding_count,
+        "ranking_percentile": ranking_percentile,
+        "dedup_cluster_size": dedup_cluster_size,
+        "llm_verdict_histogram": llm_verdict_histogram,
+    }
+    try:
+        events_log.append_event(root, "ScanExplanation", payload)
+    except OSError:
+        # Same contract as the sibling helpers: telemetry loss must not
+        # abort the scan. Any non-OSError (ValueError for an unknown event
+        # name, TypeError for a non-dict payload) propagates by design —
+        # those indicate programmer bugs surfaced during development.
+        pass
+
+
 def _analyze_one_file_python(
     root: Path, relpath: str
 ) -> list[CandidateFinding]:
@@ -324,6 +481,107 @@ def _analyze_one_file(
     return []
 
 
+_POLICY_MAX_BYTES: int = 1 << 20  # 1 MiB cap (task-012 SEC-002).
+
+
+def _load_scan_policy(root: Path) -> dict | None:
+    """Decode ``<root>/.autofix/autofix-policy.json`` if present.
+
+    task-012 AC 21/22. Used only as a fallback when the caller did not
+    pass ``policy=`` explicitly (e.g. the CLI entry point). Returns
+    ``None`` for any IO / JSON failure so the scan degrades to "no
+    policy = sidecar disabled" — the same behavior as running with an
+    empty policy file.
+
+    Security hardening (task-012 SEC-001/002/003):
+
+    * **SEC-001**: resolve the target path and refuse to read anything
+      whose canonical form escapes ``root`` (blocks symlink pivots
+      pointing at ``/etc/passwd`` or sibling repos).
+    * **SEC-002**: reject files larger than :data:`_POLICY_MAX_BYTES`
+      before reading them (cheap DoS guard — normal policies are
+      well under a KiB).
+    * **SEC-003**: catch :class:`RecursionError` from ``json.loads``
+      when presented with a deeply nested JSON bomb.
+    """
+    policy_path = root / ".autofix" / "autofix-policy.json"
+    try:
+        root_real = Path(root).resolve(strict=True)
+    except OSError:
+        return None
+    try:
+        resolved = policy_path.resolve(strict=True)
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(root_real)
+    except ValueError:
+        # SEC-001: the resolved path escapes the scan root (symlinked
+        # out of the repo). Refuse to read.
+        return None
+    try:
+        stat_result = resolved.stat()
+    except OSError:
+        return None
+    if stat_result.st_size > _POLICY_MAX_BYTES:
+        # SEC-002: oversize policy file — treat as missing.
+        return None
+    try:
+        raw = resolved.read_bytes()
+    except OSError:
+        return None
+    try:
+        import json
+        decoded = json.loads(raw)
+    except (ValueError, RecursionError):
+        # SEC-003: RecursionError from nested JSON bombs is degraded to
+        # "no policy" rather than propagated through run_scan.
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
+
+
+def _resolve_sidecar_recall_params(
+    policy: dict | None,
+) -> tuple[int, float]:
+    """Resolve (top_k, similarity_threshold) for the sidecar recall stage.
+
+    task-012 AC 21. Missing keys degrade to the documented defaults:
+    ``top_k=5``, ``similarity_threshold=0.75``. Invalid types are also
+    treated as missing so operator typos do not break the scan.
+    """
+    top_k = 5
+    threshold = 0.75
+    if isinstance(policy, dict):
+        index_cfg = policy.get("index")
+        if isinstance(index_cfg, dict):
+            sidecar_cfg = index_cfg.get("embedding_sidecar")
+            if isinstance(sidecar_cfg, dict):
+                raw_k = sidecar_cfg.get("top_k")
+                if isinstance(raw_k, int) and raw_k > 0:
+                    top_k = raw_k
+                raw_t = sidecar_cfg.get("similarity_threshold")
+                if isinstance(raw_t, (int, float)) and 0.0 <= float(raw_t) <= 1.0:
+                    threshold = float(raw_t)
+    return top_k, threshold
+
+
+def _sidecar_query_text_for(finding: CandidateFinding) -> str:
+    """Build the sidecar-recall query text for a finding (AC 14).
+
+    Prefers ``f"{language}::{symbol_name} {signature}"`` but falls back to
+    ``f"{language}::{symbol_name}"`` when the finding lacks ``signature``.
+    """
+    language = getattr(finding, "language", None) or "python"
+    symbol_name = getattr(finding, "symbol_name", "") or ""
+    signature = getattr(finding, "signature", "") or ""
+    base = f"{language}::{symbol_name}".strip()
+    if signature:
+        return f"{base} {signature}"
+    return base
+
+
 def run_scan(
     root: Path,
     changeset: ChangeSet,
@@ -331,6 +589,7 @@ def run_scan(
     *,
     scheduler: Scheduler | None = None,
     graph: CallGraph | None = None,
+    policy: dict | None = None,
 ) -> ScanResult:
     """Analyze the invalidation-planned paths and schedule each finding.
 
@@ -391,6 +650,20 @@ def run_scan(
 
     resolved_scheduler = scheduler if scheduler is not None else Scheduler(root=root)
 
+    # task-012 AC 14: opt-in embedding sidecar sits between analyzer output
+    # and the dedup cascade. When the policy flag is off or absent, the
+    # sidecar instance is disabled (AC 5) and every public method is a
+    # no-op — preserving byte-identical scan output (AC 22). When enabled
+    # but deps are missing, __init__ self-disables after emitting a single
+    # EmbeddingSidecarDegraded row (AC 6).
+    effective_policy = policy if policy is not None else _load_scan_policy(root)
+    sidecar = EmbeddingSidecar(root, effective_policy)
+    sidecar_top_k, sidecar_threshold = _resolve_sidecar_recall_params(
+        effective_policy
+    )
+    if sidecar.enabled:
+        sidecar.load()
+
     # Seg-6 (AC #31): load the persistent cluster store once per scan,
     # emit the one-shot DedupEmbeddingTierStatus envelope, and construct
     # the scorer + cascade that the analyzer loop below will drive. The
@@ -418,6 +691,54 @@ def run_scan(
     scored_items: list[
         tuple[CandidateFinding, object, PriorityScore, DedupDecision]
     ] = []
+
+    # task-20260506-001 (state-migration-legacy-to-next AC 9-13): inject
+    # the projected legacy findings into the same scoring + recall +
+    # cascade sequence used by the analyzer loop below. Gated by the
+    # ``state_migration.legacy_findings_enabled`` policy flag (default
+    # True). When the gate is off, ``load_legacy_findings`` is NEVER
+    # called — the code path is short-circuited at the helper boundary
+    # (AC 10/11). Legacy findings are appended FIRST so a subsequent
+    # analyzer finding sharing the same ``finding_id`` lands in Tier 1
+    # (exact fingerprint match) per cascade.py:82-89 (AC 13).
+    if _legacy_migration_enabled(effective_policy or {}):
+        legacy_findings = load_legacy_findings(root, log=None)
+        for finding in legacy_findings:
+            all_findings.append(finding)
+            packet = build_packet(
+                rule_id=finding.rule_id,
+                relpath=finding.path,
+                symbol_name=finding.symbol_name,
+                normalized_import=finding.normalized_import,
+                changed_slice=finding.changed_slice,
+                analyzer_note=(
+                    f"bound name {finding.symbol_name} has zero identifier "
+                    "references in file"
+                ),
+            )
+            _emit_packet_built_event(
+                root,
+                scan_id=scan_id,
+                finding=finding,
+                prompt_prefix_hash=packet.prompt_prefix_hash,
+            )
+            score = scorer.score(finding, graph, cluster_store)
+            _emit_priority_scored_event(root, scan_id=scan_id, score=score)
+            recall_hits: list[SymbolRecall] = sidecar.recall(
+                query_text=_sidecar_query_text_for(finding),
+                top_k=sidecar_top_k,
+                threshold=sidecar_threshold,
+            )
+            decision = cascade.classify(
+                finding, score, cluster_store, recall_hits=recall_hits
+            )
+            _emit_finding_deduped_event(
+                root,
+                scan_id=scan_id,
+                finding_id=finding.finding_id,
+                decision=decision,
+            )
+            scored_items.append((finding, packet, score, decision))
 
     # AC #21: iterate invalidation.affected_files instead of
     # changeset.paths — the planner has already unioned in every file
@@ -448,7 +769,18 @@ def run_scan(
             # match -> update_on_match; no-match -> register_new_cluster).
             score = scorer.score(finding, graph, cluster_store)
             _emit_priority_scored_event(root, scan_id=scan_id, score=score)
-            decision = cascade.classify(finding, score, cluster_store)
+            # task-012 AC 14: per-finding semantic recall stage. When the
+            # sidecar is disabled, .recall() returns []; AC 15 guarantees
+            # DedupCascade.classify(recall_hits=[]) is byte-identical to
+            # the pre-task cascade call.
+            recall_hits: list[SymbolRecall] = sidecar.recall(
+                query_text=_sidecar_query_text_for(finding),
+                top_k=sidecar_top_k,
+                threshold=sidecar_threshold,
+            )
+            decision = cascade.classify(
+                finding, score, cluster_store, recall_hits=recall_hits
+            )
             _emit_finding_deduped_event(
                 root,
                 scan_id=scan_id,
@@ -456,6 +788,13 @@ def run_scan(
                 decision=decision,
             )
             scored_items.append((finding, packet, score, decision))
+
+    # task-012 AC 20: flush any accumulated incremental-update counters
+    # before the cluster store is persisted. When the sidecar is disabled
+    # this is a no-op; when enabled with zero upserts this is also a no-op
+    # (counters are zero from construction). Only a live update batch
+    # emits the single-row ``EmbeddingSidecarIncrementalUpdate`` envelope.
+    sidecar.flush_incremental_update()
 
     # Seg-6 (AC #31): persist the cluster store exactly once per scan,
     # AFTER every finding has been classified (so every register /
@@ -493,6 +832,21 @@ def run_scan(
     decisions: list[ScheduleDecision] = [
         decision_by_fp[f.finding_id] for f in all_findings
     ]
+
+    # Seg-6 (AC #21-28): emit exactly ONE ScanExplanation row summarizing
+    # the scan. Invoked AFTER ``cluster_store.save(root)`` and AFTER the
+    # scheduler dispatch loop, BEFORE the ScanResult return — the order
+    # lets the helper read the final cluster state and the fully-resolved
+    # decision list. OSError-only is swallowed inside the helper.
+    _emit_scan_explanation_event(
+        root,
+        scan_id=scan_id,
+        invalidation=invalidation,
+        all_findings=all_findings,
+        scored_items=scored_items,
+        decisions=decisions,
+        cluster_store=cluster_store,
+    )
 
     return ScanResult(
         scan_id=scan_id,

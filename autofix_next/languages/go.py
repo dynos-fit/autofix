@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from autofix_next.languages import bin_cache, register
+from autofix_next.languages.adapter_emission import mark_adapter_registered
 
 
 _log = logging.getLogger(__name__)
@@ -99,9 +100,10 @@ class _EmptyParseResult:
 # ---------------------------------------------------------------------------
 
 
-# Module-level one-shot flag: ``AdapterRegistered`` is emitted at most
-# once per adapter per process on first use.
-_ADAPTER_REGISTERED_EMITTED: bool = False
+# One-shot per-scan emission is tracked via the contextvar-scoped
+# registry in :mod:`autofix_next.languages.adapter_emission` (AC 6-9).
+# The previous module-level ``_ADAPTER_REGISTERED_EMITTED`` global was
+# removed so long-running processes do not leak state across scans.
 
 
 def _emit_adapter_registered(
@@ -118,10 +120,8 @@ def _emit_adapter_registered(
     a lost row must never abort the scan.
     """
 
-    global _ADAPTER_REGISTERED_EMITTED
-    if _ADAPTER_REGISTERED_EMITTED:
+    if not mark_adapter_registered(language):
         return
-    _ADAPTER_REGISTERED_EMITTED = True
     try:
         from autofix_next.telemetry import events_log
 
@@ -519,7 +519,29 @@ class GoAdapter:
                             timeout=600,
                             capture_output=True,
                         )
-                    except (subprocess.TimeoutExpired, OSError):
+                    except subprocess.TimeoutExpired:
+                        # AC 13: timeout is a distinct telemetry signal
+                        # from a non-zero exit — operators need to tell a
+                        # hung scip-go apart from one that exited with an
+                        # error.
+                        _emit_adapter_precision_unavailable(
+                            repo_root,
+                            language=self.language,
+                            reason="binary_timeout",
+                        )
+                        try:
+                            tmp.unlink()
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            pass
+                        continue
+                    except OSError:
+                        # Spawn-time OSError (e.g., ENOENT on the binary,
+                        # EACCES). Reuse the ``binary_nonzero_exit`` family
+                        # as the closest proxy for "subprocess invocation
+                        # did not yield a usable artifact" — not a rename
+                        # failure.
                         _emit_adapter_precision_unavailable(
                             repo_root,
                             language=self.language,
@@ -550,10 +572,14 @@ class GoAdapter:
                     try:
                         _atomic_rename(tmp, final, state_dir)
                     except OSError:
+                        # AC 13: atomic-rename OSError is a distinct
+                        # failure mode from a non-zero subprocess exit —
+                        # scip-go ran cleanly but the shard persist
+                        # failed.
                         _emit_adapter_precision_unavailable(
                             repo_root,
                             language=self.language,
-                            reason="binary_nonzero_exit",
+                            reason="binary_rename_failed",
                         )
                         try:
                             tmp.unlink()

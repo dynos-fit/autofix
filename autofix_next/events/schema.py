@@ -29,6 +29,11 @@ EventType = Literal[
     "AdapterRegistered",
     "AdapterPrecisionUnavailable",
     "LanguageShardPersisted",
+    "ScanExplanation",
+    "TracerProviderConfigurationFailed",
+    "EmbeddingSidecarColdRebuild",
+    "EmbeddingSidecarIncrementalUpdate",
+    "EmbeddingSidecarDegraded",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -47,6 +52,11 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "AdapterRegistered",
         "AdapterPrecisionUnavailable",
         "LanguageShardPersisted",
+        "ScanExplanation",
+        "TracerProviderConfigurationFailed",
+        "EmbeddingSidecarColdRebuild",
+        "EmbeddingSidecarIncrementalUpdate",
+        "EmbeddingSidecarDegraded",
     }
 )
 

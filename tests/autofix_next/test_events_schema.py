@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = REPO_ROOT / "autofix_next"
 
@@ -41,10 +39,11 @@ def test_all_subpackages_have_init() -> None:
 
 
 def test_new_event_names_are_exact_set() -> None:
-    """task-006 AC #34: NEW_EVENT_NAMES is exactly the 14-camelCase set
-    after the language-adapter extensions add ``AdapterRegistered``,
-    ``AdapterPrecisionUnavailable``, and ``LanguageShardPersisted``
-    (growing the set 11 -> 14)."""
+    """task-006 AC #34 + task-010 AC #19-20 + task-012 AC 28: NEW_EVENT_NAMES
+    is exactly the 19-camelCase set after the language-adapter extensions,
+    the task-010 tracer-provider-failure event, and the task-012 embedding
+    sidecar events. Growing 16 -> 19 with
+    ``EmbeddingSidecar{ColdRebuild,IncrementalUpdate,Degraded}``."""
     from autofix_next.events import schema as events_schema
 
     expected = frozenset(
@@ -63,6 +62,11 @@ def test_new_event_names_are_exact_set() -> None:
             "AdapterRegistered",
             "AdapterPrecisionUnavailable",
             "LanguageShardPersisted",
+            "ScanExplanation",
+            "TracerProviderConfigurationFailed",
+            "EmbeddingSidecarColdRebuild",
+            "EmbeddingSidecarIncrementalUpdate",
+            "EmbeddingSidecarDegraded",
         }
     )
     assert hasattr(events_schema, "NEW_EVENT_NAMES"), (
@@ -73,13 +77,16 @@ def test_new_event_names_are_exact_set() -> None:
 
 
 def test_new_event_names_includes_invalidation_computed() -> None:
-    """task-006 AC #35: ``InvalidationComputed`` is still in
-    ``NEW_EVENT_NAMES`` and the set has exactly 14 names after the
-    language-adapter extension (11 + 3 new names)."""
+    """task-006 AC #35 + task-009 AC #20 + task-010 seg-6 + task-012 AC 28:
+    ``InvalidationComputed`` is still in ``NEW_EVENT_NAMES`` and the set
+    has exactly 19 names after the language-adapter extension (11 + 3
+    new names) plus ``ScanExplanation`` (task-009) plus
+    ``TracerProviderConfigurationFailed`` (task-010 seg-6) plus the
+    three task-012 embedding-sidecar events."""
     from autofix_next.events import schema as events_schema
 
     assert "InvalidationComputed" in events_schema.NEW_EVENT_NAMES
-    assert len(events_schema.NEW_EVENT_NAMES) == 14
+    assert len(events_schema.NEW_EVENT_NAMES) == 19
 
 
 def test_changeset_gains_is_fresh_instance_field() -> None:

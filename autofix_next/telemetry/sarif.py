@@ -14,16 +14,19 @@ and future consumers that do not yet build full evidence objects.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from autofix_next.evidence.fingerprints import canonical_json_bytes
 from autofix_next.evidence.schema import CandidateFinding
 
 SARIF_SCHEMA: str = "https://json.schemastore.org/sarif-2.1.0.json"
 SARIF_VERSION: str = "2.1.0"
 DRIVER_NAME: str = "autofix-next"
 DRIVER_VERSION: str = "0.1.0"
+SARIF_FINGERPRINT_V1_SCHEME: str = "sarif-v1"
 
 
 def _get(finding: Any, *keys: str, default: Any = None) -> Any:
@@ -44,6 +47,38 @@ def _get(finding: Any, *keys: str, default: Any = None) -> Any:
             if val is not None:
                 return val
     return default
+
+
+def compute_sarif_fingerprint_v1(finding: Any) -> str:
+    """Compute the sarif-v1 partialFingerprint for a finding.
+
+    Inputs:
+      scheme_version: literal "sarif-v1" (versioning mechanism; bumps to v2 break this namespace)
+      rule_id: the analyzer rule id
+      artifact_uri: repo-relative POSIX path (the ``path``/``relpath`` field)
+      symbol_name: the bound name the finding is about
+
+    Explicitly excluded:
+      start_line / end_line (destroys line-move stability)
+      normalized_import (internal-only; SARIF consumers don't have it)
+      commit_sha (fingerprints are commit-independent)
+
+    The payload dict is serialized via
+    :func:`autofix_next.evidence.fingerprints.canonical_json_bytes` so
+    the digest is byte-stable across Python versions and platforms.
+
+    Returns a 64-char lowercase hex SHA-256 digest.
+    """
+    rule_id = _get(finding, "rule_id", default="")
+    artifact_uri = _get(finding, "path", "relpath", default="")
+    symbol_name = _get(finding, "symbol_name", default="")
+    payload = {
+        "scheme_version": SARIF_FINGERPRINT_V1_SCHEME,
+        "rule_id": rule_id,
+        "artifact_uri": artifact_uri,
+        "symbol_name": symbol_name,
+    }
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _result_for(finding: Any) -> dict[str, Any]:
@@ -84,7 +119,10 @@ def _result_for(finding: Any) -> dict[str, Any]:
                 }
             }
         ],
-        "partialFingerprints": {"autofixNext/v1": finding_id},
+        "partialFingerprints": {
+            "autofixNext/v1": finding_id,
+            "sarif-v1": compute_sarif_fingerprint_v1(finding),
+        },
     }
 
 
@@ -169,5 +207,7 @@ __all__ = [
     "SARIF_VERSION",
     "DRIVER_NAME",
     "DRIVER_VERSION",
+    "SARIF_FINGERPRINT_V1_SCHEME",
     "emit_sarif",
+    "compute_sarif_fingerprint_v1",
 ]

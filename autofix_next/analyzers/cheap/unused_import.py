@@ -38,10 +38,14 @@ identically, matching AC #18.
 
 from __future__ import annotations
 
+from opentelemetry.trace import get_current_span
+
 from autofix_next.evidence.fingerprints import compute_finding_fingerprint
 from autofix_next.evidence.schema import CandidateFinding
 from autofix_next.indexing.symbols import ImportRecord, SymbolTable
 from autofix_next.parsing.tree_sitter import ParseResult
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 RULE_ID: str = "unused-import.intra-file"
 RULE_VERSION: str = "v1"
@@ -133,23 +137,32 @@ def analyze(
         :class:`CandidateFinding` whose ``finding_id`` is deterministic.
     """
 
-    references = symbol_table.references
-    exports: list[str] = symbol_table.all_exports or []
-    export_set: set[str] = set(exports)
+    with span(
+        "autofix_next.analyze",
+        scan_id=current_scan_id(),
+        commit_sha=current_commit_sha(),
+        rule_id=RULE_ID,
+    ):
+        references = symbol_table.references
+        exports: list[str] = symbol_table.all_exports or []
+        export_set: set[str] = set(exports)
 
-    findings: list[CandidateFinding] = []
-    for record in symbol_table.imports:
-        bound = record.bound_name
-        if not bound:
-            # Malformed record with an empty bound name — skip rather
-            # than emit a finding whose fingerprint would be unstable.
-            continue
-        if bound in references:
-            continue
-        if bound in export_set:
-            continue
-        findings.append(_emit_finding(record, parse_result))
-    return findings
+        findings: list[CandidateFinding] = []
+        for record in symbol_table.imports:
+            bound = record.bound_name
+            if not bound:
+                # Malformed record with an empty bound name — skip rather
+                # than emit a finding whose fingerprint would be unstable.
+                continue
+            if bound in references:
+                continue
+            if bound in export_set:
+                continue
+            findings.append(_emit_finding(record, parse_result))
+
+        s = get_current_span()
+        s.set_attribute("finding_count", len(findings))
+        return findings
 
 
 __all__ = [

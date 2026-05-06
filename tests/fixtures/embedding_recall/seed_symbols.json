@@ -1,0 +1,25 @@
+{
+  "_comment": "task-012 AC 24 held-out seed set. 20 symbols covering distinct semantic buckets.",
+  "symbols": [
+    {"symbol_id": "seed-parse-json", "text": "python::parse_json def parse_json(path: str) -> dict: return json.loads(open(path).read())", "symbol_name": "parse_json", "language": "python", "path": "pkg/io/json_io.py"},
+    {"symbol_id": "seed-compute-md5", "text": "python::compute_md5 def compute_md5(data: bytes) -> str: return hashlib.md5(data).hexdigest()", "symbol_name": "compute_md5", "language": "python", "path": "pkg/hash/md5.py"},
+    {"symbol_id": "seed-read-csv", "text": "python::read_csv def read_csv(path: str) -> list[list[str]]: return list(csv.reader(open(path)))", "symbol_name": "read_csv", "language": "python", "path": "pkg/io/csv_io.py"},
+    {"symbol_id": "seed-send-email", "text": "python::send_email def send_email(to: str, subject: str, body: str) -> None: smtp.send(to, subject, body)", "symbol_name": "send_email", "language": "python", "path": "pkg/notify/email.py"},
+    {"symbol_id": "seed-connect-db", "text": "python::connect_db def connect_db(url: str) -> Connection: return psycopg2.connect(url)", "symbol_name": "connect_db", "language": "python", "path": "pkg/db/connect.py"},
+    {"symbol_id": "seed-retry-http", "text": "python::retry_http def retry_http(url: str, attempts: int) -> Response: for _ in range(attempts): r = requests.get(url); if r.ok: return r", "symbol_name": "retry_http", "language": "python", "path": "pkg/http/retry.py"},
+    {"symbol_id": "seed-sort-findings", "text": "python::sort_findings def sort_findings(findings: list) -> list: return sorted(findings, key=lambda f: f.priority)", "symbol_name": "sort_findings", "language": "python", "path": "pkg/rank/sorter.py"},
+    {"symbol_id": "seed-validate-email", "text": "python::validate_email def validate_email(s: str) -> bool: return bool(EMAIL_REGEX.match(s))", "symbol_name": "validate_email", "language": "python", "path": "pkg/validate/email.py"},
+    {"symbol_id": "seed-encode-base64", "text": "python::encode_base64 def encode_base64(data: bytes) -> str: return base64.b64encode(data).decode('ascii')", "symbol_name": "encode_base64", "language": "python", "path": "pkg/encode/base64.py"},
+    {"symbol_id": "seed-tokenize", "text": "python::tokenize_text def tokenize_text(text: str) -> list[str]: return nltk.word_tokenize(text)", "symbol_name": "tokenize_text", "language": "python", "path": "pkg/nlp/tokenize.py"},
+    {"symbol_id": "seed-cosine-sim", "text": "python::cosine_similarity def cosine_similarity(a: list, b: list) -> float: return sum(x*y for x,y in zip(a,b)) / (norm(a) * norm(b))", "symbol_name": "cosine_similarity", "language": "python", "path": "pkg/ml/similarity.py"},
+    {"symbol_id": "seed-open-port", "text": "python::open_port def open_port(host: str, port: int) -> socket: s = socket.socket(); s.connect((host, port)); return s", "symbol_name": "open_port", "language": "python", "path": "pkg/net/port.py"},
+    {"symbol_id": "seed-render-html", "text": "python::render_html def render_html(template: str, ctx: dict) -> str: return Environment().from_string(template).render(ctx)", "symbol_name": "render_html", "language": "python", "path": "pkg/web/render.py"},
+    {"symbol_id": "seed-load-config", "text": "python::load_config def load_config(path: str) -> dict: return yaml.safe_load(open(path))", "symbol_name": "load_config", "language": "python", "path": "pkg/config/loader.py"},
+    {"symbol_id": "seed-compute-sha256", "text": "python::compute_sha256 def compute_sha256(data: bytes) -> str: return hashlib.sha256(data).hexdigest()", "symbol_name": "compute_sha256", "language": "python", "path": "pkg/hash/sha256.py"},
+    {"symbol_id": "seed-write-log", "text": "python::write_log def write_log(level: str, msg: str) -> None: logger.log(LEVELS[level], msg)", "symbol_name": "write_log", "language": "python", "path": "pkg/log/writer.py"},
+    {"symbol_id": "seed-merge-dicts", "text": "python::merge_dicts def merge_dicts(a: dict, b: dict) -> dict: return {**a, **b}", "symbol_name": "merge_dicts", "language": "python", "path": "pkg/util/dicts.py"},
+    {"symbol_id": "seed-parse-url", "text": "python::parse_url def parse_url(url: str) -> dict: return urlparse(url)._asdict()", "symbol_name": "parse_url", "language": "python", "path": "pkg/net/url.py"},
+    {"symbol_id": "seed-decode-jwt", "text": "python::decode_jwt def decode_jwt(token: str, secret: str) -> dict: return jwt.decode(token, secret, algorithms=['HS256'])", "symbol_name": "decode_jwt", "language": "python", "path": "pkg/auth/jwt.py"},
+    {"symbol_id": "seed-compress-gzip", "text": "python::compress_gzip def compress_gzip(data: bytes) -> bytes: return gzip.compress(data)", "symbol_name": "compress_gzip", "language": "python", "path": "pkg/compress/gzip.py"}
+  ]
+}

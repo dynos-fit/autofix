@@ -203,6 +203,11 @@ def test_ensure_binary_network_failure_raises_unavailable(
     tool, os_name, arch, version = _get_pinned_entry_for_current_platform(bc)
     monkeypatch.setenv("AUTOFIX_NEXT_BIN_CACHE", str(tmp_path))
     # Empty cache → miss path → network fetch attempted.
+    # task-010 META-001: _PINNED ships with placeholder SHAs that now raise
+    # BinCacheIntegrityError at the gate before any network work. Stub a
+    # real-shape (64 hex chars) sha so this test exercises the network
+    # failure path, not the new integrity gate.
+    monkeypatch.setitem(bc._PINNED, (tool, os_name, arch), (version, "0" * 64))
 
     import urllib.request as urlreq
 

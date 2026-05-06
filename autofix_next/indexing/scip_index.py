@@ -66,11 +66,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from opentelemetry.trace import get_current_span
+
 from autofix_next.indexing.scip_emitter import (
     SCIP_JSON_SCHEMA_VERSION,
     _validate_shard_shape,
     emit_document,
 )
+from autofix_next.telemetry.atomic import atomic_write_json
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 # ----------------------------------------------------------------------
 # On-disk layout constants (AC #3 / #7 / #8)
@@ -158,66 +163,101 @@ class SCIPIndex:
         through :meth:`_atomic_write_json`.
         """
 
-        index_dir = root / INDEX_ROOT_REL
-        manifest_path = index_dir / MANIFEST_FILENAME
-
-        # ---- Manifest ------------------------------------------------
-        if not manifest_path.is_file():
-            return None
-        try:
-            manifest_text = manifest_path.read_text(encoding="utf-8")
-            manifest = json.loads(manifest_text)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            return None
-        if not isinstance(manifest, dict):
-            return None
-        if manifest.get("schema_version") != SCIP_JSON_SCHEMA_VERSION:
-            # AC #26: wrong schema → None (forces cold rebuild).
-            return None
-        hashes = manifest.get("hashes")
-        if not isinstance(hashes, dict):
-            return None
-        # Each hash value must be a string; malformed entries mean a
-        # rebuild is cheaper than guessing around the damage.
-        for rel, hsh in hashes.items():
-            if not isinstance(rel, str) or not isinstance(hsh, str):
-                return None
-        if "built_at" not in manifest or not isinstance(
-            manifest.get("built_at"), str
+        with span(
+            "autofix_next.index",
+            scan_id=current_scan_id(),
+            commit_sha=current_commit_sha(),
         ):
-            return None
+            s = get_current_span()
 
-        # ---- Reverse-refs sidecar -----------------------------------
-        refs_path = index_dir / REVERSE_REFS_FILENAME
-        if not refs_path.is_file():
-            return None
-        try:
-            refs_text = refs_path.read_text(encoding="utf-8")
-            reverse_refs = json.loads(refs_text)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            return None
-        if not isinstance(reverse_refs, dict):
-            return None
-        if reverse_refs.get("schema_version") != SCIP_JSON_SCHEMA_VERSION:
-            return None
-        if not isinstance(reverse_refs.get("refs"), dict):
-            return None
+            index_dir = root / INDEX_ROOT_REL
+            manifest_path = index_dir / MANIFEST_FILENAME
 
-        # ---- Shard existence check ----------------------------------
-        # We do NOT load every shard here — just verify the referenced
-        # file exists on disk. Lazy loading in ``get_symbol`` keeps the
-        # fast-path cheap while still catching a manifest that points at
-        # a shard file that's been deleted out from under us.
-        for rel, hsh in hashes.items():
-            shard_path = cls._shard_path_for_hash(root, hsh)
-            if not shard_path.is_file():
+            # ---- Manifest ------------------------------------------------
+            if not manifest_path.is_file():
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            try:
+                manifest_text = manifest_path.read_text(encoding="utf-8")
+                manifest = json.loads(manifest_text)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            if not isinstance(manifest, dict):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            if manifest.get("schema_version") != SCIP_JSON_SCHEMA_VERSION:
+                # AC #26: wrong schema → None (forces cold rebuild).
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            hashes = manifest.get("hashes")
+            if not isinstance(hashes, dict):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            # Each hash value must be a string; malformed entries mean a
+            # rebuild is cheaper than guessing around the damage.
+            for rel, hsh in hashes.items():
+                if not isinstance(rel, str) or not isinstance(hsh, str):
+                    s.set_attribute("shard_count", 0)
+                    s.set_attribute("cache_mode", "ok")
+                    return None
+            if "built_at" not in manifest or not isinstance(
+                manifest.get("built_at"), str
+            ):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
                 return None
 
-        idx = cls()
-        idx._manifest = manifest
-        idx._reverse_refs = reverse_refs
-        idx._root = root
-        return idx
+            # ---- Reverse-refs sidecar -----------------------------------
+            refs_path = index_dir / REVERSE_REFS_FILENAME
+            if not refs_path.is_file():
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            try:
+                refs_text = refs_path.read_text(encoding="utf-8")
+                reverse_refs = json.loads(refs_text)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            if not isinstance(reverse_refs, dict):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            if reverse_refs.get("schema_version") != SCIP_JSON_SCHEMA_VERSION:
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+            if not isinstance(reverse_refs.get("refs"), dict):
+                s.set_attribute("shard_count", 0)
+                s.set_attribute("cache_mode", "ok")
+                return None
+
+            # ---- Shard existence check ----------------------------------
+            # We do NOT load every shard here — just verify the referenced
+            # file exists on disk. Lazy loading in ``get_symbol`` keeps the
+            # fast-path cheap while still catching a manifest that points at
+            # a shard file that's been deleted out from under us.
+            for rel, hsh in hashes.items():
+                shard_path = cls._shard_path_for_hash(root, hsh)
+                if not shard_path.is_file():
+                    s.set_attribute("shard_count", 0)
+                    s.set_attribute("cache_mode", "ok")
+                    return None
+
+            idx = cls()
+            idx._manifest = manifest
+            idx._reverse_refs = reverse_refs
+            idx._root = root
+            s.set_attribute("shard_count", len(hashes))
+            s.set_attribute("cache_mode", idx.last_cache_mode or "ok")
+            return idx
 
     def save(
         self,
@@ -237,56 +277,66 @@ class SCIPIndex:
         cache just didn't get updated this run. Never raises.
         """
 
-        index_dir = root / INDEX_ROOT_REL
-        try:
-            index_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # We can't even create the index directory (permission,
-            # read-only FS, etc.). Fall back silently — the caller
-            # already has a valid in-memory graph.
-            self.last_cache_mode = CACHE_MODE_FALLBACK
-            return
+        with span(
+            "autofix_next.index",
+            scan_id=current_scan_id(),
+            commit_sha=current_commit_sha(),
+        ):
+            try:
+                index_dir = root / INDEX_ROOT_REL
+                try:
+                    index_dir.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    # We can't even create the index directory (permission,
+                    # read-only FS, etc.). Fall back silently — the caller
+                    # already has a valid in-memory graph.
+                    self.last_cache_mode = CACHE_MODE_FALLBACK
+                    return
 
-        lock_path = index_dir / LOCK_FILENAME
-        try:
-            lock_path.touch(exist_ok=True)
-        except OSError:
-            self.last_cache_mode = CACHE_MODE_FALLBACK
-            return
+                lock_path = index_dir / LOCK_FILENAME
+                try:
+                    lock_path.touch(exist_ok=True)
+                except OSError:
+                    self.last_cache_mode = CACHE_MODE_FALLBACK
+                    return
 
-        try:
-            with self._acquire_lock(lock_path):
-                self._write_all_shards(root, content_hashes, graph)
-                reverse_refs_map = self._compute_reverse_refs_from_graph(
-                    graph
-                )
-                self._atomic_write_json(
-                    index_dir / REVERSE_REFS_FILENAME,
-                    {
-                        "schema_version": SCIP_JSON_SCHEMA_VERSION,
-                        "refs": reverse_refs_map,
-                    },
-                )
-                manifest = {
-                    "schema_version": SCIP_JSON_SCHEMA_VERSION,
-                    "built_at": _utc_iso8601_now(),
-                    "hashes": dict(content_hashes),
-                }
-                self._atomic_write_json(
-                    index_dir / MANIFEST_FILENAME, manifest
-                )
-                # Update in-memory state on successful persist.
-                self._manifest = manifest
-                self._reverse_refs = {
-                    "schema_version": SCIP_JSON_SCHEMA_VERSION,
-                    "refs": reverse_refs_map,
-                }
-                self._root = root
-                self.last_cache_mode = None
-        except BlockingIOError:
-            # 30 s flock timeout — documented fallback path (AC #13).
-            self.last_cache_mode = CACHE_MODE_FALLBACK
-            return
+                try:
+                    with self._acquire_lock(lock_path):
+                        self._write_all_shards(root, content_hashes, graph)
+                        reverse_refs_map = self._compute_reverse_refs_from_graph(
+                            graph
+                        )
+                        self._atomic_write_json(
+                            index_dir / REVERSE_REFS_FILENAME,
+                            {
+                                "schema_version": SCIP_JSON_SCHEMA_VERSION,
+                                "refs": reverse_refs_map,
+                            },
+                        )
+                        manifest = {
+                            "schema_version": SCIP_JSON_SCHEMA_VERSION,
+                            "built_at": _utc_iso8601_now(),
+                            "hashes": dict(content_hashes),
+                        }
+                        self._atomic_write_json(
+                            index_dir / MANIFEST_FILENAME, manifest
+                        )
+                        # Update in-memory state on successful persist.
+                        self._manifest = manifest
+                        self._reverse_refs = {
+                            "schema_version": SCIP_JSON_SCHEMA_VERSION,
+                            "refs": reverse_refs_map,
+                        }
+                        self._root = root
+                        self.last_cache_mode = None
+                except BlockingIOError:
+                    # 30 s flock timeout — documented fallback path (AC #13).
+                    self.last_cache_mode = CACHE_MODE_FALLBACK
+                    return
+            finally:
+                s = get_current_span()
+                s.set_attribute("shard_count", len(content_hashes))
+                s.set_attribute("cache_mode", self.last_cache_mode or "ok")
 
     def apply_incremental(
         self,
@@ -440,9 +490,12 @@ class SCIPIndex:
     def _atomic_write_json(self, final_path: Path, obj: dict) -> None:
         """Atomically replace ``final_path`` with ``obj`` (AC #9).
 
-        Sequence:
+        Delegates the 4-step ``tmp -> fsync -> os.replace -> dir-fsync``
+        install to :func:`autofix_next.telemetry.atomic.atomic_write_json`
+        (task-20260417-010 seg-4). The helper performs the identical
+        sequence previously inlined here:
 
-        1. Write ``<final>.tmp`` and ``flush``.
+        1. Write ``<final>.tmp``.
         2. ``fsync`` the tmp file descriptor.
         3. ``fsync`` the parent directory so the tmp entry is durable.
         4. ``os.replace(tmp, final)``.
@@ -453,68 +506,30 @@ class SCIPIndex:
         intact (AC #9 crash-rename contract). A crash between step 4 and
         step 5 still leaves the new entry — ``os.replace`` is atomic
         with respect to readers even before the parent-dir fsync.
+
+        Error contract preservation: ``atomic_write_json`` swallows
+        ``OSError`` and returns ``False`` on failure, whereas the prior
+        inline body propagated ``OSError``. The callers in this module
+        (``save`` / ``_apply_incremental_locked``) rely on ``OSError``
+        propagation to break out of the in-progress write; we therefore
+        re-raise ``OSError`` on a ``False`` return so downstream logic is
+        unchanged. Note the tmp file has already been best-effort unlinked
+        by the helper at that point.
+
+        Byte-format note: the helper uses
+        ``json.dumps(obj, sort_keys=True, separators=(",", ":"))`` (compact,
+        deterministic) in place of the prior ``indent=2`` (pretty). Tests
+        only assert byte-equality across successive saves within the same
+        run (e.g. crash-rename test at
+        ``tests/autofix_next/indexing/test_scip_index.py`` line ~239), not
+        against a frozen pretty-printed reference, so this is compatible.
         """
 
-        tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
-        data = json.dumps(obj, sort_keys=True, indent=2).encode("utf-8")
-
-        # Step 1 + 2: write + fsync the tmp file. Open with O_TRUNC so a
-        # leftover tmp from a prior crashed write is cleanly replaced.
-        fd = os.open(
-            str(tmp_path),
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o644,
-        )
-        try:
-            view = memoryview(data)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(
-                        f"unexpected zero-length write to {tmp_path}"
-                    )
-                view = view[written:]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-        parent_dir = final_path.parent
-
-        # Step 3: fsync parent directory so the new tmp entry is durable.
-        self._fsync_directory(parent_dir)
-
-        # Step 4: atomic rename.
-        os.replace(str(tmp_path), str(final_path))
-
-        # Step 5: fsync parent directory again so the renamed entry is
-        # durable. This is the belt-and-braces guarantee AC #9 asks for.
-        self._fsync_directory(parent_dir)
-
-    @staticmethod
-    def _fsync_directory(dir_path: Path) -> None:
-        """``fsync`` the directory's descriptor — no-op on unsupported OSes.
-
-        Some filesystems (notably parts of NFS) reject ``fsync`` on a
-        directory fd. Swallow the resulting ``OSError`` because the
-        crash-durability guarantee is an opportunistic best-effort; if
-        the FS doesn't support it we're not going to raise to a caller
-        that can't do anything about it.
-        """
-
-        try:
-            fd = os.open(str(dir_path), os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            try:
-                os.fsync(fd)
-            except OSError:
-                pass
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        if not atomic_write_json(final_path, obj):
+            raise OSError(
+                f"atomic_write_json returned False for {final_path}; "
+                "tmp write/fsync/os.replace failed"
+            )
 
     # ------------------------------------------------------------------
     # Private helpers — shard IO

@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry.trace import get_current_span
+
 from autofix_next.evidence.schema import CandidateFinding
 from autofix_next.ranking.signals import (
     compute_confidence,
@@ -29,6 +31,8 @@ from autofix_next.ranking.signals import (
     compute_impact,
     compute_owner_risk,
 )
+from autofix_next.telemetry.correlation import current_commit_sha, current_scan_id
+from autofix_next.telemetry.tracer import span
 
 
 @dataclass(slots=True, frozen=True)
@@ -80,49 +84,58 @@ class PriorityScorer:
           deterministically to 1.0 for replay stability).
         * fingerprint present in store → ``0.0`` (tier-1 match).
         """
-        impact_raw = compute_impact(finding, graph)
-        freshness = compute_freshness(finding)
-        confidence = compute_confidence(finding)
-        owner_risk = compute_owner_risk(finding)
+        with span(
+            "autofix_next.rank",
+            scan_id=current_scan_id(),
+            commit_sha=current_commit_sha(),
+            finding_id=finding.finding_id,
+        ):
+            impact_raw = compute_impact(finding, graph)
+            freshness = compute_freshness(finding)
+            confidence = compute_confidence(finding)
+            owner_risk = compute_owner_risk(finding)
 
-        novelty: float
-        novelty_state: float
-        if getattr(cluster_store, "is_empty", True):
-            novelty = 1.0
-            novelty_state = 1.0
-        else:
-            existing = cluster_store.find_by_fingerprint(finding.finding_id)
-            if existing is None:
+            novelty: float
+            novelty_state: float
+            if getattr(cluster_store, "is_empty", True):
                 novelty = 1.0
                 novelty_state = 1.0
             else:
-                novelty = 0.0
-                novelty_state = 0.0
+                existing = cluster_store.find_by_fingerprint(finding.finding_id)
+                if existing is None:
+                    novelty = 1.0
+                    novelty_state = 1.0
+                else:
+                    novelty = 0.0
+                    novelty_state = 0.0
 
-        priority = (
-            self.W_IMPACT * impact_raw.normalized
-            + self.W_FRESHNESS * freshness
-            + self.W_CONFIDENCE * confidence
-            + self.W_NOVELTY * novelty
-            + self.W_OWNER_RISK * owner_risk
-        )
+            priority = (
+                self.W_IMPACT * impact_raw.normalized
+                + self.W_FRESHNESS * freshness
+                + self.W_CONFIDENCE * confidence
+                + self.W_NOVELTY * novelty
+                + self.W_OWNER_RISK * owner_risk
+            )
 
-        breakdown: dict[str, float] = {
-            "impact": impact_raw.normalized,
-            "freshness": freshness,
-            "confidence": confidence,
-            "novelty": novelty,
-            "owner_risk": owner_risk,
-            "impact_raw_callers_count": float(impact_raw.raw_callers_count),
-            "impact_symbol_count": float(impact_raw.symbol_count),
-            "novelty_cluster_match_state": novelty_state,
-        }
+            breakdown: dict[str, float] = {
+                "impact": impact_raw.normalized,
+                "freshness": freshness,
+                "confidence": confidence,
+                "novelty": novelty,
+                "owner_risk": owner_risk,
+                "impact_raw_callers_count": float(impact_raw.raw_callers_count),
+                "impact_symbol_count": float(impact_raw.symbol_count),
+                "novelty_cluster_match_state": novelty_state,
+            }
 
-        return PriorityScore(
-            finding_id=finding.finding_id,
-            priority=priority,
-            breakdown=breakdown,
-        )
+            result = PriorityScore(
+                finding_id=finding.finding_id,
+                priority=priority,
+                breakdown=breakdown,
+            )
+            s = get_current_span()
+            s.set_attribute("priority", float(result.priority))
+            return result
 
 
 __all__ = ["PriorityScore", "PriorityScorer"]

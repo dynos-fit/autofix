@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from autofix_next.events.schema import NEW_EVENT_NAMES
+from autofix_next.telemetry.replay import _REPLAY_EVENTS_SINK
 
 # Base58 alphabet (Bitcoin/IPFS style: no 0, O, I, l to avoid visual ambiguity).
 _BASE58_ALPHABET: str = (
@@ -128,6 +129,21 @@ def append_event(
     OSError
         If the events file cannot be created or opened for append.
     """
+    # Replay-mode sink: when active, route rows to in-memory list, skip
+    # disk. AC 41 — the sink check runs at function entry so a replay run
+    # can never rewrite historical events.jsonl bytes (AC 58).
+    _sink = _REPLAY_EVENTS_SINK.get()
+    if _sink is not None:
+        _sink.append(
+            {
+                "event_type": event_type,
+                "payload": dict(scan_event_payload),
+                "now_iso": now_iso,
+                "event_id": event_id,
+            }
+        )
+        return "evt_replay"
+
     if event_type not in NEW_EVENT_NAMES:
         raise ValueError(
             f"unknown event name: {event_type!r}; "
