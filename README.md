@@ -39,6 +39,22 @@ Debian/Ubuntu, [official docs](https://facebook.github.io/watchman/docs/install.
 Without it, `autofix watch` fails fast with a clear diagnostic; the
 other subcommands are unaffected.
 
+## External binaries (auto-managed)
+
+Some language adapters delegate to external indexer binaries:
+
+- **`scip-go`** (Go adapter): auto-downloaded on first scan of a Go
+  repo. Cached under `~/.cache/autofix/bin/scip-go/<version>/`. SHA256
+  is pinned per release; mismatch aborts the scan. Override the cache
+  location with `AUTOFIX_BIN_CACHE=/path`. Supported platforms:
+  darwin-arm64, linux-x86_64, linux-arm64. Intel Mac users: install
+  manually via `go install github.com/scip-code/scip-go/cmd/scip-go@latest`.
+- **`scip-typescript`** (JS/TS adapter): no auto-install — Sourcegraph
+  publishes scip-typescript only via npm. Install with
+  `npm install -g @sourcegraph/scip-typescript` if you scan TypeScript
+  repos. Without it, the JS/TS adapter degrades to a non-precision
+  path (Tree-sitter parse only, no symbol/reference index).
+
 ## Subcommands
 
 ### `autofix scan`

@@ -1,8 +1,16 @@
-"""Download-on-first-use cache for scip-typescript / scip-go external binaries.
+"""Download-on-first-use cache for scip-go (the only auto-downloaded
+external binary today).
 
 Pinned ``(version, SHA256)`` table keyed by ``(tool, os, arch)``. Cache root
 honors ``AUTOFIX_BIN_CACHE`` or defaults to ``~/.cache/autofix/bin/``
 (AC #28).
+
+scip-typescript ships exclusively via npm
+(``@sourcegraph/scip-typescript``) and is not auto-downloaded by this
+module — there are no upstream binary release assets to fetch.
+:func:`ensure_binary("scip-typescript")` raises
+:class:`BinaryUnavailableError` with ``reason="no_pinned_release"``;
+the JSTSAdapter degrades to a non-precision path.
 
 Exception contract is asymmetric (AC #29):
 
@@ -45,6 +53,7 @@ import fcntl
 import hashlib
 import importlib
 import os
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -111,20 +120,39 @@ def _is_placeholder_sha(value: str) -> bool:
 
 # Pinned (version, sha256) table keyed by (tool, os, arch).
 #
-# NOTE: the SHA256 values below are PLACEHOLDERS. Resolving real values
-# requires fetching each GitHub Release's checksum manifest at build time;
-# the implementation executor cannot hit the network, so the follow-up
-# commit MUST replace every ``"<sha256-placeholder-*>"`` with the actual
-# 64-hex-char digest from upstream SHA256SUMS. Tests monkeypatch this
-# dict, so they do not depend on the placeholder values being real.
+# scip-go: SHA256s are the digests of the upstream release archives
+# (``.tar.gz``) as published by ``github.com/scip-code/scip-go``. The
+# extract step pulls the bare ``scip-go`` binary out of the archive
+# before the atomic-install rename. Real digests are pinned per
+# upstream release; bumping the version requires re-fetching all
+# three asset SHA256s from
+# ``https://github.com/scip-code/scip-go/releases/download/v<X>/<asset>.sha256``.
+#
+# scip-typescript: NOT pinned here. Sourcegraph publishes scip-typescript
+# exclusively via npm (``@sourcegraph/scip-typescript``); there are no
+# binary release assets to download. ``ensure_binary("scip-typescript")``
+# raises BinaryUnavailableError with reason="no_pinned_release"; the
+# JSTSAdapter degrades to a non-precision path. See README for the
+# manual install steps.
 _PINNED: dict[tuple[str, str, str], tuple[str, str]] = {
-    ("scip-typescript", "darwin", "arm64"): ("0.3.30", "<sha256-placeholder-ts-darwin-arm64>"),
-    ("scip-typescript", "darwin", "x86_64"): ("0.3.30", "<sha256-placeholder-ts-darwin-x86_64>"),
-    ("scip-typescript", "linux", "x86_64"): ("0.3.30", "<sha256-placeholder-ts-linux-x86_64>"),
-    ("scip-go", "darwin", "arm64"): ("0.1.17", "<sha256-placeholder-go-darwin-arm64>"),
-    ("scip-go", "darwin", "x86_64"): ("0.1.17", "<sha256-placeholder-go-darwin-x86_64>"),
-    ("scip-go", "linux", "x86_64"): ("0.1.17", "<sha256-placeholder-go-linux-x86_64>"),
+    ("scip-go", "darwin", "arm64"): (
+        "0.2.4",
+        "3319187587ec339f18d0331380c4e539388ffe7aaad3fee98952f4b300a593c2",
+    ),
+    ("scip-go", "linux", "x86_64"): (
+        "0.2.4",
+        "e2bb0c99af2c0955444543a2114a80f15b7d7762963b7ad8eb2e0c8758eabedd",
+    ),
+    ("scip-go", "linux", "arm64"): (
+        "0.2.4",
+        "b257c3eb0356b0f7a32d499e15020c2e93a9273d6863c236c23100bbe719ac25",
+    ),
 }
+
+# Tools whose release asset is a ``.tar.gz`` archive containing the
+# bare binary (extract step required after SHA256-verifying the
+# archive). Tools NOT listed here are downloaded as bare binaries.
+_ARCHIVED_TOOLS: frozenset[str] = frozenset({"scip-go"})
 
 # Supported platform tuples (AC #23).
 _SUPPORTED_PLATFORMS: frozenset[tuple[str, str]] = frozenset(
@@ -132,6 +160,7 @@ _SUPPORTED_PLATFORMS: frozenset[tuple[str, str]] = frozenset(
         ("darwin", "arm64"),
         ("darwin", "x86_64"),
         ("linux", "x86_64"),
+        ("linux", "arm64"),
     }
 )
 
@@ -181,20 +210,18 @@ def _sha256_of_file(path: Path) -> str:
 def _download_url(tool: str, version: str, os_name: str, arch: str) -> str:
     """Return the upstream GitHub Releases URL for ``(tool, version, os, arch)``.
 
-    The URL templates match Sourcegraph's standard release-asset naming.
-    If real releases use a different pattern (``.tar.gz`` archive, etc.),
-    the follow-up commit that resolves real SHA256 values must update
-    this template in the same edit.
+    The release-asset arch suffix uses ``amd64`` (not ``x86_64``) on
+    upstream conventions. We translate at the URL boundary so the rest
+    of the module can keep ``x86_64`` as the canonical key.
     """
-    if tool == "scip-typescript":
-        return (
-            f"https://github.com/sourcegraph/scip-typescript/releases/download/"
-            f"v{version}/scip-typescript-{os_name}-{arch}"
-        )
+    asset_arch = "amd64" if arch == "x86_64" else arch
     if tool == "scip-go":
+        # The scip-go repo moved from sourcegraph/scip-go to scip-code/scip-go
+        # circa v0.2.x. The upstream is `scip-code` today; the old org is a
+        # redirect-only shim.
         return (
-            f"https://github.com/sourcegraph/scip-go/releases/download/"
-            f"v{version}/scip-go-{os_name}-{arch}"
+            f"https://github.com/scip-code/scip-go/releases/download/"
+            f"v{version}/scip-go-{os_name}-{asset_arch}.tar.gz"
         )
     # Defensive: unreachable because ``_PINNED`` keys gate the call, but
     # we keep the guard so a future new pinned tool surfaces a clear
@@ -251,6 +278,54 @@ def _acquire_lock(lock_path: Path) -> Iterator[int]:
             os.close(fd)
         except OSError:
             pass
+
+
+def _extract_binary_from_archive(
+    archive: Path, tool: str, out_path: Path
+) -> None:
+    """Extract the bare ``tool`` executable from a ``.tar.gz`` ``archive``.
+
+    Searches the archive for a regular-file member whose final path
+    component matches ``tool`` (case-sensitive, with or without a
+    leading directory). Writes the extracted bytes to ``out_path``.
+
+    Defensive against tar-traversal: only extracts members whose
+    resolved relative path contains no ``..`` segments. Members that
+    would escape the archive root are skipped silently and the search
+    continues.
+
+    Raises
+    ------
+    KeyError
+        No member in the archive matched ``tool``.
+    tarfile.TarError
+        The archive is malformed or unreadable.
+    OSError
+        Failed to write ``out_path``.
+    """
+    with tarfile.open(archive, mode="r:*") as tar:
+        for member in tar.getmembers():
+            if not member.isreg():
+                continue
+            # Reject any member whose path contains a parent escape.
+            parts = Path(member.name).parts
+            if ".." in parts or any(p.startswith("/") for p in parts):
+                continue
+            if Path(member.name).name != tool:
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            with open(out_path, "wb") as out_fh:
+                while True:
+                    chunk = extracted.read(65536)
+                    if not chunk:
+                        break
+                    out_fh.write(chunk)
+            return
+    raise KeyError(
+        f"no member named {tool!r} in archive {archive}"
+    )
 
 
 def _atomic_install(tmp: Path, final: Path) -> None:
@@ -453,6 +528,33 @@ def ensure_binary(tool: str) -> Path:
                 f"downloaded {tool!r} checksum mismatch from {url}: "
                 f"expected {expected_sha}, got {actual}"
             )
+
+        # Integrity proven on the downloaded bytes. For tools that ship
+        # as ``.tar.gz`` archives, extract the bare binary into a
+        # second tmp path before atomic-installing. The SHA256 already
+        # verified the archive's authenticity; the extracted binary is
+        # transitively trusted.
+        if tool in _ARCHIVED_TOOLS:
+            extracted_tmp = cache_dir / f"{tool}.extracted.tmp"
+            try:
+                _extract_binary_from_archive(tmp, tool, extracted_tmp)
+            except (tarfile.TarError, KeyError, OSError) as exc:
+                # Clean both tmp files on failure.
+                for p in (tmp, extracted_tmp):
+                    try:
+                        p.unlink()
+                    except (FileNotFoundError, OSError):
+                        pass
+                raise BinaryUnavailableError(
+                    f"failed to extract {tool!r} from archive: {exc}",
+                    reason="extract_failed",
+                ) from exc
+            # Drop the verified archive; install the extracted binary.
+            try:
+                tmp.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+            tmp = extracted_tmp
 
         # Integrity proven — install atomically.
         _atomic_install(tmp, final)
