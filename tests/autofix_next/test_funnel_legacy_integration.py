@@ -9,8 +9,9 @@ Patch target: `autofix_next.funnel.pipeline.load_legacy_findings`
 (CON-03 from plan audit — from-import vs module-attr mismatch would
 give false pass; always patch where the name is consumed).
 
-These tests are authored TDD-first.  They will FAIL at import or at
-collection time until:
+Authored under the TDD-First gate of task-20260506-001 and validated by
+seg-4-tests-and-fixtures.  These tests will pass once seg-2 wires the
+import:
   1. autofix_next/migration.py is created (load_legacy_findings exists)
   2. autofix_next/funnel/pipeline.py imports load_legacy_findings from migration
      so the patch target `autofix_next.funnel.pipeline.load_legacy_findings` is valid.
@@ -34,7 +35,7 @@ from autofix_next.funnel.pipeline import run_scan, ScanResult
 
 def _make_candidate_finding(finding_id: str, path: str = "stub.py") -> CandidateFinding:
     return CandidateFinding(
-        rule_id="unused-import",
+        rule_id="unused-import.intra-file",
         path=path,
         symbol_name="os",
         normalized_import="",

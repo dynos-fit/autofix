@@ -39,6 +39,7 @@ from autofix_next.invalidation.planner import (
     plan as _plan_invalidation,
 )
 from autofix_next.llm.scheduler import ScheduleDecision, Scheduler
+from autofix_next.migration import load_legacy_findings
 from autofix_next.parsing.tree_sitter import parse_file
 from autofix_next.ranking.priority_scorer import PriorityScore, PriorityScorer
 from autofix_next.telemetry import events_log
@@ -46,6 +47,22 @@ from autofix_next.telemetry.correlation import (
     current_commit_sha,
     current_event_id,
 )
+
+
+def _legacy_migration_enabled(policy: dict) -> bool:
+    """Return whether the legacy-findings injection should run for this scan.
+
+    task-20260506-001 AC 10. The default is ``True`` (no policy / missing
+    key means legacy injection is on). Only the JSON boolean ``false``
+    disables; truthy non-bool values (e.g. the string ``"false"``) leave
+    injection enabled because Python evaluates a non-empty string as True.
+    """
+    if not isinstance(policy, dict):
+        return True
+    state_migration = policy.get("state_migration", {})
+    if not isinstance(state_migration, dict):
+        return True
+    return bool(state_migration.get("legacy_findings_enabled", True))
 
 
 @dataclass(slots=True)
@@ -674,6 +691,54 @@ def run_scan(
     scored_items: list[
         tuple[CandidateFinding, object, PriorityScore, DedupDecision]
     ] = []
+
+    # task-20260506-001 (state-migration-legacy-to-next AC 9-13): inject
+    # the projected legacy findings into the same scoring + recall +
+    # cascade sequence used by the analyzer loop below. Gated by the
+    # ``state_migration.legacy_findings_enabled`` policy flag (default
+    # True). When the gate is off, ``load_legacy_findings`` is NEVER
+    # called — the code path is short-circuited at the helper boundary
+    # (AC 10/11). Legacy findings are appended FIRST so a subsequent
+    # analyzer finding sharing the same ``finding_id`` lands in Tier 1
+    # (exact fingerprint match) per cascade.py:82-89 (AC 13).
+    if _legacy_migration_enabled(effective_policy or {}):
+        legacy_findings = load_legacy_findings(root, log=None)
+        for finding in legacy_findings:
+            all_findings.append(finding)
+            packet = build_packet(
+                rule_id=finding.rule_id,
+                relpath=finding.path,
+                symbol_name=finding.symbol_name,
+                normalized_import=finding.normalized_import,
+                changed_slice=finding.changed_slice,
+                analyzer_note=(
+                    f"bound name {finding.symbol_name} has zero identifier "
+                    "references in file"
+                ),
+            )
+            _emit_packet_built_event(
+                root,
+                scan_id=scan_id,
+                finding=finding,
+                prompt_prefix_hash=packet.prompt_prefix_hash,
+            )
+            score = scorer.score(finding, graph, cluster_store)
+            _emit_priority_scored_event(root, scan_id=scan_id, score=score)
+            recall_hits: list[SymbolRecall] = sidecar.recall(
+                query_text=_sidecar_query_text_for(finding),
+                top_k=sidecar_top_k,
+                threshold=sidecar_threshold,
+            )
+            decision = cascade.classify(
+                finding, score, cluster_store, recall_hits=recall_hits
+            )
+            _emit_finding_deduped_event(
+                root,
+                scan_id=scan_id,
+                finding_id=finding.finding_id,
+                decision=decision,
+            )
+            scored_items.append((finding, packet, score, decision))
 
     # AC #21: iterate invalidation.affected_files instead of
     # changeset.paths — the planner has already unioned in every file

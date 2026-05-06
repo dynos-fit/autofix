@@ -3,8 +3,8 @@
 Covers AC 8: the bytes on disk for .autofix/state/current/findings.json
 are identical before and after a load_legacy_findings call.
 
-This test is authored TDD-first and FAILS at import until
-autofix_next/migration.py is created.
+Authored under the TDD-First gate of task-20260506-001 and validated by
+seg-4-tests-and-fixtures: pytest passes against the seg-1 implementation.
 """
 from __future__ import annotations
 

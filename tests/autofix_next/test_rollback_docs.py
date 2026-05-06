@@ -4,8 +4,9 @@ Covers AC 16: the rollback doc exists with four non-empty sections in the
 prescribed order, and section 3 contains the literal verification commands.
 
 These tests do NOT depend on any production Python code; they inspect
-the markdown file directly.  They will FAIL until docs/rewrite/rollback.md
-is created by the docs segment.
+the markdown file directly.  Authored under the TDD-First gate of
+task-20260506-001 and validated green by seg-4-tests-and-fixtures
+after seg-3-rollback-docs landed docs/rewrite/rollback.md.
 """
 from __future__ import annotations
 

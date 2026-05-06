@@ -177,7 +177,7 @@ def test_field_mapping_falls_back_when_evidence_sparse(tmp_path):
     # 1. Missing evidence: path="", symbol_name=description[:64], start/end=0, changed_slice=""
     no_ev = by_id["fp_no_evidence"]
     assert no_ev.path == ""
-    assert no_ev.symbol_name == "A description that is longer than sixty four characters and wi"[:64]
+    assert no_ev.symbol_name == "A description that is longer than sixty four characters and will be truncated"[:64]
     assert no_ev.start_line == 0
     assert no_ev.end_line == 0
     assert no_ev.changed_slice == ""
