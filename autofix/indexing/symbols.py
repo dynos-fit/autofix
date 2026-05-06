@@ -259,8 +259,22 @@ def build_symbol_table(parse_result: ParseResult) -> SymbolTable:
             # an identifier reference but not interesting; the strings in
             # the list literal are not identifiers.
 
-        # Skip string / comment subtrees entirely.
-        if t in ("string", "comment", "concatenated_string", "f_string"):
+        # Skip comment subtrees entirely.
+        if t == "comment":
+            return
+
+        # String subtrees: skip the string-literal contents but DO descend
+        # into f-string interpolations, which contain real Python code.
+        # Tree-sitter's Python grammar represents f-strings as ``string``
+        # nodes whose children include ``interpolation`` subtrees alongside
+        # ``string_start`` / ``string_content`` / ``string_end``. Returning
+        # at the ``string`` boundary would miss every identifier inside
+        # ``f"{os.urandom(...)}"`` and produce a false-positive
+        # unused-import finding for ``os``.
+        if t in ("string", "concatenated_string", "f_string"):
+            for child in node.children:
+                if child.type == "interpolation":
+                    walk(child)
             return
 
         if t == "identifier":
