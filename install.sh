@@ -50,14 +50,13 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# Pick the python interpreter. Honor $PYTHON if set; otherwise prefer 3.11
-# /3.12 because the current dep pins (tree-sitter-python<0.22) don't ship
-# wheels for 3.13+. Override with PYTHON=python3.13 ./install.sh if needed.
+# Pick the python interpreter. Honor $PYTHON if set; otherwise prefer the
+# newest python available on PATH (3.11/3.12/3.13 all have wheels).
 if [[ -n "${PYTHON:-}" ]]; then
   PY="$PYTHON"
+elif command -v python3.13 >/dev/null 2>&1; then PY=python3.13
 elif command -v python3.12 >/dev/null 2>&1; then PY=python3.12
 elif command -v python3.11 >/dev/null 2>&1; then PY=python3.11
-elif command -v python3.13 >/dev/null 2>&1; then PY=python3.13
 elif command -v python3 >/dev/null 2>&1; then PY=python3
 else
   echo "install.sh: python3 (>=3.11) not found on PATH" >&2
