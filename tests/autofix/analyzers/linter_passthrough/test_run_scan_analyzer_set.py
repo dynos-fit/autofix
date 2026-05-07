@@ -319,3 +319,143 @@ class TestAnalyzerSetDispatch:
 
         # Should have no findings when no analyzers run
         assert result.findings == []
+
+    def test_explicit_mypy_only_skips_cheap_and_ruff(self, tmp_path: Path) -> None:
+        """analyzer_set=['linter:mypy'] skips cheap and ruff.
+
+        When mypy is available, should only have mypy findings (no cheap, no ruff).
+        When mypy is not available, should have zero findings.
+        """
+        from autofix.events.schema import ChangeSet
+        from autofix.funnel.pipeline import run_scan
+
+        # Check if mypy is available
+        mypy_available = True
+        try:
+            subprocess.run(
+                ["mypy", "--version"],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            mypy_available = False
+
+        # Initialize repo with a file containing a type error
+        _init_repo(tmp_path)
+        (tmp_path / "module_a.py").write_text(
+            "import os\n\npath = os.getcwd()\n", encoding="utf-8"
+        )
+        _commit(tmp_path, "init")
+        # Add a file with type error (assignment)
+        (tmp_path / "module_b.py").write_text(
+            'x: int = "hello"\n', encoding="utf-8"
+        )
+        _commit(tmp_path, "add type error")
+
+        changeset = ChangeSet(
+            paths=("module_b.py",), watcher_confidence="diff-head1"
+        )
+
+        result = run_scan(
+            tmp_path,
+            changeset,
+            scan_id="scan-mypy-only",
+            analyzer_set=["linter:mypy"],
+        )
+
+        # All findings (if any) should be from linter:mypy
+        for finding in result.findings:
+            assert finding.rule_id.startswith("linter:mypy:"), (
+                f"Expected only linter:mypy findings, got {finding.rule_id}"
+            )
+
+        # No cheap analyzer findings
+        cheap_findings = [
+            f for f in result.findings
+            if f.rule_id.startswith("unused-import")
+        ]
+        assert cheap_findings == []
+
+        # No ruff findings
+        ruff_findings = [
+            f for f in result.findings
+            if f.rule_id.startswith("linter:ruff:")
+        ]
+        assert ruff_findings == []
+
+    def test_explicit_all_three_runs_all(self, tmp_path: Path) -> None:
+        """analyzer_set=['cheap', 'linter:ruff', 'linter:mypy'] runs all three.
+
+        When all are specified and mypy is available, should have
+        findings from mypy analyzer.
+        """
+        from autofix.events.schema import ChangeSet
+        from autofix.funnel.pipeline import run_scan
+
+        # Check if mypy is available
+        mypy_available = True
+        try:
+            subprocess.run(
+                ["mypy", "--version"],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            mypy_available = False
+
+        # Check if ruff is available
+        ruff_available = True
+        try:
+            subprocess.run(
+                ["ruff", "--version"],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            ruff_available = False
+
+        # Initialize repo with files
+        _init_repo(tmp_path)
+        (tmp_path / "module_a.py").write_text(
+            "import os\n\npath = os.getcwd()\n", encoding="utf-8"
+        )
+        _commit(tmp_path, "init")
+        # Add a file with type error and unused import
+        (tmp_path / "module_b.py").write_text(
+            'import json  # unused\nx: int = "hello"\n', encoding="utf-8"
+        )
+        _commit(tmp_path, "add errors")
+
+        changeset = ChangeSet(
+            paths=("module_b.py",), watcher_confidence="diff-head1"
+        )
+
+        result = run_scan(
+            tmp_path,
+            changeset,
+            scan_id="scan-all-three",
+            analyzer_set=["cheap", "linter:ruff", "linter:mypy"],
+        )
+
+        if mypy_available or ruff_available:
+            # Should have findings from at least one of the analyzers
+            assert len(result.findings) > 0
+
+            # Look for mypy findings if available
+            mypy_findings = [
+                f for f in result.findings
+                if f.rule_id.startswith("linter:mypy:")
+            ]
+            if mypy_available:
+                # Should have at least one mypy finding
+                assert len(mypy_findings) > 0
+        else:
+            # If neither mypy nor ruff available, should still get cheap analyzer results
+            cheap_findings = [
+                f for f in result.findings
+                if f.rule_id.startswith("unused-import")
+            ]
+            assert len(cheap_findings) > 0
