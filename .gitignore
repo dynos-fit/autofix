@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .autofix/
+# autofix LLM-judgment per-key prompt cache (per-scan, not for VCS)
+.autofix/cache/
 .dynos/
 latest-llm-prompt.txt
 latest-llm-prompts/

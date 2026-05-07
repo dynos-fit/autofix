@@ -75,6 +75,10 @@ from typing import Any, Iterable, Literal
 from autofix import llm_backend as _llm_backend
 from autofix.llm_backend import LLMBackendConfig, LLMResult
 
+
+class AnalyzerSeamUnavailableError(Exception):
+    """LLM seam reported unavailable (binary missing, API key unconfigured, etc.)."""
+
 from autofix.evidence.fingerprints import canonical_json_bytes
 from autofix.evidence.schema import EvidencePacket
 from autofix.llm import triage
@@ -672,6 +676,24 @@ class Scheduler:
     # Public surface
     # ------------------------------------------------------------------
 
+    def invoke_judgment(self, prompt: str, model: str = "opus") -> str:
+        """Free-form LLM judgment entry point for LLMJudgmentAnalyzer subclasses.
+
+        Routes through autofix.llm_backend.run_prompt(prompt, model=model).
+        Raises AnalyzerSeamUnavailableError when the seam reports the LLM is
+        unconfigured. Other exceptions propagate unchanged.
+        """
+        result = _llm_backend.run_prompt(
+            prompt,
+            model=model,
+            config=self._config,
+            timeout=self._timeout,
+            cwd=self._root,
+        )
+        if result.returncode != 0:
+            raise AnalyzerSeamUnavailableError(result.stderr)
+        return result.stdout
+
     def schedule(
         self, packet: EvidencePacket, *, priority: float | None = None
     ) -> ScheduleDecision:
@@ -967,4 +989,5 @@ __all__ = [
     "Scheduler",
     "ScheduleDecision",
     "ScheduleDecisionName",
+    "AnalyzerSeamUnavailableError",
 ]
