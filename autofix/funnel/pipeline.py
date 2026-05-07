@@ -457,9 +457,13 @@ def _analyze_one_file_python(
                 findings.extend(list(analyzer_result))
             else:
                 findings.extend(analyzer_result)
-        except Exception:
-            # Swallow per-analyzer errors to match "cheap path may raise NotImplementedError"
-            # contract; single analyzer failure doesn't abort the scan
+        except (NotImplementedError, OSError):
+            # Audit cq-001 fix: previously caught bare ``Exception`` which
+            # masked real bugs in the cheap analyzer (e.g. an attribute
+            # error that should crash the test suite). Narrow the catch
+            # to the two error classes we actually expect from analyzer
+            # adapters: NotImplementedError (cheap-path-unsupported) and
+            # OSError (file-IO failure inside the analyzer).
             pass
 
     return findings
@@ -933,6 +937,19 @@ def run_scan(
         decisions=decisions,
         cluster_store=cluster_store,
     )
+
+    # Audit SEC-RUFF-02 / cq-002 fix: clear the per-scan memo dict the
+    # ruff passthrough adapter accumulates for the duration of a scan.
+    # Without this hook, long-running daemons (autofix watch) leak one
+    # memo entry per scan_id indefinitely. ``_reset_per_scan_state`` is
+    # the adapter-private cleanup helper.
+    try:
+        from autofix.analyzers.linter_passthrough import ruff as _linter_ruff_mod
+        _linter_ruff_mod._reset_per_scan_state()
+    except Exception:
+        # Cleanup must never raise — operators see a leak eventually
+        # rather than a hard failure now.
+        pass
 
     return ScanResult(
         scan_id=scan_id,

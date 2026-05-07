@@ -166,9 +166,37 @@ def analyze(
                 pass
         return iter([])
 
+    # Audit SEC-RUFF-01: ruff's documented schema is a JSON array of
+    # objects. A future version, a misconfiguration, or a hostile fixture
+    # could return a non-list root or list-of-non-dicts. Iterating those
+    # raises AttributeError on `.get()` calls below. Reject non-conforming
+    # shapes loud-and-empty.
+    if not isinstance(items, list):
+        if _should_log_event(scan_id, "AnalyzerError"):
+            try:
+                events_log.append_event(
+                    root,
+                    "AnalyzerError",
+                    {
+                        "analyzer": RULE_ID_PREFIX,
+                        "scan_id": scan_id,
+                        "file": str(parse_result.relpath),
+                        "stderr": (
+                            f"ruff JSON root is {type(items).__name__}, "
+                            "expected list"
+                        ),
+                    },
+                )
+            except OSError:
+                pass
+        return iter([])
+
     # Convert ruff items to CandidateFinding records.
     findings: list[CandidateFinding] = []
     for item in items:
+        if not isinstance(item, dict):
+            # Skip stray non-dict entries; do not raise.
+            continue
         try:
             rule_code = item.get("code", "unknown")
             rule_id = f"{RULE_ID_PREFIX}:{rule_code}"

@@ -96,6 +96,7 @@ def mixed_repo(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
+@pytest.mark.timeout(180)
 def test_apply_removes_only_safe_import(
     mixed_repo: Path, capsys: pytest.CaptureFixture
 ) -> None:
