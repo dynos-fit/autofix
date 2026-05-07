@@ -57,6 +57,41 @@ _ANALYZER_REGISTRY: dict[str, object] = {
 }
 
 
+def _reset_passthrough_analyzer_state() -> None:
+    """Clear per-scan memo dicts of every passthrough adapter.
+
+    Audit SEC-RUFF-02 / cq-002 / SEC-RUFF-02-INCOMPLETE: must run on
+    both success and exception paths so a long-running daemon does not
+    leak one memo entry per scan_id when ``run_scan`` raises. Cleanup
+    must never raise — operators see a leak eventually rather than a
+    hard failure now.
+    """
+    try:
+        from autofix.analyzers.linter_passthrough import (
+            ruff as _linter_ruff_mod,
+        )
+        _linter_ruff_mod._reset_per_scan_state()
+    except Exception:
+        pass
+
+
+def _with_per_scan_cleanup(func):
+    """Decorator: wrap ``run_scan`` so per-scan analyzer memos are
+    always cleared, including on the exception path. Equivalent to a
+    function-body-wide ``try/finally`` but does not require
+    re-indenting the body."""
+    from functools import wraps
+
+    @wraps(func)
+    def _wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        finally:
+            _reset_passthrough_analyzer_state()
+
+    return _wrapper
+
+
 def _legacy_migration_enabled(policy: dict) -> bool:
     """Return whether the legacy-findings injection should run for this scan.
 
@@ -616,6 +651,7 @@ def _sidecar_query_text_for(finding: CandidateFinding) -> str:
     return base
 
 
+@_with_per_scan_cleanup
 def run_scan(
     root: Path,
     changeset: ChangeSet,
@@ -938,19 +974,10 @@ def run_scan(
         cluster_store=cluster_store,
     )
 
-    # Audit SEC-RUFF-02 / cq-002 fix: clear the per-scan memo dict the
-    # ruff passthrough adapter accumulates for the duration of a scan.
-    # Without this hook, long-running daemons (autofix watch) leak one
-    # memo entry per scan_id indefinitely. ``_reset_per_scan_state`` is
-    # the adapter-private cleanup helper.
-    try:
-        from autofix.analyzers.linter_passthrough import ruff as _linter_ruff_mod
-        _linter_ruff_mod._reset_per_scan_state()
-    except Exception:
-        # Cleanup must never raise — operators see a leak eventually
-        # rather than a hard failure now.
-        pass
-
+    # Audit SEC-RUFF-02 / cq-002 / SEC-RUFF-02-INCOMPLETE: per-scan
+    # memo cleanup runs from the @_with_per_scan_cleanup decorator's
+    # finally clause, so it covers BOTH the success path (this return)
+    # AND the exception path. No inline cleanup needed here.
     return ScanResult(
         scan_id=scan_id,
         findings=all_findings,
