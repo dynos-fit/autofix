@@ -376,7 +376,8 @@ def produce_patch(
 
     # AC-6: compute cache key with defense-in-depth regex check
     cache_key = _build_cache_key(finding_id, file_sha, model)
-    assert re.fullmatch(r"[0-9a-f]{64}", cache_key), f"Invalid cache_key: {cache_key}"
+    if not re.fullmatch(r"[0-9a-f]{64}", cache_key):
+        raise RuntimeError(f"Invalid cache_key: {cache_key}")
 
     cache_dir = root / ".autofix" / "cache" / "llm_patches"
     cache_path = cache_dir / f"{cache_key}.json"
