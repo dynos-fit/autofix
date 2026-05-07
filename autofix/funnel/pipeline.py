@@ -27,6 +27,7 @@ from pathlib import Path
 from autofix import languages
 from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
 from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
+from autofix.analyzers.linter_passthrough.mypy import analyze as _analyze_mypy
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
@@ -54,6 +55,7 @@ from autofix.telemetry.correlation import (
 _ANALYZER_REGISTRY: dict[str, object] = {
     "cheap": _analyze_unused,
     "linter:ruff": _analyze_ruff,
+    "linter:mypy": _analyze_mypy,
 }
 
 
@@ -71,6 +73,13 @@ def _reset_passthrough_analyzer_state() -> None:
             ruff as _linter_ruff_mod,
         )
         _linter_ruff_mod._reset_per_scan_state()
+    except Exception:
+        pass
+    try:
+        from autofix.analyzers.linter_passthrough import (
+            mypy as _linter_mypy_mod,
+        )
+        _linter_mypy_mod._reset_per_scan_state()
     except Exception:
         pass
 
