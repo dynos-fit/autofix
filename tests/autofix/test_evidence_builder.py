@@ -145,6 +145,11 @@ def test_grep_no_other_json_dumps_in_hash_path() -> None:
         # artifact), NOT a hash input. The cache key itself is computed
         # from the raw prompt + commit_sha + model_id, BEFORE this dump.
         pkg / "analyzers" / "llm_judgment" / "_base.py",
+        # task-20260507-005 (ARCH-006) repair coordinator — appends
+        # ``UnmappedRuleTier`` envelopes to ``<root>/.autofix/events.jsonl``,
+        # an append-only telemetry audit trail (same role as
+        # ``telemetry/events_log.py`` above). NOT a hash input.
+        pkg / "repair" / "coordinator.py",
     }
 
     # subprocess grep per task instruction.
