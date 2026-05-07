@@ -245,6 +245,14 @@ def _apply_deletions(
     so universal-newline translation cannot mutate ``\\r\\n`` segments
     on Windows runners.
     """
+    # Audit Q1: assert the precondition the docstring documents. A caller
+    # that forgets to sort descending would silently delete wrong lines
+    # because each ``del`` shifts subsequent indices. Cheap O(n) check.
+    if drop_indices != sorted(drop_indices, reverse=True):
+        raise ValueError(
+            f"_apply_deletions: drop_indices must be sorted descending, "
+            f"got {drop_indices!r}"
+        )
     tmp = file_path.with_suffix(file_path.suffix + _TEMPFILE_SUFFIX)
     try:
         lines, had_trailing_newline = _read_lines_bytes(file_path)
@@ -254,6 +262,15 @@ def _apply_deletions(
         for idx in drop_indices:
             if 0 <= idx < len(kept_lines):
                 del kept_lines[idx]
+            else:
+                # Audit Q2: an out-of-bounds index used to be silently
+                # skipped, which masked caller-side miscalculations.
+                # Surface to stderr so a misclassified finding is loud.
+                print(
+                    f"autofix: skipped out-of-range deletion idx={idx} "
+                    f"(file has {len(kept_lines)} lines): {file_path}",
+                    file=sys.stderr,
+                )
         # Plan §1: byte-exact write.
         payload = b"\n".join(kept_lines) + (b"\n" if had_trailing_newline else b"")
         # Audit S4: write tempfile with explicit owner-only permissions
@@ -439,13 +456,21 @@ def run(args: argparse.Namespace) -> int:
     for finding in findings:
         rel = getattr(finding, "path", None)
         start_line = getattr(finding, "start_line", None)
-        end_line = getattr(finding, "end_line", start_line)
+        end_line_raw = getattr(finding, "end_line", None)
         rule_id = getattr(finding, "rule_id", "")
 
         if rel is None or start_line is None:
             # Defensive: a finding with no location cannot be rewritten.
             unsafe_count += 1
             continue
+        # Audit Q4: the prior `end_line = getattr(..., start_line)` default
+        # silently treated a missing end_line as single-line. A malformed
+        # finding (analyzer bug) would then be classified `safe` instead of
+        # rejected. Be strict: a missing end_line is unsafe-multiname.
+        if end_line_raw is None:
+            unsafe_count += 1
+            continue
+        end_line = end_line_raw
 
         # ``finding.path`` is a relpath string under root — see
         # ParseResult.relpath in autofix/languages/python.py.
