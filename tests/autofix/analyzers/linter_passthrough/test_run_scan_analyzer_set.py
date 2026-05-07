@@ -459,3 +459,100 @@ class TestAnalyzerSetDispatch:
                 if f.rule_id.startswith("unused-import")
             ]
             assert len(cheap_findings) > 0
+
+    def test_llm_judgment_replay_determinism(self, tiny_repo: Path) -> None:
+        """LLM judgment cache ensures replay determinism.
+
+        Directly call FakeJudgmentAnalyzer.analyze twice on the same file.
+        Assert the second invocation does NOT call Scheduler.invoke_judgment.
+        This verifies AC-13: replay of the same scan is deterministic
+        and uses cached results.
+        """
+        from unittest import mock
+        import json
+
+        from autofix.analyzers.llm_judgment._base import LLMJudgmentAnalyzer
+        from autofix.indexing.symbols import build_symbol_table
+        from autofix.languages.python import parse_file
+
+        # Create a FakeJudgmentAnalyzer
+        class FakeJudgmentAnalyzer(LLMJudgmentAnalyzer):
+            RULE_ID_PREFIX = "llm:test"
+            MODEL = "test-model"
+
+            @classmethod
+            def prompt_template(cls, diff_context: str) -> str:
+                return f"[test-judgment]\n{diff_context}"
+
+        # Parse the test file
+        file_path = tiny_repo / "module_b.py"
+        raw_parse_result = parse_file(file_path, repo_root=tiny_repo)
+        symbol_table = build_symbol_table(raw_parse_result)
+
+        # Wrap the parse_result to add repo_root (required by LLM judgment analyzer)
+        class ParseResultWithRepoRoot:
+            def __init__(self, pr, repo_root):
+                self._pr = pr
+                self.repo_root = repo_root
+
+            def __getattr__(self, name):
+                return getattr(self._pr, name)
+
+        parse_result = ParseResultWithRepoRoot(raw_parse_result, tiny_repo)
+
+        # Prepare canned response
+        llm_response = json.dumps([
+            {
+                "category": "test-issue",
+                "severity": "high",
+                "description": "Test finding",
+                "start_line": 1,
+                "end_line": 2,
+                "evidence": "import json",
+            }
+        ])
+
+        # First run: cache miss, scheduler called
+        with mock.patch(
+            "autofix.llm.scheduler.Scheduler.invoke_judgment",
+            return_value=llm_response,
+        ) as mock_invoke_first:
+            findings1 = list(FakeJudgmentAnalyzer.analyze(parse_result, symbol_table))
+            first_call_count = mock_invoke_first.call_count
+
+        # Reset per-scan state to simulate a fresh scan with same input
+        LLMJudgmentAnalyzer._reset_per_scan_state()
+
+        # Second run: cache hit, scheduler should NOT be called
+        with mock.patch(
+            "autofix.llm.scheduler.Scheduler.invoke_judgment",
+            return_value=llm_response,
+        ) as mock_invoke_second:
+            findings2 = list(FakeJudgmentAnalyzer.analyze(parse_result, symbol_table))
+            second_call_count = mock_invoke_second.call_count
+
+        # Assert: first run called scheduler at least once
+        assert first_call_count >= 1, (
+            f"Expected scheduler to be called on cache miss, "
+            f"but call_count={first_call_count}"
+        )
+
+        # Assert: second run did NOT call scheduler (cache hit)
+        assert second_call_count == 0, (
+            f"Expected scheduler NOT to be called on cache hit "
+            f"(replay determinism), but call_count={second_call_count}"
+        )
+
+        # Assert: both runs produce findings (from cache on second run)
+        assert len(findings1) > 0, (
+            f"Expected findings from first run, got {len(findings1)}"
+        )
+        assert len(findings2) > 0, (
+            f"Expected findings from second run (cache), got {len(findings2)}"
+        )
+
+        # Assert: findings match between runs (deterministic)
+        assert len(findings1) == len(findings2)
+        for f1, f2 in zip(findings1, findings2):
+            assert f1.rule_id == f2.rule_id
+            assert f1.path == f2.path

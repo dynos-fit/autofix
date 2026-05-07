@@ -140,6 +140,11 @@ def test_grep_no_other_json_dumps_in_hash_path() -> None:
         pkg / "llm_backend.py",
         pkg / "platform.py",
         pkg / "llm_io" / "validation.py",
+        # task-20260507-002 (ARCH-003) llm-judgment cache envelope — the
+        # JSON written here is the per-key cache file (replay-determinism
+        # artifact), NOT a hash input. The cache key itself is computed
+        # from the raw prompt + commit_sha + model_id, BEFORE this dump.
+        pkg / "analyzers" / "llm_judgment" / "_base.py",
     }
 
     # subprocess grep per task instruction.

@@ -82,6 +82,11 @@ def _reset_passthrough_analyzer_state() -> None:
         _linter_mypy_mod._reset_per_scan_state()
     except Exception:
         pass
+    try:
+        from autofix.analyzers.llm_judgment import _base as _llm_judgment_base
+        _llm_judgment_base.LLMJudgmentAnalyzer._reset_per_scan_state()
+    except Exception:
+        pass
 
 
 def _with_per_scan_cleanup(func):
