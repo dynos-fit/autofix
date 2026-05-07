@@ -5,6 +5,9 @@ This package exposes the public surface of the repair routing layer:
 - ``RepairTask``: frozen dataclass pairing a finding with its assigned tier.
 - ``coordinate_repairs``: pure routing function that maps a list of
   ``CandidateFinding`` objects to a list of ``RepairTask`` objects.
+- ``LLMPatch``: validated unified-diff patch artifact produced by the LLM patcher.
+- ``produce_patch``: produce-only LLM patcher that returns an ``LLMPatch`` or
+  ``None``, without mutating user source files (Phase 3c leg).
 
 The coordinator does NOT mutate source files and does NOT produce patches.
 Its sole responsibility is tier assignment and optional telemetry emission.
@@ -17,5 +20,6 @@ from autofix.repair.coordinator import (
     RepairTier,
     coordinate_repairs,
 )
+from autofix.repair.llm_patcher import LLMPatch, produce_patch
 
-__all__ = ["RepairTier", "RepairTask", "coordinate_repairs"]
+__all__ = ["RepairTier", "RepairTask", "coordinate_repairs", "LLMPatch", "produce_patch"]

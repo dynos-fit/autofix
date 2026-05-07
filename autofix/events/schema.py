@@ -39,6 +39,9 @@ EventType = Literal[
     "AnalyzerError",
     "AnalyzerUnknown",
     "AnalyzerSkipped",
+    "LLMPatchInvoked",
+    "LLMPatchProduced",
+    "LLMPatchRejected",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -67,6 +70,9 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "AnalyzerError",
         "AnalyzerUnknown",
         "AnalyzerSkipped",
+        "LLMPatchInvoked",
+        "LLMPatchProduced",
+        "LLMPatchRejected",
     }
 )
 
