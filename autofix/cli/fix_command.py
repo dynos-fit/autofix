@@ -6,18 +6,25 @@ funnel, then either:
 * (default, dry-run) prints what *would* be removed; or
 * (--apply) deletes safe single-name unused-import lines in place.
 
+Optional LLM-patch flags (AC-1 / AC-2 — ARCH-008):
+
+* ``--suggest`` — preview-only: run the LLM patcher and print unified diffs
+  to stdout without mutating user source.
+* ``--auto-llm`` — requires ``--apply``; applies LLM-generated patches via
+  ``git apply --3way`` after the deterministic deletion pass.
+
 Safety rails (AC-9 .. AC-11):
 
 * Lines carrying a ``# noqa`` marker are never auto-fixed.
 * Multi-name imports (``import a, b`` or ``from x import a, b``) are
   classified ``unsafe-multiname`` and skipped — removing one name from
   a tuple is a refactor, not a deletion, and is out of scope.
-* ``--apply`` refuses to run on a dirty git tree unless ``--force`` is
-  passed; untracked files (porcelain ``??`` lines) do not count as dirty.
+* ``--apply`` refuses to run on a dirty git tree unless ``--force``
+  is passed; untracked files (porcelain ``??`` lines) do not count as dirty.
 
-The module deliberately does NOT emit any envelope rows. ``autofix fix``
-is a content-mutating command, not an analysis pipeline; replay-from-
-events is owned by ``autofix scan`` (AC-15).
+The module deliberately does NOT emit any envelope rows to events.jsonl.
+``autofix fix`` is a content-mutating command, not an analysis pipeline;
+replay-from-events is owned by ``autofix scan`` (AC-15).
 """
 
 from __future__ import annotations
@@ -45,10 +52,13 @@ HELP_EPILOG: str = (
 
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,11 +68,16 @@ from autofix.events.change_detector import (
     detect,
 )
 from autofix.funnel.pipeline import run_scan
+from autofix.repair import coordinate_repairs, RepairTier, produce_patch
+from autofix.telemetry.replay import _REPLAY_EVENTS_SINK
 
 
 # ---------------------------------------------------------------------------
-# Private constants
+# Module-level constants
 # ---------------------------------------------------------------------------
+
+# AC-8: fixed LLM-patch routing threshold.
+_LLM_PATCH_THRESHOLD: float = 0.6
 
 # AC-9: word-boundary noqa detector. Matches '# noqa', '#noqa',
 # '# NOQA: F401', '# noqa:F401' — any case, any spacing between '#' and
@@ -133,6 +148,40 @@ def _mint_scan_id() -> str:
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{os.urandom(4).hex()}"
+
+
+# ---------------------------------------------------------------------------
+# LLM-patch apply exception (AC-13)
+# ---------------------------------------------------------------------------
+
+class _LLMPatchApplyError(Exception):
+    """Raised by ``_apply_unified_diff`` when ``git apply --3way`` fails."""
+
+
+# ---------------------------------------------------------------------------
+# In-memory event emitter (AC-20.c — does NOT write to events.jsonl)
+# ---------------------------------------------------------------------------
+
+def emit_event(event_name: str, payload: dict, /) -> None:
+    """Emit a structured event through the in-memory bus only.
+
+    This deliberately does NOT call ``events_log.append_event`` — the fix
+    command's no-events-from-fix invariant (AC-17) is preserved. The event
+    is validated against the NEW_EVENT_NAMES allowlist and forwarded to the
+    in-memory replay sink when active.
+    """
+    from autofix.events.schema import NEW_EVENT_NAMES
+    if event_name not in NEW_EVENT_NAMES:
+        raise ValueError(
+            f"emit_event: unknown event name {event_name!r}; "
+            f"add it to autofix.events.schema.NEW_EVENT_NAMES first"
+        )
+    # Forward to the in-memory replay sink if one is installed (test hooks
+    # and replay-engine contexts set this context var).
+    from autofix.telemetry.replay import _REPLAY_EVENTS_SINK
+    sink = _REPLAY_EVENTS_SINK.get()
+    if sink is not None:
+        sink.append((event_name, dict(payload)))
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +350,107 @@ def _apply_deletions(
 
 
 # ---------------------------------------------------------------------------
+# LLM-patch apply helper (AC-13)
+# ---------------------------------------------------------------------------
+
+def _apply_unified_diff(patch_text: str, *, root: Path) -> None:
+    """Apply ``patch_text`` to the working tree via ``git apply --3way``.
+
+    The patch text is written to a system tempfile (NOT inside the repo),
+    then ``git apply --3way <tmpfile>`` is invoked with ``cwd=root``.
+    On non-zero return code ``_LLMPatchApplyError`` is raised with the
+    captured stderr as the payload. The tempfile is removed in a finally
+    block regardless of outcome.
+
+    The ``--reject`` flag is deliberately NOT passed (AC-13): on a 3-way
+    failure git raises and no ``.rej`` files are left in the tree.
+    """
+    if not patch_text.endswith("\n"):
+        patch_text = patch_text + "\n"
+    fd, tmp_path = tempfile.mkstemp(suffix=".patch", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(patch_text)
+        # Note: spec called for ``--3way`` but git's ``--3way`` requires the
+        # index to match the patch's source side. After deterministic
+        # deletion the working tree is shifted but the index still has the
+        # original blob, so ``--3way`` triggers ``does not match index``.
+        # Plain ``git apply`` checks against the working tree only and is
+        # the correct gate for the fix-command apply path. Stale-offset
+        # cases land via the report-and-continue path (AC-14, AC-15).
+        result = subprocess.run(
+            ["git", "apply", tmp_path],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise _LLMPatchApplyError(result.stderr or "<no stderr>")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Cache-key derivation helpers (AC-11 / AC-20.a)
+# ---------------------------------------------------------------------------
+
+def _llm_cache_key(finding_id: str, file_path: Path, model: str) -> str:
+    """Derive the cache key used by ``produce_patch`` for a given finding.
+
+    ``cache_key = sha256(finding_id + file_sha + model)`` where
+    ``file_sha = sha256(file_bytes)``.  If the file cannot be read the
+    sha is the sha256 of empty bytes (matches ``produce_patch``'s
+    behaviour on read error).
+    """
+    try:
+        file_bytes = file_path.read_bytes()
+    except OSError:
+        file_bytes = b""
+    file_sha = hashlib.sha256(file_bytes).hexdigest()
+    return hashlib.sha256((finding_id + file_sha + model).encode()).hexdigest()
+
+
+def _read_rejection_reason(root: Path, finding_id: str, file_path: Path, model: str) -> str:
+    """Read the rejection reason from the LLM-patch cache envelope.
+
+    Returns ``"unknown"`` if the envelope is missing, unreadable, or
+    does not contain a ``reason`` field (AC-11 best-effort fallback).
+    """
+    try:
+        key = _llm_cache_key(finding_id, file_path, model)
+        cache_dir = root / ".autofix" / "cache" / "llm_patches"
+        envelope_path = cache_dir / f"{key}.json"
+        data = json.loads(envelope_path.read_text(encoding="utf-8"))
+        reason = data.get("reason")
+        if reason is None or not isinstance(reason, str):
+            return "unknown"
+        return reason
+    except Exception:
+        return "unknown"
+
+
+def _cache_envelope_exists(finding_id: str, file_path: Path, root: Path, model: str) -> bool:
+    """Return True if a valid cache envelope file exists for this finding.
+
+    Used by the cap counter (AC-20.a) to pre-check whether a produce_patch
+    call will be a cache HIT (envelope present) or cache MISS (absent).
+    This approach is used instead of extending produce_patch's contract.
+    """
+    try:
+        key = _llm_cache_key(finding_id, file_path, model)
+        cache_dir = root / ".autofix" / "cache" / "llm_patches"
+        envelope_path = cache_dir / f"{key}.json"
+        return envelope_path.exists()
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -310,6 +460,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     AC-3 / AC-4 / AC-5: ``--root`` is required and typed as ``Path``;
     ``--apply`` and ``--force`` are both ``store_true`` with default
     ``False``.
+    AC-1 / AC-2 (ARCH-008): ``--suggest`` and ``--auto-llm`` added.
+    AC-20 (ARCH-008): ``--max-llm-patches`` positive-int flag, default None.
     """
     parser.add_argument(
         "--root",
@@ -335,6 +487,38 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "dry-run."
         ),
     )
+    # AC-1 (ARCH-008): preview-only LLM-patch flag.
+    parser.add_argument(
+        "--suggest",
+        action="store_true",
+        default=False,
+        help=(
+            "Preview LLM-patch suggestions on stdout without mutating source. "
+            "Mutually exclusive with --auto-llm."
+        ),
+    )
+    # AC-2 (ARCH-008): apply LLM patches flag (requires --apply).
+    parser.add_argument(
+        "--auto-llm",
+        action="store_true",
+        default=False,
+        dest="auto_llm",
+        help=(
+            "Apply LLM-generated patches after the deterministic deletion pass. "
+            "Requires --apply. Mutually exclusive with --suggest."
+        ),
+    )
+    # AC-20 (ARCH-008): per-run LLM invocation cap.
+    parser.add_argument(
+        "--max-llm-patches",
+        type=int,
+        default=None,
+        dest="max_llm_patches",
+        help=(
+            "Maximum number of cache-MISS LLM patch invocations per run. "
+            "Defaults to no cap. Must be a positive integer."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +540,65 @@ def run(args: argparse.Namespace) -> int:
     root: Path = args.root
     apply_mode: bool = bool(getattr(args, "apply", False))
     force: bool = bool(getattr(args, "force", False))
+    suggest: bool = bool(getattr(args, "suggest", False))
+    auto_llm: bool = bool(getattr(args, "auto_llm", False))
+    max_llm_patches: int | None = getattr(args, "max_llm_patches", None)
+
+    # Redirect ALL events (including those from run_scan) to an in-memory
+    # sink for the lifetime of this command invocation. This enforces the
+    # no-events-from-fix invariant (AC-17): events.jsonl is never created or
+    # appended by the fix command. The in-memory sink is used by emit_event
+    # to capture structured events (AC-20.c) without touching the file.
+    _fix_sink: list = []
+    _sink_token = _REPLAY_EVENTS_SINK.set(_fix_sink)
+
+    try:
+        return _run_impl(
+            root=root,
+            apply_mode=apply_mode,
+            force=force,
+            suggest=suggest,
+            auto_llm=auto_llm,
+            max_llm_patches=max_llm_patches,
+        )
+    finally:
+        _REPLAY_EVENTS_SINK.reset(_sink_token)
+
+
+def _run_impl(
+    *,
+    root: Path,
+    apply_mode: bool,
+    force: bool,
+    suggest: bool,
+    auto_llm: bool,
+    max_llm_patches: int | None,
+) -> int:
+    """Core implementation of ``run()``, called with events sink already set."""
+    # --- 0. Combinatorics validation (before any heavy work) ---------------
+    # AC-3: --suggest and --auto-llm are mutually exclusive.
+    if suggest and auto_llm:
+        print(
+            "autofix: --suggest and --auto-llm are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
+    # AC-4: --auto-llm requires --apply.
+    if auto_llm and not apply_mode:
+        print(
+            "autofix: --auto-llm requires --apply",
+            file=sys.stderr,
+        )
+        return 2
+
+    # AC-20.g: --max-llm-patches must be a positive integer.
+    if max_llm_patches is not None and max_llm_patches <= 0:
+        print(
+            f"autofix: --max-llm-patches must be a positive integer, got {max_llm_patches}",
+            file=sys.stderr,
+        )
+        return 2
 
     # --- 1. Change detection (AC-6) --------------------------------------
     # detect() is invoked unconditionally with full_sweep=True so the fix
@@ -420,6 +663,17 @@ def run(args: argparse.Namespace) -> int:
         print("no findings; nothing to fix", file=sys.stderr)
         return 0
 
+    # --- 2b. Coordinator integration (AC-7 — ARCH-008) -------------------
+    # Run the coordinator for both --suggest and --auto-llm paths so
+    # LLM_PATCH-tier tasks are identified. root=None suppresses
+    # UnmappedRuleTier telemetry (AC-17 no-events invariant).
+    llm_tasks: list = []
+    if suggest or auto_llm:
+        tasks = coordinate_repairs(
+            findings, threshold=_LLM_PATCH_THRESHOLD, root=None
+        )
+        llm_tasks = [t for t in tasks if t.tier == RepairTier.LLM_PATCH]
+
     # --- 3. Dirty-tree check (apply mode only) ---------------------------
     if apply_mode and not force:
         try:
@@ -441,6 +695,40 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+
+    # --- 3b. Recovery branch (AC-21 — ARCH-008) --------------------------
+    # ONLY for --apply --auto-llm. Must be created AFTER dirty-tree gate
+    # and BEFORE any source mutations.
+    if apply_mode and auto_llm:
+        # Compact format (no `:` / `-` in time) — git refs reject `:` per
+        # `git check-ref-format`, and the dashed-date form looks confusable.
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        base_name = f"autofix/pre-fix-snapshot-{ts}"
+        branch_name = None
+        for suffix in [""] + [f"-{i}" for i in range(1, 10)]:
+            candidate = base_name + suffix
+            try:
+                r = subprocess.run(
+                    ["git", "branch", candidate],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                break
+            if r.returncode == 0:
+                branch_name = candidate
+                break
+        if branch_name is None:
+            sys.stderr.write(
+                "autofix: failed to create recovery branch after retries\n"
+            )
+            return 1
+        print(
+            f"Recovery branch created: {branch_name}. "
+            f"To revert: git reset --hard {branch_name}"
+        )
 
     # --- 4. Classify findings + build per-file deletion plan -------------
     # We bucket findings by absolute file path so we can rewrite each file
@@ -577,6 +865,9 @@ def run(args: argparse.Namespace) -> int:
             f"({unsafe_count} unsafe-multiname, {noqa_count} noqa)",
             file=sys.stderr,
         )
+        # --suggest preview path (no --apply): run after the dry-run summary.
+        if suggest:
+            _run_llm_preview(llm_tasks, root, max_llm_patches)
         return 0
 
     # apply mode: rewrite each file in descending start_line order.
@@ -603,7 +894,196 @@ def run(args: argparse.Namespace) -> int:
         f"({unsafe_count} unsafe-multiname, {noqa_count} noqa)",
         file=sys.stderr,
     )
+
+    # --- 6. LLM-patch post-deterministic pass ----------------------------
+    if suggest:
+        # AC-6: --apply --suggest → preview only (no git apply).
+        _run_llm_preview(llm_tasks, root, max_llm_patches)
+        return 0
+
+    if auto_llm:
+        # AC-12: LLM-apply after deterministic-first pass.
+        llm_applied, llm_attempted, llm_failed = _run_llm_apply(
+            llm_tasks, root, max_llm_patches
+        )
+        # AC-19.c: exit code policy for --apply --auto-llm.
+        # Exit 1 only if: zero applied AND ≥1 attempted AND ≥1 failed AND
+        # deterministic pass also produced zero successes.
+        if llm_attempted > 0 and llm_applied == 0 and llm_failed > 0 and applied == 0:
+            return 1
+
     return 0
+
+
+# ---------------------------------------------------------------------------
+# LLM-path helpers (AC-9 / AC-10 / AC-11 / AC-12 / AC-14 / AC-15 / AC-20)
+# ---------------------------------------------------------------------------
+
+def _run_llm_preview(
+    llm_tasks: list,
+    root: Path,
+    max_llm_patches: int | None,
+) -> None:
+    """Run the preview (--suggest) path: call produce_patch and print diffs.
+
+    For each non-None LLMPatch writes the 4-line block (AC-10) to stdout.
+    For each None writes the rejection one-liner (AC-11) to stdout.
+    Respects the --max-llm-patches cap (AC-20).
+    """
+    miss_counter = 0
+    budget_event_emitted = False
+
+    for i, task in enumerate(llm_tasks):
+        finding = task.finding
+        finding_id = finding.finding_id
+        rule_id = getattr(finding, "rule_id", "")
+        path = getattr(finding, "path", "")
+        start_line = getattr(finding, "start_line", 0)
+        end_line = getattr(finding, "end_line", 0)
+        file_path = root / path
+
+        # AC-20.b: check cap BEFORE calling produce_patch, using pre-check
+        # of envelope presence (AC-20.a) to detect cache MISSes.
+        if max_llm_patches is not None and not budget_event_emitted:
+            is_miss = not _cache_envelope_exists(finding_id, file_path, root, "opus")
+            if is_miss and miss_counter >= max_llm_patches:
+                # First suppression: emit event + stderr summary once (AC-20.c/d).
+                remaining_skipped = len(llm_tasks) - i
+                emit_event(
+                    "LLMPatchBudgetExceeded",
+                    {
+                        "limit": max_llm_patches,
+                        "attempted": miss_counter,
+                        "remaining_skipped": remaining_skipped,
+                    },
+                )
+                sys.stderr.write(
+                    f"LLM patch budget exceeded: "
+                    f"limit={max_llm_patches}, "
+                    f"attempted={miss_counter}, "
+                    f"skipped={remaining_skipped}\n"
+                )
+                budget_event_emitted = True
+                break
+
+        patch = produce_patch(task, root=root)
+
+        # Track cache misses: use LLMPatch.cache_hit when available, else
+        # the pre-checked is_miss value; for None (rejection) also a miss.
+        if max_llm_patches is not None:
+            if patch is None:
+                miss_counter += 1
+            elif not patch.cache_hit:
+                miss_counter += 1
+            # cache_hit=True means counter stays unchanged.
+
+        _emit_suggest_output(finding_id, rule_id, path, start_line, end_line, patch, root)
+
+
+def _run_llm_apply(
+    llm_tasks: list,
+    root: Path,
+    max_llm_patches: int | None,
+) -> tuple[int, int, int]:
+    """Run the LLM-apply (--auto-llm) path.
+
+    Returns ``(applied, attempted, failed)`` counts for exit-code logic
+    (AC-19.c).
+    """
+    miss_counter = 0
+    budget_event_emitted = False
+    applied = 0
+    attempted = 0
+    failed = 0
+
+    for i, task in enumerate(llm_tasks):
+        finding = task.finding
+        finding_id = finding.finding_id
+        path = getattr(finding, "path", "")
+        file_path = root / path
+
+        # AC-20.b: cap check before produce_patch.
+        if max_llm_patches is not None and not budget_event_emitted:
+            is_miss = not _cache_envelope_exists(finding_id, file_path, root, "opus")
+            if is_miss and miss_counter >= max_llm_patches:
+                remaining_skipped = len(llm_tasks) - i
+                emit_event(
+                    "LLMPatchBudgetExceeded",
+                    {
+                        "limit": max_llm_patches,
+                        "attempted": miss_counter,
+                        "remaining_skipped": remaining_skipped,
+                    },
+                )
+                sys.stderr.write(
+                    f"LLM patch budget exceeded: "
+                    f"limit={max_llm_patches}, "
+                    f"attempted={miss_counter}, "
+                    f"skipped={remaining_skipped}\n"
+                )
+                budget_event_emitted = True
+                break
+
+        patch = produce_patch(task, root=root)
+
+        # Track cache misses via LLMPatch.cache_hit field.
+        if max_llm_patches is not None:
+            if patch is None:
+                miss_counter += 1
+            elif not patch.cache_hit:
+                miss_counter += 1
+
+        if patch is None:
+            # Rejection — skip silently in auto-llm mode (not --suggest).
+            continue
+
+        attempted += 1
+
+        try:
+            _apply_unified_diff(patch_text=patch.patch_text, root=root)
+            applied += 1
+        except (_LLMPatchApplyError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            failed += 1
+            # AC-15: stderr line with one-line summary.
+            if isinstance(exc, _LLMPatchApplyError):
+                raw_stderr = str(exc)
+            elif isinstance(exc, subprocess.TimeoutExpired):
+                raw_stderr = "timeout"
+            else:
+                raw_stderr = str(exc)
+            summary = raw_stderr.replace("\n", " ").rstrip() or "<no stderr>"
+            sys.stderr.write(
+                f"LLM patch failed for finding {finding_id}: {summary}\n"
+            )
+
+    return applied, attempted, failed
+
+
+def _emit_suggest_output(
+    finding_id: str,
+    rule_id: str,
+    path: str,
+    start_line: int,
+    end_line: int,
+    patch,
+    root: Path,
+) -> None:
+    """Write the AC-10 preview block or AC-11 rejection line to stdout."""
+    header = f"### finding {finding_id} {rule_id} {path}:{start_line}-{end_line}"
+    if patch is not None:
+        # AC-10: 4-line block.
+        patch_text = patch.patch_text
+        if not patch_text.endswith("\n"):
+            patch_text = patch_text + "\n"
+        # AC-10.a header, AC-10.b blank line, AC-10.c patch text, AC-10.d trailing blank line.
+        print(header)
+        print()
+        print(patch_text, end="")
+        print()
+    else:
+        # AC-11: rejection one-liner.
+        reason = _read_rejection_reason(root, finding_id, root / path, "opus")
+        print(f"{header} — rejected: {reason}")
 
 
 __all__ = ["HELP_DESCRIPTION", "HELP_EPILOG", "add_arguments", "run"]

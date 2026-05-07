@@ -148,12 +148,13 @@ def test_apply_auto_llm_creates_recovery_branch(
     )
     branch_name = branches_after[0]
 
-    # AC-21: name matches the prefix + ISO-8601 second-resolution timestamp.
+    # AC-21: name matches the prefix + compact UTC timestamp (no `:` since
+    # `git check-ref-format` rejects colons in ref names).
     name_re = re.compile(
-        r"^autofix/pre-fix-snapshot-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z(-\d)?$"
+        r"^autofix/pre-fix-snapshot-\d{8}T\d{6}Z(-\d)?$"
     )
     assert name_re.match(branch_name), (
-        f"Branch name must match prefix+ISO-8601 timestamp pattern. Got: {branch_name!r}"
+        f"Branch name must match prefix+compact-UTC-timestamp pattern. Got: {branch_name!r}"
     )
 
     # AC-21.e: branch points at the pre-run HEAD SHA.
@@ -298,7 +299,7 @@ def test_recovery_branch_collision_retry_uses_suffix(
     """
     from autofix.cli import fix_command
 
-    pinned_ts = "2026-05-07T12:34:56Z"
+    pinned_ts = "20260507T123456Z"
     pre_existing = f"autofix/pre-fix-snapshot-{pinned_ts}"
 
     # Pre-create the colliding branch.
@@ -316,7 +317,7 @@ def test_recovery_branch_collision_retry_uses_suffix(
     class _PinnedDateTime(real_dt):
         @classmethod
         def now(cls, tz=None):
-            # Construct a tz-aware datetime that strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Construct a tz-aware datetime that strftime("%Y%m%dT%H%M%SZ")
             # yields the pinned_ts when tz is utc.
             return real_dt(2026, 5, 7, 12, 34, 56, tzinfo=tz or _dt.timezone.utc)
 

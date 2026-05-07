@@ -42,6 +42,7 @@ EventType = Literal[
     "LLMPatchInvoked",
     "LLMPatchProduced",
     "LLMPatchRejected",
+    "LLMPatchBudgetExceeded",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -73,6 +74,7 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "LLMPatchInvoked",
         "LLMPatchProduced",
         "LLMPatchRejected",
+        "LLMPatchBudgetExceeded",
     }
 )
 

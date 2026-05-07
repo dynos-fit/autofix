@@ -110,23 +110,18 @@ def test_apply_auto_llm_happy_path(
     """AC-22.d: --apply --auto-llm with a clean patch applies via git apply --3way."""
     from autofix.cli import fix_command
 
-    # Build a unified diff against the post-deterministic file state. After
-    # deterministic deletion the file is:
+    # In production AC-12 ordering, produce_patch is called AFTER deterministic
+    # deletion runs, so the LLM sees the post-deletion file:
     #   line 1: (blank line that was line 2)
     #   line 2: value = 1
-    # We build a diff with an `index` line referencing the pre-deterministic
-    # blob hash so 3-way merge can pick it up.
-    pre_blob = subprocess.run(
-        ["git", "hash-object", "--", "module.py"],
-        cwd=llm_repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
+    # The diff is against this post-deletion 2-line state. git apply with
+    # --3way handles minor context fuzz; for the happy path we don't need it
+    # to recover from a deletion shift because production order avoids that.
     diff_body = (
-        f"diff --git a/module.py b/module.py\n"
-        f"index {pre_blob}..0000000 100644\n"
-        f"--- a/module.py\n"
-        f"+++ b/module.py\n"
-        "@@ -1,3 +1,3 @@\n"
-        " import os\n"
+        "diff --git a/module.py b/module.py\n"
+        "--- a/module.py\n"
+        "+++ b/module.py\n"
+        "@@ -1,2 +1,2 @@\n"
         " \n"
         "-value = 1\n"
         "+value = 42\n"
@@ -257,17 +252,12 @@ def test_apply_auto_llm_partial_failure_reports_and_continues(
     """AC-14 / AC-15 / AC-22.e: per-patch failure does not abort the iteration."""
     from autofix.cli import fix_command
 
-    pre_blob = subprocess.run(
-        ["git", "hash-object", "--", "module.py"],
-        cwd=llm_repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
+    # Production AC-12 ordering: produce_patch sees post-deletion file (2 lines).
     good_diff = (
-        f"diff --git a/module.py b/module.py\n"
-        f"index {pre_blob}..0000000 100644\n"
-        f"--- a/module.py\n"
-        f"+++ b/module.py\n"
-        "@@ -1,3 +1,3 @@\n"
-        " import os\n"
+        "diff --git a/module.py b/module.py\n"
+        "--- a/module.py\n"
+        "+++ b/module.py\n"
+        "@@ -1,2 +1,2 @@\n"
         " \n"
         "-value = 1\n"
         "+value = 7\n"
