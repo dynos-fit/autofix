@@ -7,7 +7,6 @@ new rows are written by the read path.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -101,4 +100,3 @@ def test_from_log_does_not_create_directory_chain(tmp_path: Path) -> None:
     # Note: log_path.exists() check may stat parents but does not create them.
     # We only assert that the run-specific dir was not created.
     assert not (tmp_path / ".autofix" / "runs" / "run_nope").exists()
-    _ = os  # silence unused-import linter for from-log helper symmetry
