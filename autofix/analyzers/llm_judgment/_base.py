@@ -139,7 +139,12 @@ class LLMJudgmentAnalyzer(ABC):
         cache_dir = parse_result.repo_root / ".autofix" / "cache" / "llm_judgment"
         cache_path = cache_dir / f"{cache_key}.json"
 
-        cached_findings = cls._try_read_cache(cache_path)
+        cached_findings = cls._try_read_cache(
+            cache_path,
+            expected_key=cache_key,
+            expected_model=cls.MODEL,
+            expected_commit_sha=commit_sha,
+        )
         if cached_findings is not None:
             yield from cached_findings
             return
@@ -267,12 +272,27 @@ class LLMJudgmentAnalyzer(ABC):
         yield from findings
 
     @classmethod
-    def _try_read_cache(cls, cache_path: Path) -> list[CandidateFinding] | None:
+    def _try_read_cache(
+        cls,
+        cache_path: Path,
+        expected_key: str,
+        expected_model: str,
+        expected_commit_sha: str,
+    ) -> list[CandidateFinding] | None:
         """Try to read cached findings.
 
-        Returns None if the cache file doesn't exist, is invalid, or has
-        mismatched version. Returns empty list if cache exists but contains
-        no findings.
+        Audit sec-001 fix: validate that the on-disk envelope's identity
+        fields match the freshly-derived inputs. A cache file whose
+        ``key`` / ``model`` / ``commit_sha`` does not match the expected
+        values is treated as a miss — defense against cache-poisoning
+        where an attacker (or filesystem race) places a crafted
+        envelope under a colliding path. The cache_key derivation is
+        SHA-256-strong, but trusting only the path-derived key without
+        re-validating the stored envelope leaves a TOCTOU window.
+
+        Returns None if the cache file doesn't exist, is invalid, has
+        mismatched version, or fails identity validation. Returns
+        empty list if cache exists, validates, and contains no findings.
         """
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
@@ -284,6 +304,17 @@ class LLMJudgmentAnalyzer(ABC):
 
         # Validate envelope version
         if not isinstance(envelope, dict) or envelope.get("version") != 1:
+            return None
+
+        # Audit sec-001: validate envelope identity matches expected inputs.
+        # A non-matching key, model, or commit_sha indicates the cache file
+        # was placed by a different invocation (or maliciously) and must
+        # NOT be trusted for the current inputs.
+        if envelope.get("key") != expected_key:
+            return None
+        if envelope.get("model") != expected_model:
+            return None
+        if envelope.get("commit_sha") != expected_commit_sha:
             return None
 
         # Extract findings from cache
