@@ -95,6 +95,7 @@ class CandidateFinding:
     changed_slice: str
     finding_id: str
     analyzer_confidence: float = field(default=1.0, kw_only=True)
+    provenance: str = field(default="cheap:unused-import.intra-file", kw_only=True)
 
 
 # -- Frozen v1 field-order contracts (task-20260417-007) --------------------
@@ -133,6 +134,7 @@ CANDIDATE_FINDING_V1_FIELD_ORDER: tuple[str, ...] = (
     "changed_slice",
     "finding_id",
     "analyzer_confidence",
+    "provenance",
 )
 
 

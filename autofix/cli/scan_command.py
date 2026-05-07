@@ -124,6 +124,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--analyzers",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated list of analyzer set names "
+            "(e.g. 'cheap,linter:ruff'). Empty/missing means "
+            "today's default (only 'cheap' runs)."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help=(
@@ -260,6 +270,9 @@ def run(args: argparse.Namespace) -> int:
     full_sweep: bool = bool(args.full_sweep)
     scan_id: str = args.scan_id or _mint_scan_id()
     quiet: bool = bool(getattr(args, "quiet", False))
+    raw_analyzers = getattr(args, "analyzers", "") or ""
+    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
+    analyzer_set = parts if parts else None
 
     def _progress(msg: str) -> None:
         """Emit one stderr progress line unless --quiet was passed."""
@@ -380,7 +393,7 @@ def run(args: argparse.Namespace) -> int:
 
         # --- 3. Funnel -----------------------------------------------------------
         try:
-            result = run_scan(root, changeset, scan_id, progress=_progress)
+            result = run_scan(root, changeset, scan_id, progress=_progress, analyzer_set=analyzer_set)
         except Exception as exc:
             traceback_str = traceback.format_exc()
             print(
