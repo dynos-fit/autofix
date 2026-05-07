@@ -28,6 +28,7 @@ from autofix import languages
 from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
 from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
 from autofix.analyzers.linter_passthrough.mypy import analyze as _analyze_mypy
+from autofix.analyzers.llm_judgment.code_quality import CodeQualityJudgmentAnalyzer
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
@@ -56,6 +57,7 @@ _ANALYZER_REGISTRY: dict[str, object] = {
     "cheap": _analyze_unused,
     "linter:ruff": _analyze_ruff,
     "linter:mypy": _analyze_mypy,
+    "llm:code-quality": CodeQualityJudgmentAnalyzer.analyze,
 }
 
 
