@@ -34,6 +34,10 @@ EventType = Literal[
     "EmbeddingSidecarColdRebuild",
     "EmbeddingSidecarIncrementalUpdate",
     "EmbeddingSidecarDegraded",
+    "AnalyzerUnavailable",
+    "AnalyzerTimeout",
+    "AnalyzerError",
+    "AnalyzerUnknown",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -57,6 +61,10 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "EmbeddingSidecarColdRebuild",
         "EmbeddingSidecarIncrementalUpdate",
         "EmbeddingSidecarDegraded",
+        "AnalyzerUnavailable",
+        "AnalyzerTimeout",
+        "AnalyzerError",
+        "AnalyzerUnknown",
     }
 )
 

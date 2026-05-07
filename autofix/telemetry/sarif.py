@@ -103,6 +103,7 @@ def _result_for(finding: Any) -> dict[str, Any]:
     start_line = _get(finding, "start_line", default=1)
     end_line = _get(finding, "end_line", default=start_line)
     level = _get(finding, "level", default="warning")
+    provenance = _get(finding, "provenance", default="cheap:unused-import.intra-file")
 
     return {
         "ruleId": rule_id,
@@ -122,6 +123,9 @@ def _result_for(finding: Any) -> dict[str, Any]:
         "partialFingerprints": {
             "autofixNext/v1": finding_id,
             "sarif-v1": compute_sarif_fingerprint_v1(finding),
+        },
+        "properties": {
+            "source": provenance,
         },
     }
 

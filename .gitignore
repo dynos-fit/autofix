@@ -14,3 +14,6 @@ tests/autofix_next/languages/fixtures/mixed_repo/go/.autofix-next/
 autofix_scanner.egg-info/
 # dynos-work calibration output (auto-regenerated)
 benchmarks/generated/
+
+# autofix LLM prompt-prefix cache (per-scan, not for VCS)
+.cache/

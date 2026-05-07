@@ -503,6 +503,11 @@ def test_new_event_names_contains_llmcallgated_and_has_not_grown():
         "EmbeddingSidecarColdRebuild",  # added by task-012 AC 17
         "EmbeddingSidecarIncrementalUpdate",  # added by task-012 AC 17
         "EmbeddingSidecarDegraded",  # added by task-012 AC 18
+        # added by task-20260506-005 (ARCH-001) — linter-passthrough analyzer events
+        "AnalyzerUnavailable",
+        "AnalyzerTimeout",
+        "AnalyzerError",
+        "AnalyzerUnknown",
     }
     assert set(NEW_EVENT_NAMES) == expected_baseline, (
         f"NEW_EVENT_NAMES must match the task-012 baseline: "

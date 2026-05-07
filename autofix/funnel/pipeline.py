@@ -26,6 +26,7 @@ from pathlib import Path
 
 from autofix import languages
 from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
+from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
@@ -48,6 +49,12 @@ from autofix.telemetry.correlation import (
     current_commit_sha,
     current_event_id,
 )
+
+# AC-9: analyzer registry mapping analyzer set names to their analyze callables.
+_ANALYZER_REGISTRY: dict[str, object] = {
+    "cheap": _analyze_unused,
+    "linter:ruff": _analyze_ruff,
+}
 
 
 def _legacy_migration_enabled(policy: dict) -> bool:
@@ -418,16 +425,20 @@ def _emit_scan_explanation_event(
 
 
 def _analyze_one_file_python(
-    root: Path, relpath: str
+    root: Path, relpath: str, analyzers: list[object] | None = None
 ) -> list[CandidateFinding]:
-    """Run parse → symbol-table → analyzer for one Python path.
+    """Run parse → symbol-table → analyzer(s) for one Python path.
 
-    Extracted byte-identically from the pre-task-006 ``_analyze_one_file``
-    body. A missing or non-Python file is not a scan-stopping error — it
-    is simply a path with zero findings. Parser-level load errors
+    When ``analyzers`` is None, uses only the cheap analyzer (backward-compatible).
+    When ``analyzers`` is provided, iterates all active analyzers and yields the
+    union of their findings. A missing or non-Python file is not a scan-stopping
+    error — it is simply a path with zero findings. Parser-level load errors
     (tree-sitter ABI mismatch, etc.) are re-raised so the operator can
     fix the environment; we only swallow per-file IO issues.
     """
+    if analyzers is None:
+        analyzers = [_analyze_unused]
+
     target = root / relpath
     if not target.is_file():
         return []
@@ -436,11 +447,26 @@ def _analyze_one_file_python(
     except (FileNotFoundError, PermissionError):
         return []
     symbol_table = build_symbol_table(parse_result)
-    return _analyze_unused(parse_result, symbol_table)
+
+    findings: list[CandidateFinding] = []
+    for analyzer in analyzers:
+        try:
+            analyzer_result = analyzer(parse_result, symbol_table)
+            # Handle both list and iterable returns
+            if hasattr(analyzer_result, '__iter__') and not isinstance(analyzer_result, list):
+                findings.extend(list(analyzer_result))
+            else:
+                findings.extend(analyzer_result)
+        except Exception:
+            # Swallow per-analyzer errors to match "cheap path may raise NotImplementedError"
+            # contract; single analyzer failure doesn't abort the scan
+            pass
+
+    return findings
 
 
 def _analyze_one_file(
-    root: Path, relpath: str
+    root: Path, relpath: str, analyzers: list[object] | None = None
 ) -> list[CandidateFinding]:
     """Dispatch to the registered language adapter for ``relpath``.
 
@@ -459,12 +485,15 @@ def _analyze_one_file(
     Per-file IO errors raised by a non-Python adapter's ``parse_cheap``
     (``FileNotFoundError`` / ``PermissionError`` / ``OSError``) are
     swallowed: they are not scan-stopping bugs.
+
+    When ``analyzers`` is provided, it is passed to :func:`_analyze_one_file_python`
+    for multi-analyzer dispatch (AC-9).
     """
     adapter = languages.lookup_by_extension(Path(relpath).suffix)
     if adapter is None:
         return []
     if adapter.language == "python":
-        return _analyze_one_file_python(root, relpath)
+        return _analyze_one_file_python(root, relpath, analyzers=analyzers)
     # Non-Python adapter: parse for side effect only; no analyzer
     # registered today. Swallow per-file IO errors and grammar-missing
     # NotImplementedError (design-decisions.md §4: cheap path may raise
@@ -592,6 +621,7 @@ def run_scan(
     graph: CallGraph | None = None,
     policy: dict | None = None,
     progress: Callable[[str], None] | None = None,
+    analyzer_set: list[str] | None = None,
 ) -> ScanResult:
     """Analyze the invalidation-planned paths and schedule each finding.
 
@@ -616,6 +646,11 @@ def run_scan(
         and long-lived daemons can pass a reusable graph to skip the
         rebuild. Keyword-only so the positional signature stays compatible
         with the CLI caller.
+    analyzer_set:
+        Optional list of analyzer set names (AC-9). When ``None``, uses only
+        the cheap analyzer (backward-compatible). When non-None, must be a
+        list of names from the registry (e.g. ``["cheap", "linter:ruff"]``).
+        Unknown names are logged as "AnalyzerUnknown" events and skipped.
 
     Returns
     -------
@@ -628,6 +663,27 @@ def run_scan(
     def _p(msg: str) -> None:
         if progress is not None:
             progress(msg)
+
+    # AC-9: resolve the active analyzer list based on analyzer_set parameter.
+    # When None, uses only the cheap analyzer (backward-compatible).
+    # Unknown names are logged and skipped (no exception).
+    if analyzer_set is None:
+        active_analyzers: list[object] = [_analyze_unused]
+    else:
+        active_analyzers = []
+        for name in analyzer_set:
+            mod = _ANALYZER_REGISTRY.get(name)
+            if mod is None:
+                try:
+                    events_log.append_event(
+                        root,
+                        "AnalyzerUnknown",
+                        {"analyzer": name, "scan_id": scan_id},
+                    )
+                except OSError:
+                    pass
+                continue
+            active_analyzers.append(mod)
 
     # AC #21: build the graph once if the caller didn't supply one. This
     # is the production path — the CLI doesn't cache across invocations,
@@ -761,7 +817,7 @@ def run_scan(
             file_idx == 1 or file_idx == affected_total or file_idx % 10 == 0
         ):
             _p(f"  [{file_idx}/{affected_total}] {relpath}")
-        for finding in _analyze_one_file(root, relpath):
+        for finding in _analyze_one_file(root, relpath, analyzers=active_analyzers):
             all_findings.append(finding)
             packet = build_packet(
                 rule_id=finding.rule_id,
