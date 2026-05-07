@@ -26,6 +26,8 @@ from pathlib import Path
 
 from autofix import languages
 from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
+from autofix.analyzers.linter_passthrough.eslint import analyze as _analyze_eslint
+from autofix.analyzers.linter_passthrough.golangci import analyze as _analyze_golangci
 from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
 from autofix.analyzers.linter_passthrough.mypy import analyze as _analyze_mypy
 from autofix.analyzers.llm_judgment.code_quality import CodeQualityJudgmentAnalyzer
@@ -44,7 +46,7 @@ from autofix.invalidation.planner import (
 )
 from autofix.llm.scheduler import ScheduleDecision, Scheduler
 from autofix.migration import load_legacy_findings
-from autofix.parsing.tree_sitter import parse_file
+from autofix.parsing.tree_sitter import parse_file, ParseResult
 from autofix.ranking.priority_scorer import PriorityScore, PriorityScorer
 from autofix.telemetry import events_log
 from autofix.telemetry.correlation import (
@@ -55,6 +57,8 @@ from autofix.telemetry.correlation import (
 # AC-9: analyzer registry mapping analyzer set names to their analyze callables.
 _ANALYZER_REGISTRY: dict[str, object] = {
     "cheap": _analyze_unused,
+    "linter:eslint": _analyze_eslint,
+    "linter:golangci": _analyze_golangci,
     "linter:ruff": _analyze_ruff,
     "linter:mypy": _analyze_mypy,
     "llm:code-quality": CodeQualityJudgmentAnalyzer.analyze,
@@ -70,6 +74,16 @@ def _reset_passthrough_analyzer_state() -> None:
     must never raise — operators see a leak eventually rather than a
     hard failure now.
     """
+    try:
+        from autofix.analyzers.linter_passthrough import eslint as _eslint
+        _eslint._reset_per_scan_state()
+    except Exception:
+        pass
+    try:
+        from autofix.analyzers.linter_passthrough import golangci as _golangci
+        _golangci._reset_per_scan_state()
+    except Exception:
+        pass
     try:
         from autofix.analyzers.linter_passthrough import (
             ruff as _linter_ruff_mod,
@@ -549,11 +563,53 @@ def _analyze_one_file(
         return []
     if adapter.language == "python":
         return _analyze_one_file_python(root, relpath, analyzers=analyzers)
-    # Non-Python adapter: parse for side effect only; no analyzer
-    # registered today. Swallow per-file IO errors and grammar-missing
-    # NotImplementedError (design-decisions.md §4: cheap path may raise
-    # this when the tree-sitter grammar is unavailable, ``available`` is
-    # False on the adapter).
+
+    # JS/TS and Go dispatch: call active analyzers whose RULE_ID_PREFIX
+    # matches the language. Pass a stub ParseResult (path + relpath only)
+    # so the adapter can derive root and file path without a full parse.
+    # Python path is untouched — AC-24 byte-identical guarantee preserved.
+    if adapter.language in ("javascript", "typescript"):
+        target_prefix = "linter:eslint"
+    elif adapter.language == "go":
+        target_prefix = "linter:golangci"
+    else:
+        target_prefix = None
+
+    if target_prefix is not None and analyzers:
+        # Identify active analyzers for this language via registry key prefix.
+        matched_analyzers = [
+            callable_
+            for key, callable_ in _ANALYZER_REGISTRY.items()
+            if key.startswith(target_prefix) and callable_ in analyzers
+        ]
+        if matched_analyzers:
+            target = root / relpath
+            if not target.is_file():
+                return []
+            stub_parse_result = ParseResult(
+                path=target,
+                relpath=relpath,
+                source_bytes=b"",
+                tree=None,
+                lines=[],
+            )
+            findings: list[CandidateFinding] = []
+            for analyzer in matched_analyzers:
+                try:
+                    result = analyzer(stub_parse_result, None)
+                    if hasattr(result, "__iter__") and not isinstance(result, list):
+                        findings.extend(list(result))
+                    else:
+                        findings.extend(result)
+                except (NotImplementedError, OSError):
+                    pass
+            return findings
+
+    # Non-Python adapter with no matching active analyzer: parse for side
+    # effect only (telemetry / caches). Swallow per-file IO errors and
+    # grammar-missing NotImplementedError (design-decisions.md §4: cheap
+    # path may raise this when the tree-sitter grammar is unavailable,
+    # ``available`` is False on the adapter).
     target = root / relpath
     if not target.is_file():
         return []

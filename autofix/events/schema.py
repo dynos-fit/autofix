@@ -38,6 +38,7 @@ EventType = Literal[
     "AnalyzerTimeout",
     "AnalyzerError",
     "AnalyzerUnknown",
+    "AnalyzerSkipped",
 ]
 
 NEW_EVENT_NAMES: frozenset[str] = frozenset(
@@ -65,6 +66,7 @@ NEW_EVENT_NAMES: frozenset[str] = frozenset(
         "AnalyzerTimeout",
         "AnalyzerError",
         "AnalyzerUnknown",
+        "AnalyzerSkipped",
     }
 )
 
