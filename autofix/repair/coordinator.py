@@ -113,6 +113,15 @@ _LLM_PATCH_PREFIXES: tuple[str, ...] = (
     "linter:ruff:",
     "linter:mypy:",
     "llm:code-quality:",
+    # ARCH-013/016 follow-up: the LLM-judgment family (security,
+    # dead-code, performance) shipped in ARCH-013 was not yet routable
+    # to ``LLM_PATCH`` — every finding from those analyzers fell to
+    # ``HUMAN_ONLY`` ("no_mapping"), bypassing the LLM patcher
+    # entirely. Surfaced when the crawl dogfood found 7 ``llm:security``
+    # findings on ``agent_loop.py`` and 0 patches were generated.
+    "llm:dead-code:",
+    "llm:security:",
+    "llm:performance:",
 )
 
 

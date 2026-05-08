@@ -35,6 +35,14 @@ _DISPATCH_ROWS: list[tuple[str, RepairTier, str]] = [
     ("linter:ruff:E999", RepairTier.LLM_PATCH, "prefix_mapped"),
     ("linter:mypy:misc", RepairTier.LLM_PATCH, "prefix_mapped"),
     ("llm:code-quality:magic-number", RepairTier.LLM_PATCH, "prefix_mapped"),
+    # ARCH-013/016 follow-up: every LLM-judgment family now routes to
+    # LLM_PATCH so produce_patch can attempt a fix. Previously these
+    # all fell to HUMAN_ONLY ("no_mapping"), bypassing the LLM patcher
+    # — the entire LLM-judgment family was effectively dead code on
+    # the auto-fix path.
+    ("llm:dead-code:unused-import", RepairTier.LLM_PATCH, "prefix_mapped"),
+    ("llm:security:secret-leak", RepairTier.LLM_PATCH, "prefix_mapped"),
+    ("llm:performance:n-plus-one", RepairTier.LLM_PATCH, "prefix_mapped"),
     # Fully unmapped -> human-only, reason no_mapping.
     ("unknown-rule-xyz", RepairTier.HUMAN_ONLY, "no_mapping"),
 ]
