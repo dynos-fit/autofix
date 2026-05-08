@@ -132,8 +132,11 @@ class LLMJudgmentAnalyzer(ABC):
         cache_input = (prompt + commit_sha + cls.MODEL).encode("utf-8")
         cache_key = hashlib.sha256(cache_input).hexdigest()
 
-        # Defense-in-depth: validate cache_key format before joining paths
-        assert re.fullmatch(r"[0-9a-f]{64}", cache_key), f"Invalid cache_key: {cache_key}"
+        # Defense-in-depth: validate cache_key format before joining
+        # paths. ``assert`` would be stripped under ``python -O``, so we
+        # raise explicitly to keep the path-safety invariant intact.
+        if not re.fullmatch(r"[0-9a-f]{64}", cache_key):
+            raise RuntimeError(f"Invalid cache_key: {cache_key}")
 
         # Step 5: Check cache
         cache_dir = parse_result.repo_root / ".autofix" / "cache" / "llm_judgment"
@@ -238,8 +241,8 @@ class LLMJudgmentAnalyzer(ABC):
                 path = parse_result.relpath
                 symbol_name = item.get("symbol_name", item["category"])
                 start_line = int(item["start_line"])
-                end_line = int(item.get("end_line", item["start_line"]))
-                changed_slice = str(item.get("description", ""))
+                end_line = int(item["end_line"])
+                changed_slice = str(item["description"])
                 normalized_import = ""
 
                 finding = CandidateFinding(
@@ -407,7 +410,9 @@ class LLMJudgmentAnalyzer(ABC):
         try:
             fd = os.open(
                 str(tmp_path),
-                os.O_CREAT | os.O_WRONLY | os.O_EXCL | os.O_TRUNC,
+                # O_EXCL+O_CREAT means the open fails if the file
+                # already exists, so O_TRUNC is unreachable; omit it.
+                os.O_CREAT | os.O_WRONLY | os.O_EXCL,
                 0o600,
             )
             try:

@@ -24,7 +24,7 @@ against the freshly-derived values on every read. A mismatch is a silent miss
 — no rejection event is emitted for the mismatch itself.
 
 Prompt-injection containment: raw file content is wrapped in
-``<<<FILE>>>`` / ``<<<END_DIFF>>>`` fences with a treat-as-data directive
+``<<<FILE>>>`` / ``<<<END_FILE>>>`` fences with a treat-as-data directive
 instructing the model to ignore instructions inside fenced regions. Response
 content is validated structurally; a clean-applying malicious diff cannot be
 distinguished at this layer — human review before commit is the downstream
@@ -290,8 +290,12 @@ def _validate_via_git(diff_body: str, root: Path) -> bool:
         finally:
             os.close(tmp_fd)
 
+        # ``--no-unsafe-paths`` is git's default at check time, but
+        # passing it explicitly pins the security boundary against any
+        # future config-driven flip and matches the spec's intent of
+        # rejecting symlink-escape patches.
         result = subprocess.run(
-            ["git", "apply", "--check", tmp_name],
+            ["git", "apply", "--check", "--no-unsafe-paths", tmp_name],
             cwd=root,
             capture_output=True,
             timeout=30,

@@ -284,6 +284,37 @@ class TestMypyAdapterTimeout:
                  if c[0][1] == "AnalyzerTimeout"]
         assert len(calls) == 1
         assert calls[0][0][2]["analyzer"] == "linter:mypy"
+        # AC-6 payload contract: the file path MUST be in the
+        # AnalyzerTimeout event payload.
+        assert calls[0][0][2]["file"] == relpath
+        assert calls[0][0][2]["scan_id"] == "test-scan-2"
+
+    def test_timeout_logs_event_per_file_per_scan(self, tmp_path: Path):
+        """AC-6: dedupe key is (scan_id, file). Timeouts on DIFFERENT
+        files in the same scan MUST each emit telemetry — only repeats
+        on the SAME file are suppressed."""
+        repo_root = tmp_path
+        parse_a = _make_parse_result(repo_root, "a.py", repo_root / "a.py")
+        parse_b = _make_parse_result(repo_root, "b.py", repo_root / "b.py")
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(
+                cmd=["mypy"], timeout=60,
+            )
+            with mock.patch("autofix.telemetry.events_log.append_event") as mock_append:
+                with set_scan_id("test-scan-perfile"):
+                    list(mypy.analyze(parse_a, symbol_table=None))
+                    list(mypy.analyze(parse_b, symbol_table=None))
+                    # Repeat on a.py — must NOT log a third time.
+                    list(mypy.analyze(parse_a, symbol_table=None))
+
+        timeout_calls = [c for c in mock_append.call_args_list
+                         if c[0][1] == "AnalyzerTimeout"]
+        # Two unique files → two telemetry events; the repeat on a.py
+        # is suppressed by the per-(scan_id, file) memo.
+        assert len(timeout_calls) == 2
+        files_seen = {c[0][2]["file"] for c in timeout_calls}
+        assert files_seen == {"a.py", "b.py"}
 
 
 class TestMypyAdapterPerScanMemoization:
@@ -370,7 +401,8 @@ class TestMypyAdapterMalformedOutput:
     """Tests for subprocess output errors."""
 
     def test_subprocess_error_with_no_stdout(self, tmp_path: Path):
-        """Subprocess error (non-zero return, no stdout) returns empty."""
+        """Subprocess error (non-zero return, no stdout) returns empty AND
+        emits AnalyzerError telemetry per AC-7."""
         repo_root = tmp_path
         relpath = "p.py"
         abs_path = repo_root / relpath
@@ -382,6 +414,17 @@ class TestMypyAdapterMalformedOutput:
                 stdout="",
                 stderr="command not found",
             )
-            findings = list(mypy.analyze(parse_result, symbol_table=None))
+            with mock.patch("autofix.telemetry.events_log.append_event") as mock_append:
+                with set_scan_id("test-scan-err"):
+                    findings = list(mypy.analyze(parse_result, symbol_table=None))
 
         assert findings == []
+        # AC-7: AnalyzerError telemetry MUST fire on the
+        # subprocess-error-with-no-stdout path.
+        err_calls = [c for c in mock_append.call_args_list
+                     if c[0][1] == "AnalyzerError"]
+        assert len(err_calls) == 1
+        payload = err_calls[0][0][2]
+        assert payload["analyzer"] == "linter:mypy"
+        assert payload["scan_id"] == "test-scan-err"
+        assert "command not found" in payload.get("stderr", "")

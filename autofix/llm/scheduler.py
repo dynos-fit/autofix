@@ -74,11 +74,6 @@ from typing import Any, Iterable, Literal
 # same-package import; the only LLM seam in the codebase.
 from autofix import llm_backend as _llm_backend
 from autofix.llm_backend import LLMBackendConfig, LLMResult
-
-
-class AnalyzerSeamUnavailableError(Exception):
-    """LLM seam reported unavailable (binary missing, API key unconfigured, etc.)."""
-
 from autofix.evidence.fingerprints import canonical_json_bytes
 from autofix.evidence.schema import EvidencePacket
 from autofix.llm import triage
@@ -87,6 +82,10 @@ from autofix.telemetry.atomic import atomic_write_json
 from autofix.telemetry.correlation import current_commit_sha, current_scan_id
 from autofix.telemetry.replay import _REPLAY_ACTIVE
 from autofix.telemetry.tracer import span
+
+
+class AnalyzerSeamUnavailableError(Exception):
+    """LLM seam reported unavailable (binary missing, API key unconfigured, etc.)."""
 
 # Decision literal shared by the scheduler's public surface and by the
 # ``LLMCallGated`` event payload. The exact ten-member set is pinned by
