@@ -57,6 +57,9 @@ from autofix.cli.post_fix_constants import (
     POST_FIX_BRANCH,
     POST_FIX_BRANCH_PR,
     POST_FIX_WORKING_TREE,
+    PR_BODY_TEMPLATE,
+    PR_DIFF_MAX_BYTES,
+    PR_FINDING_ROW_TEMPLATE,
 )
 from autofix.workflow.verify_constants import CONFIG_PATH_RELATIVE
 
@@ -163,6 +166,88 @@ def _build_commit_message(
     return title, bullets
 
 
+def _parse_finding_id(fid: str) -> tuple[str, str, str]:
+    """Decompose a synthesized finding-id into ``(rule_id, path, lines)``.
+
+    The LLM-judgment family produces ids of the form
+    ``"<rule_id>@<path>#L<start>-<end>"`` (see
+    :func:`autofix.analyzers.llm_judgment._base.LLMJudgmentAnalyzer.analyze`).
+    Older ids (cheap analyzers) are SHA-style fingerprints with no
+    embedded location — those go in the table verbatim under the
+    ``Finding`` column with ``-`` for the file:lines column.
+
+    Returns a 3-tuple suitable for the ``PR_FINDING_ROW_TEMPLATE``.
+    """
+    if "@" not in fid or "#L" not in fid:
+        return (fid, "-", "-")
+    rule_id, after_at = fid.split("@", 1)
+    path, line_part = after_at.split("#L", 1)
+    return (rule_id, path, line_part)
+
+
+def _build_pr_body(
+    *,
+    root: Path,
+    branch_name: str,
+    applied_finding_ids: frozenset[str],
+) -> str:
+    """Render the structured PR body shipped to ``gh pr create --body``.
+
+    The body has four sections — Summary, Findings fixed (table),
+    Diff (a single fenced ``diff`` block from ``git show
+    <branch>``), and Verify. Mirrors the dynos-work PR-writing
+    conventions: dense technical prose, every claim citable, no
+    marketing voice.
+
+    The diff is fetched from the just-created branch's tip commit;
+    we deliberately read it AFTER the commit lands rather than
+    capturing it from the working tree, so the body matches what
+    actually shipped (not what we intended to ship).
+
+    On ``git show`` failure we emit a body with an empty diff block
+    rather than raising — degrading to a usable PR body is
+    strictly better than no PR at all.
+    """
+    parsed = [_parse_finding_id(fid) for fid in sorted(applied_finding_ids)]
+    findings_table = "\n".join(
+        PR_FINDING_ROW_TEMPLATE.format(rule_id=r, path=p, lines=ln)
+        for r, p, ln in parsed
+    )
+    file_count = len({p for _, p, _ in parsed if p != "-"})
+
+    try:
+        diff_proc = subprocess.run(
+            ["git", "show", "--format=", branch_name],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diff_block = diff_proc.stdout
+    except (subprocess.CalledProcessError, OSError):
+        diff_block = ""
+
+    if len(diff_block.encode("utf-8")) > PR_DIFF_MAX_BYTES:
+        # Truncate at a safe byte boundary; keep the first PR_DIFF_MAX_BYTES
+        # and append a marker so reviewers know the body was clipped.
+        truncated = diff_block.encode("utf-8")[:PR_DIFF_MAX_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        diff_block = (
+            truncated
+            + "\n\n... [diff truncated for GitHub body size cap; "
+            "see the branch directly for the full diff]\n"
+        )
+
+    return PR_BODY_TEMPLATE.format(
+        n=len(applied_finding_ids),
+        file_count=file_count,
+        findings_table=findings_table,
+        diff_block=diff_block,
+        branch_name=branch_name,
+    )
+
+
 def _emit(msg: str, *, quiet: bool) -> None:
     if quiet:
         return
@@ -260,12 +345,24 @@ def apply_post_fix_policy(
         # (losing the just-applied fixes).
         _run_git(root, ["push", "-u", "origin", branch_name])
 
+        pr_title, _ = _build_commit_message(
+            run_id=run_id, applied_finding_ids=applied_finding_ids
+        )
+        pr_body = _build_pr_body(
+            root=root,
+            branch_name=branch_name,
+            applied_finding_ids=applied_finding_ids,
+        )
         pr_args = (
             *GH_PR_CREATE_BASE_ARGS,
             "--base",
             original_branch,
             "--head",
             branch_name,
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
         )
         _run_gh(root, pr_args)
         _emit(
