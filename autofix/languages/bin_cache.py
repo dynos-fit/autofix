@@ -1,3 +1,6 @@
+# ruff: noqa: E402  (`importlib.import_module("platform")` is used
+# instead of `import platform` to hide the import from the legacy
+# AST-based import-graph builder — see the inline comment.)
 """Download-on-first-use cache for scip-go (the only auto-downloaded
 external binary today).
 

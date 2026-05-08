@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from autofix.events.schema import ScanEvent
-from autofix.telemetry.correlation import current_commit_sha, current_scan_id
 from autofix.telemetry.tracer import span
 
 

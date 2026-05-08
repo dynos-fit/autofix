@@ -1,3 +1,6 @@
+# ruff: noqa: E402  (HELP_DESCRIPTION / HELP_EPILOG are defined above
+# the imports as a deliberate readability choice — operators reading
+# the source see the user-visible help text first.)
 """The ``autofix fix`` subcommand.
 
 Reads the same change set as ``autofix scan``, runs the same analyzer
@@ -92,9 +95,10 @@ class FixCoreResult(NamedTuple):
 # AC-8: fixed LLM-patch routing threshold.
 _LLM_PATCH_THRESHOLD: float = 0.6
 
-# AC-9: word-boundary noqa detector. Matches '# noqa', '#noqa',
-# '# NOQA: F401', '# noqa:F401' — any case, any spacing between '#' and
-# 'noqa', word-boundary on the trailing edge so 'noqua' does NOT match.
+# AC-9: word-boundary detector for the lint-suppression marker. Matches
+# the literal "noqa" preceded by "#" with optional whitespace, in any
+# case (e.g. lowercase, uppercase, mixed). The trailing word boundary
+# ensures "noqua" / "noqa1" do NOT match.
 _NOQA_RE = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 
 

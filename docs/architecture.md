@@ -154,3 +154,148 @@ LLM scheduling — your analyzer only emits raw candidate findings.
 
 `autofix/languages/python.py` is the simplest reference. `go.py` and
 `jsts.py` show the upstream-binary pattern.
+
+## Above the funnel: the run loop
+
+The 5-layer funnel produces findings. The **run loop** (shipped via
+the architecture upgrade ARCH-001..015) consumes those findings and
+optionally repairs them:
+
+```
+                ┌────────── (loop driver) ──────────┐
+                │   autofix run [--apply] [--watch]   │
+                └────────────────────────────────────┘
+                                │
+                                ▼
+        ┌──────────────────── workflow loop ─────────────────────┐
+        │  SCANNING → TRIAGING → PLANNING → APPLYING →            │
+        │  VERIFYING → DONE | RETRY | HUMAN_REVIEW | FAILED      │
+        └─────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+             ┌─── post-fix policy (optional, after DONE) ───┐
+             │  working-tree | branch | branch-pr            │
+             └────────────────────────────────────────────────┘
+```
+
+Each transition in the workflow loop is a row in
+`<root>/.autofix/runs/<run-id>/state.jsonl` — append-only, JSONL,
+byte-level atomic per O_APPEND. Concurrent `autofix run` invocations
+each get a unique `run_id` directory; their logs cannot interleave.
+
+### Repair coordination (TRIAGING + PLANNING)
+
+`autofix.repair.coordinate_repairs(findings, threshold, root)` is the
+entry point. For each finding it emits a `RepairTask` with a tier:
+
+- **`DETERMINISTIC`** — single-name unused-import deletions. The
+  apply pass rewrites the file deterministically (sibling tempfile
+  + atomic rename).
+- **`LLM_PATCH`** — the cheap-tier router decided this finding is a
+  good candidate for an LLM-generated diff. `produce_patch(task)`
+  invokes the LLM with the evidence packet, parses the response
+  through the unified-diff fence contract, and validates the
+  candidate diff via `git apply --check --no-unsafe-paths`.
+- **`HUMAN_REVIEW`** — anything the router can't classify. Surfaced
+  in the JSONL log with `reason="preview_only"`.
+
+The threshold (default `0.6`, lives in
+`autofix/cli/run_constants.py::LLM_PATCH_THRESHOLD`) is the priority
+score above which findings get routed to `LLM_PATCH` instead of
+`HUMAN_REVIEW`.
+
+### LLM judgment analyzers
+
+Three analyzer categories share a base class
+`autofix.analyzers.llm_judgment.LLMJudgmentAnalyzer`:
+
+```
+LLMJudgmentAnalyzer (base, owns: caching, JSON parsing, telemetry, error recovery)
+    ├── SecurityJudgmentAnalyzer        (opus, 9 OWASP categories)
+    ├── CodeQualityJudgmentAnalyzer     (sonnet, 9 antipatterns)
+    ├── DeadCodeJudgmentAnalyzer        (sonnet, 6 categories)
+    └── PerformanceJudgmentAnalyzer     (sonnet, 11 categories)
+```
+
+Subclasses override only `RULE_ID_PREFIX`, `MODEL`, and
+`prompt_template(diff_context)`. Cache key is
+`sha256(prompt + commit_sha + model)`; an entry's envelope
+re-validates `key`, `model`, and `commit_sha` on read to defend
+against TOCTOU cache-poisoning.
+
+Each analyzer emits open-set categories — the prompted list is the
+directive, NOT a runtime whitelist. Downstream consumers treat
+unknown category strings as valid-but-unknown.
+
+### Verify state primitive
+
+`autofix.workflow.verify.run_verification(...)` is a pure function
+that drives the VERIFYING transition: it auto-detects the test
+runner via marker files (`pyproject.toml`/`setup.py`/`setup.cfg`/
+`package.json`/`go.mod`), honors `.autofix/config.json::test`
+overrides, runs the test command via `subprocess.run` with timeout
++ log capture, then re-scans the working tree via `_run_scan_core`.
+The returned `VerifyResult` carries enough math
+(`unresolved_finding_ids`, `new_finding_count`, `regressed`) for
+the loop driver to decide DONE vs RETRY vs FAILED.
+
+All numeric and string constants live in
+`autofix/workflow/verify_constants.py` (the no-magic-numbers
+discipline established in ARCH-010 and ARCH-011 — every literal
+the verify body uses must come from a named constant; a grep test
+in `tests/autofix/workflow/test_verify_no_magic_numbers.py`
+enforces this at test time).
+
+### `--watch` integration
+
+`autofix/cli/_watch_loop.py::run_watch_loop(session, dispatcher,
+*, safety_sweep_seconds, once)` is shared between `autofix watch`
+(scan-only — the historical behavior) and `autofix run --watch`
+(full workflow loop per cycle). The dispatcher closure captures
+`args` and forwards each Watchman batch's `is_fresh_instance` flag
+to the per-cycle scan.
+
+Per-cycle exception isolation is mandatory: `Exception` from the
+dispatcher is caught, logged to stderr, and the loop continues.
+`KeyboardInterrupt` and `SystemExit` propagate. This contract is
+enforced by `tests/autofix/cli/test_watch_loop_helper.py`.
+
+### Post-fix policy
+
+`autofix/cli/post_fix_policy.py::apply_post_fix_policy(...)` runs
+ONLY after `State.DONE` with a non-empty applied-finding set. The
+function reads `.autofix/config.json::post_fix` (overridable via
+`--post-fix`), creates a fresh branch
+(`autofix/fixes-<run-id>`), commits the working-tree changes with
+a structured message, and optionally invokes `gh pr create` for
+the `branch-pr` mode. Subprocess errors are caught, the original
+branch is best-effort restored, and the function returns
+`working-tree` rather than raising — the run still ends `DONE`.
+
+All policy literals (enum values, branch prefix, commit-message
+templates, gh argument lists, config keys) live in
+`autofix/cli/post_fix_constants.py`. A grep test
+(`tests/autofix/cli/test_post_fix_no_magic_numbers.py`) verifies
+the policy module body never inlines them.
+
+## Workflow state machine internals
+
+`autofix.workflow.StateMachine` is a producer-only class:
+
+- One instance per `autofix run` invocation; one `run_id` per
+  instance.
+- `transition(to_state, evidence_sha256, reason=None)` validates
+  the (from, to) pair against `_TRANSITIONS` (see
+  `autofix/workflow/state_machine.py`) and appends a new
+  `StateRow` to the JSONL log.
+- The initial `SCANNING` row is written in `__init__` so even an
+  immediate-failure run leaves a trace.
+- File writes use `O_APPEND` for byte-level atomicity; readers
+  parse line-by-line with `json.loads` — a half-written line is
+  skipped without error.
+- `StateMachine.from_log(path)` reconstructs an in-memory replay
+  for diagnostic tooling.
+
+Illegal transitions raise `InvalidTransition`. Empty / malformed /
+illegal-sequence logs raise `InvalidLog` on `from_log`. Both are
+public exceptions on `autofix.workflow`.

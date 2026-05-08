@@ -105,6 +105,8 @@ def _resolve_test_command(
     """
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     cwd: Path = root
+    runner_name: str | None
+    command: tuple[str, ...] | None
 
     config = _read_config(root)
     if config is not None:
@@ -150,10 +152,17 @@ def _run_test_command(
         _safe_write_log(log_path, f"FileNotFoundError: {exc}\n")
         return False
     except subprocess.TimeoutExpired as exc:
+        # `subprocess.TimeoutExpired.stdout`/`stderr` are bytes-or-None
+        # when the underlying call captured output without text=True
+        # decoding (which can happen if a partial buffer is kept on
+        # timeout). Decode defensively so the log file holds readable
+        # text instead of the literal `b'...'` repr.
+        partial_stdout = _decode_partial(exc.stdout)
+        partial_stderr = _decode_partial(exc.stderr)
         msg = (
             f"TimeoutExpired after {timeout}s\n"
-            f"--- partial stdout ---\n{exc.stdout or ''}\n"
-            f"--- partial stderr ---\n{exc.stderr or ''}\n"
+            f"--- partial stdout ---\n{partial_stdout}\n"
+            f"--- partial stderr ---\n{partial_stderr}\n"
         )
         _safe_write_log(log_path, msg)
         return False
@@ -165,6 +174,15 @@ def _run_test_command(
     )
     _safe_write_log(log_path, payload)
     return result.returncode == SUBPROCESS_EXIT_CODE_OK
+
+
+def _decode_partial(buf: bytes | str | None) -> str:
+    """Decode a possibly-bytes partial-output buffer to text safely."""
+    if buf is None:
+        return ""
+    if isinstance(buf, bytes):
+        return buf.decode("utf-8", errors="replace")
+    return buf
 
 
 def _safe_write_log(path: Path, text: str) -> None:
