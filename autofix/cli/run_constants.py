@@ -17,6 +17,20 @@ RECOVERY_BRANCH_PREFIX: str = "autofix/pre-fix-snapshot-"
 RECOVERY_BRANCH_TS_FORMAT: str = "%Y%m%dT%H%M%SZ"
 RECOVERY_BRANCH_RETRY_SUFFIXES: tuple[str, ...] = tuple(f"-{i}" for i in range(1, 10))
 
+# When the operator passes --auto-llm without an explicit --analyzers
+# set, expand the implicit set to include the cheap analyzer plus every
+# LLM judgment analyzer registered in autofix/funnel/pipeline.py. This
+# makes "I asked for LLM-driven repair" a single flag instead of a
+# multi-analyzer comma-separated string.
+DEFAULT_AUTO_LLM_ANALYZERS: tuple[str, ...] = (
+    "cheap",
+    "llm:security",
+    "llm:code-quality",
+    "llm:dead-code",
+    "llm:performance",
+)
+LLM_ANALYZER_PREFIX: str = "llm:"
+
 STATE_LABEL_VERBOSE: dict[State, str] = {
     State.SCANNING: "scanning",
     State.TRIAGING: "triaging",
@@ -40,5 +54,7 @@ __all__ = [
     "RECOVERY_BRANCH_PREFIX",
     "RECOVERY_BRANCH_TS_FORMAT",
     "RECOVERY_BRANCH_RETRY_SUFFIXES",
+    "DEFAULT_AUTO_LLM_ANALYZERS",
+    "LLM_ANALYZER_PREFIX",
     "STATE_LABEL_VERBOSE",
 ]

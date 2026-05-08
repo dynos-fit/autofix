@@ -52,6 +52,8 @@ def test_all_exports() -> None:
         "RECOVERY_BRANCH_PREFIX",
         "RECOVERY_BRANCH_TS_FORMAT",
         "RECOVERY_BRANCH_RETRY_SUFFIXES",
+        "DEFAULT_AUTO_LLM_ANALYZERS",
+        "LLM_ANALYZER_PREFIX",
         "STATE_LABEL_VERBOSE",
     }
     assert set(run_constants.__all__) == expected

@@ -35,12 +35,14 @@ from pathlib import Path
 
 from autofix.cli.fix_command import _run_fix_core
 from autofix.cli.run_constants import (
+    DEFAULT_AUTO_LLM_ANALYZERS,
     DEFAULT_MAX_RETRIES,
     EVIDENCE_PLACEHOLDER,
     EXIT_FAILED,
     EXIT_HUMAN_REVIEW,
     EXIT_OK,
     EXIT_USAGE_ERROR,
+    LLM_ANALYZER_PREFIX,
     LLM_PATCH_THRESHOLD,
     STATE_LABEL_VERBOSE,
 )
@@ -101,7 +103,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default="",
         help="Comma-separated analyzer set (e.g. 'cheap,linter:ruff'). "
-        "Empty means today's default (only 'cheap' runs).",
+        "Empty means: when --auto-llm is set, expand to "
+        "'cheap,llm:security,llm:code-quality,llm:dead-code,llm:performance' "
+        "(every LLM bug-finder); otherwise only 'cheap' runs.",
     )
     parser.add_argument(
         "--max-retries",
@@ -191,6 +195,49 @@ def _dedup_findings(findings: list) -> list:
         seen.add(key)
         out.append(f)
     return out
+
+
+def _resolve_analyzer_set(args: argparse.Namespace) -> list[str] | None:
+    """Resolve the active analyzer set from CLI args.
+
+    Resolution rules (run_command's UX contract):
+
+    - When ``--analyzers`` is set explicitly, parse it verbatim. If
+      ``--auto-llm`` is ALSO set but the resolved set has no
+      ``llm:*`` analyzer, emit a one-line stderr warning so the
+      operator notices the silent footgun. (Behavior unchanged: the
+      run still proceeds with whatever set was specified.)
+    - When ``--analyzers`` is omitted AND ``--auto-llm`` is set,
+      expand the implicit set to
+      :data:`DEFAULT_AUTO_LLM_ANALYZERS` so "I asked for LLM-driven
+      repair" is a single flag rather than a multi-analyzer
+      comma-separated string.
+    - Otherwise (the bare ``autofix run`` / ``run --apply`` path),
+      return ``None`` — the funnel applies its own
+      "cheap-only" default.
+    """
+    raw_analyzers = (getattr(args, "analyzers", "") or "").strip()
+    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
+    auto_llm = bool(getattr(args, "auto_llm", False))
+    quiet = bool(getattr(args, "quiet", False))
+
+    if parts:
+        if auto_llm and not any(p.startswith(LLM_ANALYZER_PREFIX) for p in parts):
+            if not quiet:
+                print(
+                    "autofix: warning: --auto-llm is set but --analyzers "
+                    f"({raw_analyzers!r}) has no llm:* analyzer; LLM "
+                    "patches will only fire if a non-LLM analyzer's "
+                    "finding routes through the LLM tier.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        return parts
+
+    if auto_llm:
+        return list(DEFAULT_AUTO_LLM_ANALYZERS)
+
+    return None
 
 
 def _emit_progress(state: State, *, quiet: bool) -> None:
@@ -443,9 +490,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return EXIT_USAGE_ERROR
 
-    raw_analyzers = (args.analyzers or "").strip()
-    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
-    analyzer_set = parts if parts else None
+    analyzer_set = _resolve_analyzer_set(args)
 
     if not getattr(args, "watch", False):
         # Single-shot path: identical to ARCH-010 behavior.
