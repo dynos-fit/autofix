@@ -95,7 +95,7 @@ def test_branch_creates_branch_and_commits(tmp_path: Path) -> None:
          f"^{initial_branch}"],
         cwd=tmp_path, capture_output=True, text=True, check=True,
     )
-    new_commits = [l for l in branch_log.stdout.splitlines() if l.strip()]
+    new_commits = [line for line in branch_log.stdout.splitlines() if line.strip()]
     assert len(new_commits) == 1
 
 
@@ -153,6 +153,22 @@ def test_branch_pr_with_gh_invokes_pr_create(
 
     monkeypatch.setattr(policy_mod, "_run_gh", _fake_gh)
 
+    # ``git push -u origin <branch>`` is fired before the gh call —
+    # without an origin remote the test repo can't satisfy that, so
+    # intercept the push at the _run_git layer.
+    real_run_git = policy_mod._run_git
+    git_calls: list[tuple] = []
+
+    def _git_intercept(root, args):
+        git_calls.append(tuple(args))
+        if args[:1] == ["push"]:
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=0, stdout="", stderr=""
+            )
+        return real_run_git(root, args)
+
+    monkeypatch.setattr(policy_mod, "_run_git", _git_intercept)
+
     rc = policy_mod.apply_post_fix_policy(
         root=tmp_path,
         run_id="r-pr",
@@ -164,6 +180,110 @@ def test_branch_pr_with_gh_invokes_pr_create(
     assert captured["args"][:4] == ("gh", "pr", "create", "--fill")
     assert "--head" in captured["args"]
     assert "autofix/fixes-r-pr" in captured["args"]
+
+
+def test_branch_pr_pushes_branch_to_origin_before_gh_pr_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``gh pr create --head <branch>`` resolves the branch via the
+    GitHub API. The branch MUST exist on the remote before the call.
+    Without a push, the API errors with ``No commits between main and
+    <branch>; Head ref must be a branch`` and the dispatcher reverts
+    the working tree (losing the just-applied fixes).
+
+    Pin the contract: ``git push -u origin <branch>`` MUST be called
+    BEFORE ``gh pr create``.
+    """
+    _git_init(tmp_path)
+    monkeypatch.setattr(policy_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    real_run_git = policy_mod._run_git
+    call_log: list[tuple[str, tuple]] = []
+
+    def _logged_git(root, args):
+        call_log.append(("git", tuple(args)))
+        if args[:1] == ["push"]:
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=0, stdout="", stderr=""
+            )
+        return real_run_git(root, args)
+
+    def _logged_gh(root, args):
+        call_log.append(("gh", tuple(args)))
+        return subprocess.CompletedProcess(
+            args=list(args), returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(policy_mod, "_run_git", _logged_git)
+    monkeypatch.setattr(policy_mod, "_run_gh", _logged_gh)
+
+    rc = policy_mod.apply_post_fix_policy(
+        root=tmp_path,
+        run_id="r-pushtest",
+        applied_finding_ids=frozenset({"F-1"}),
+        policy=POST_FIX_BRANCH_PR,
+        quiet=True,
+    )
+
+    assert rc == POST_FIX_BRANCH_PR
+
+    push_calls = [
+        i for i, (kind, args) in enumerate(call_log)
+        if kind == "git" and args[:1] == ("push",)
+    ]
+    gh_pr_calls = [
+        i for i, (kind, args) in enumerate(call_log)
+        if kind == "gh" and args[:3] == ("gh", "pr", "create")
+    ]
+
+    assert push_calls, (
+        "expected at least one `git push` before `gh pr create`; "
+        f"got call log: {call_log!r}"
+    )
+    assert gh_pr_calls, "expected a `gh pr create` call"
+    assert push_calls[0] < gh_pr_calls[0], (
+        "`git push` must run BEFORE `gh pr create`; "
+        f"got push at index {push_calls[0]}, gh pr at {gh_pr_calls[0]}"
+    )
+
+    # Verify the push targets origin and -u sets upstream.
+    push_args = call_log[push_calls[0]][1]
+    assert push_args[0] == "push"
+    assert "-u" in push_args
+    assert "origin" in push_args
+    assert "autofix/fixes-r-pushtest" in push_args
+
+
+def test_branch_only_does_not_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For ``branch`` policy (no PR), do NOT push to origin —
+    branch-only mode is intentionally a local-only artifact.
+    """
+    _git_init(tmp_path)
+
+    real_run_git = policy_mod._run_git
+    call_log: list[tuple] = []
+
+    def _logged_git(root, args):
+        call_log.append(tuple(args))
+        return real_run_git(root, args)
+
+    monkeypatch.setattr(policy_mod, "_run_git", _logged_git)
+
+    rc = policy_mod.apply_post_fix_policy(
+        root=tmp_path,
+        run_id="r-branchonly",
+        applied_finding_ids=frozenset({"F-1"}),
+        policy=POST_FIX_BRANCH,
+        quiet=True,
+    )
+
+    assert rc == POST_FIX_BRANCH
+    push_calls = [c for c in call_log if c[:1] == ("push",)]
+    assert not push_calls, (
+        f"branch-only policy must not push; got pushes: {push_calls!r}"
+    )
 
 
 def test_subprocess_failure_degrades_gracefully(

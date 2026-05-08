@@ -252,6 +252,14 @@ def apply_post_fix_policy(
             )
             return POST_FIX_BRANCH
 
+        # ``gh pr create --head <branch>`` resolves the branch via the
+        # GitHub API, not via local refs — so the branch MUST exist on
+        # the remote before the call. Without the push, the API errors
+        # with "No commits between main and <branch>; Head ref must be
+        # a branch" and the dispatcher reverts the working tree
+        # (losing the just-applied fixes).
+        _run_git(root, ["push", "-u", "origin", branch_name])
+
         pr_args = (
             *GH_PR_CREATE_BASE_ARGS,
             "--base",
