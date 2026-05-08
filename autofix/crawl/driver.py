@@ -140,6 +140,7 @@ def _run_crawl_once_body(
             _dispatch_repair_workflow(
                 root=root, bundle=bundle, mode=mode,
                 analyzers=analyzers, quiet=quiet,
+                findings=findings,
             )
 
     return 0
@@ -253,44 +254,56 @@ def _dispatch_repair_workflow(
     mode: str,
     analyzers: list[str],
     quiet: bool,
+    findings: list | None = None,
 ) -> int:
-    """Invoke the existing ``_run_one_cycle`` repair workflow body.
+    """Apply the bundle's findings via the repair pipeline.
 
-    Maps the crawl's mode to the run-command flag set:
+    Bypasses ``run_command._run_one_cycle`` because that function
+    re-runs the full SCAN/TRIAGE/PLAN/APPLY/VERIFY workflow against
+    the entire repo's diff scope — which can be hundreds of files
+    × N analyzers = thousands of LLM calls. The crawl already
+    analyzed the bundle and produced findings; we only need to:
 
-    * ``mode == MODE_COMMIT`` → ``--apply --post-fix branch``
-    * ``mode == MODE_PR``     → ``--apply --post-fix branch-pr``
+    1. Apply via ``_run_fix_core(findings=...)`` — uses
+       preloaded findings, skips re-scanning. The LLM patcher
+       generates unified diffs for LLM-tier findings.
+    2. Run the post-fix policy to branch + commit (and optionally
+       open a PR).
+
+    Maps the crawl's mode to the post-fix policy:
+
+    * ``mode == MODE_COMMIT`` → ``branch`` (no PR)
+    * ``mode == MODE_PR``     → ``branch-pr``
 
     The ``--auto-llm`` flag is set whenever any ``llm:*`` analyzer
-    is in the resolved set — that's the signal "this cycle wants
-    LLM-generated patches" for findings the deterministic tier
-    can't fix.
+    is in the resolved set — signals "this cycle wants LLM-generated
+    patches".
     """
-    import argparse
-    from autofix.cli.run_command import _run_one_cycle
-    from autofix.cli.run_constants import DEFAULT_MAX_RETRIES
-
+    from autofix.cli.fix_command import _run_fix_core
+    from autofix.cli.post_fix_policy import apply_post_fix_policy
+    from autofix.cli.run_constants import EXIT_OK
     from autofix.crawl.crawl_constants import MODE_PR
+
+    if findings is None:
+        findings = []
+    if not findings:
+        return EXIT_OK
 
     has_llm = any(a.startswith("llm:") for a in analyzers)
     post_fix = "branch-pr" if mode == MODE_PR else "branch"
 
-    args = argparse.Namespace(
-        root=root,
-        apply=True,
-        suggest=False,
-        auto_llm=has_llm,
-        max_retries=DEFAULT_MAX_RETRIES,
-        quiet=quiet,
-        full_sweep=True,  # the crawl just identified findings via analyze_bundle;
-                          # the run loop's verify needs full-sweep semantics
-                          # because the apply pass may touch files outside
-                          # the bundle.
-        post_fix=post_fix,
-        analyzers=",".join(analyzers),
-    )
     try:
-        return _run_one_cycle(args, list(analyzers), fresh_instance=False)
+        fix_result = _run_fix_core(
+            root=root,
+            findings=findings,
+            apply_mode=True,
+            suggest_mode=False,
+            auto_llm=has_llm,
+            force=False,
+            max_llm_patches=None,
+            recovery_branch_already_captured=False,
+            quiet=quiet,
+        )
     except Exception as exc:
         if not quiet:
             print(
@@ -300,6 +313,32 @@ def _dispatch_repair_workflow(
                 flush=True,
             )
         return 1
+
+    if fix_result.exit_code != EXIT_OK:
+        return fix_result.exit_code
+
+    if not fix_result.applied_finding_ids:
+        return EXIT_OK
+
+    try:
+        apply_post_fix_policy(
+            root=root,
+            run_id=_make_event_id(),
+            applied_finding_ids=frozenset(fix_result.applied_finding_ids),
+            policy=post_fix,
+            quiet=quiet,
+        )
+    except Exception as exc:
+        if not quiet:
+            print(
+                f"autofix: post-fix policy raised {exc!r}; "
+                f"working tree may be dirty",
+                file=sys.stderr,
+                flush=True,
+            )
+        return 1
+
+    return EXIT_OK
 
 
 def _build_git_log(root: Path) -> Any:
