@@ -177,9 +177,14 @@ def test_branch_pr_with_gh_invokes_pr_create(
         quiet=True,
     )
     assert rc == POST_FIX_BRANCH_PR
-    assert captured["args"][:4] == ("gh", "pr", "create", "--fill")
+    assert captured["args"][:3] == ("gh", "pr", "create")
     assert "--head" in captured["args"]
     assert "autofix/fixes-r-pr" in captured["args"]
+    # Title + body are now passed explicitly (replaces the old
+    # ``--fill``-based path that left PRs as a bare commit-message
+    # subject + finding-id list).
+    assert "--title" in captured["args"]
+    assert "--body" in captured["args"]
 
 
 def test_branch_pr_pushes_branch_to_origin_before_gh_pr_create(
@@ -426,3 +431,138 @@ def test_unknown_cli_override_falls_back_with_warning(
     assert rc == POST_FIX_WORKING_TREE
     err = capsys.readouterr().err
     assert "unknown --post-fix value" in err
+
+
+# ---------------------------------------------------------------------------
+# PR body shape (replaces the old --fill-based bare-commit-message body)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_finding_id_recovers_rule_path_lines() -> None:
+    """Synthesized LLM-judgment finding-ids decompose into the
+    three columns the PR body table renders.
+    """
+    rule, path, lines = policy_mod._parse_finding_id(
+        "llm:security:command-injection@autofix/agent_loop.py#L137-154"
+    )
+    assert rule == "llm:security:command-injection"
+    assert path == "autofix/agent_loop.py"
+    assert lines == "137-154"
+
+
+def test_parse_finding_id_falls_back_for_opaque_ids() -> None:
+    """SHA-style finding-ids (cheap analyzers' fingerprints) have no
+    embedded location, so the parser places them in the rule_id slot
+    and stubs path / lines with ``-`` rather than crashing.
+    """
+    opaque = "deadbeef" * 8
+    rule, path, lines = policy_mod._parse_finding_id(opaque)
+    assert rule == opaque
+    assert path == "-"
+    assert lines == "-"
+
+
+def test_build_pr_body_renders_all_four_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end shape pin: the body produced for a real branch
+    contains Summary / Findings fixed / Diff / Verify and
+    interpolates the finding count, file count, finding-id table,
+    and branch name.
+    """
+    _git_init(tmp_path)
+    # Make a fake "autofix" branch that holds a commit so ``git
+    # show`` returns a real diff.
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "autofix/fixes-r-body"],
+        cwd=tmp_path, check=True,
+    )
+    (tmp_path / "fixed.py").write_text("def foo(): return 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "autofix: applied"],
+        cwd=tmp_path, check=True,
+    )
+
+    body = policy_mod._build_pr_body(
+        root=tmp_path,
+        branch_name="autofix/fixes-r-body",
+        applied_finding_ids=frozenset({
+            "llm:security:command-injection@autofix/agent_loop.py#L137-154",
+            "llm:security:path-traversal@autofix/agent_loop.py#L105-115",
+        }),
+    )
+
+    # All four canonical sections.
+    for heading in ("## Summary", "## Findings fixed", "## Diff", "## Verify"):
+        assert heading in body, f"missing section: {heading!r}"
+
+    # Counts interpolated correctly.
+    assert "applied 2 LLM-generated fix(es)" in body
+    assert "1 file(s)" in body  # both findings live in agent_loop.py
+
+    # Findings-table rows present, table-formatted.
+    assert "| `llm:security:command-injection` |" in body
+    assert "`autofix/agent_loop.py:137-154`" in body
+    assert "| `llm:security:path-traversal` |" in body
+
+    # Diff fence present and contains the actual git-show output.
+    assert "```diff" in body
+    assert "diff --git" in body  # `git show --format=` always emits this
+    assert "fixed.py" in body
+
+    # Verify section names the branch.
+    assert "autofix/fixes-r-body" in body
+
+
+def test_build_pr_body_truncates_oversized_diffs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diff > PR_DIFF_MAX_BYTES is clipped with a clear marker so
+    the GitHub API never rejects the body for size.
+    """
+    from autofix.cli import post_fix_constants as c
+
+    _git_init(tmp_path)
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "autofix/fixes-r-big"],
+        cwd=tmp_path, check=True,
+    )
+    # Force a diff much larger than the cap. Keep the file under
+    # 1MB so the test is fast.
+    huge = "x = 1\n" * (c.PR_DIFF_MAX_BYTES // 4)
+    (tmp_path / "huge.py").write_text(huge)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "huge"], cwd=tmp_path, check=True
+    )
+
+    body = policy_mod._build_pr_body(
+        root=tmp_path,
+        branch_name="autofix/fixes-r-big",
+        applied_finding_ids=frozenset({"F-1"}),
+    )
+
+    assert "[diff truncated for GitHub body size cap" in body
+    # Still under a generous safety bound: prose + table + cap + marker.
+    assert len(body.encode("utf-8")) < 65_000
+
+
+def test_build_pr_body_degrades_when_git_show_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing ``git show`` (e.g. branch missing on disk) emits a
+    body with an empty diff block instead of raising — the policy
+    layer's invariant is "PR opens or we revert", so the body
+    builder must never be the thing that crashes the chain.
+    """
+    _git_init(tmp_path)
+    # Reference a branch that does not exist; ``git show`` exits non-zero.
+    body = policy_mod._build_pr_body(
+        root=tmp_path,
+        branch_name="autofix/fixes-does-not-exist",
+        applied_finding_ids=frozenset({"F-1"}),
+    )
+    # Body still has all four headings; diff fence is just empty.
+    assert "## Summary" in body
+    assert "```diff\n\n```" in body or "```diff\n```" in body
