@@ -130,6 +130,30 @@ def _finding_id(f: object) -> str:
     return str(getattr(f, "finding_id", None) or getattr(f, "id", None) or "")
 
 
+def _dedup_findings(findings: list) -> list:
+    """Dedup findings by (path, start_line, end_line) per AC-8.b.
+
+    Mirrors the dedup pass in ``fix_command._run_impl`` (lines 647-658).
+    The cheap analyzer emits one finding per name in a multi-name import,
+    so ``from x import a, b`` produces two findings sharing the same
+    line triple; we collapse them to a single line-level entry before
+    routing through ``coordinate_repairs``.
+    """
+    seen: set[tuple] = set()
+    out: list = []
+    for f in findings:
+        key = (
+            getattr(f, "path", None),
+            getattr(f, "start_line", None),
+            getattr(f, "end_line", None),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f)
+    return out
+
+
 def _emit_progress(state: State, *, quiet: bool) -> None:
     """Emit one stderr progress line at transition entry unless --quiet."""
     if quiet:
@@ -184,7 +208,8 @@ def run(args: argparse.Namespace) -> int:
         )
         return EXIT_FAILED
 
-    findings = list(scan_result.findings)
+    # AC-8.b: dedup by (path, start_line, end_line) before TRIAGING.
+    findings = _dedup_findings(list(scan_result.findings))
     finding_ids = sorted(_finding_id(f) for f in findings)
 
     # --- 2. TRIAGING ------------------------------------------------------
@@ -232,11 +257,16 @@ def run(args: argparse.Namespace) -> int:
     applied_finding_ids: set[str] = set()
     recovery_branch_captured = False
     attempt = 0
+    # AC-9: PLANNING→APPLYING evidence carries sorted patched_ids
+    # (finding-ids whose produce_patch returned non-None). The retry
+    # loop's later APPLYING entries hash the post-coordinator task list
+    # for that iteration.
+    applying_evidence = _hash_payload(patched_ids)
     while True:
         _emit_progress(State.APPLYING, quiet=quiet)
         sm.transition(
             to_state=State.APPLYING,
-            evidence_sha256=_hash_payload(sorted(applied_finding_ids)),
+            evidence_sha256=applying_evidence,
         )
         fix_result = _run_fix_core(
             root=root,
@@ -245,7 +275,7 @@ def run(args: argparse.Namespace) -> int:
             suggest_mode=False,
             auto_llm=bool(args.auto_llm),
             force=False,
-            max_llm_patches=args.max_llm_patches,
+            max_llm_patches=None,
             recovery_branch_already_captured=recovery_branch_captured,
             quiet=quiet,
         )
@@ -311,13 +341,36 @@ def run(args: argparse.Namespace) -> int:
             evidence_sha256=_hash_payload(post_finding_ids),
             reason=f"attempt_{attempt}",
         )
-        # Re-coordinate against fresh post-scan findings.
+        # Re-coordinate against fresh, deduped post-scan findings.
+        findings = _dedup_findings(list(verify_result.findings))
         _emit_progress(State.TRIAGING, quiet=quiet)
         sm.transition(
             to_state=State.TRIAGING,
-            evidence_sha256=_hash_payload(post_finding_ids),
+            evidence_sha256=_hash_payload(
+                sorted(_finding_id(f) for f in findings)
+            ),
         )
-        findings = list(verify_result.findings)
+        # Re-coordinate + re-materialize patches for the new task list.
+        retry_tasks = coordinate_repairs(
+            findings, threshold=LLM_PATCH_THRESHOLD, root=None
+        )
+        retry_llm_tasks = [
+            t for t in retry_tasks if t.tier == RepairTier.LLM_PATCH
+        ]
+        retry_task_ids = sorted(
+            _finding_id(t.finding) for t in retry_llm_tasks
+        )
+        _emit_progress(State.PLANNING, quiet=quiet)
+        sm.transition(
+            to_state=State.PLANNING,
+            evidence_sha256=_hash_payload(retry_task_ids),
+        )
+        retry_successful: list[str] = []
+        for task in retry_llm_tasks:
+            patch = produce_patch(task, root=root)
+            if patch is not None:
+                retry_successful.append(_finding_id(task.finding))
+        applying_evidence = _hash_payload(sorted(retry_successful))
 
 
 __all__ = ["HELP_DESCRIPTION", "HELP_EPILOG", "add_arguments", "run"]
