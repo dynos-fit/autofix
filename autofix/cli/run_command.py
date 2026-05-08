@@ -115,6 +115,32 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Suppress per-state progress lines on stderr.",
     )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Long-running mode: subscribe to filesystem events under "
+        "--root and run one full workflow cycle per Watchman batch. "
+        "Reuses the WatcherSession from `autofix watch`. Requires "
+        "pywatchman + the watchman daemon.",
+    )
+    parser.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help="Watchman opaque clock string (only meaningful with "
+        "--watch). When omitted, the watcher subscribes from now.",
+    )
+    parser.add_argument(
+        "--safety-sweep",
+        type=str,
+        default=None,
+        dest="safety_sweep",
+        help="Maximum tolerated staleness for the last full sweep "
+        "(only meaningful with --watch), expressed as Nh or Nm "
+        "(e.g. '1h', '30m'). When the wall-clock delta exceeds this, "
+        "the watcher forces a full-cycle dispatch regardless of the "
+        "Watchman event stream.",
+    )
 
 
 def _hash_payload(payload: object) -> str:
@@ -162,30 +188,21 @@ def _emit_progress(state: State, *, quiet: bool) -> None:
     print(f"autofix: {label}...", file=sys.stderr, flush=True)
 
 
-def run(args: argparse.Namespace) -> int:
-    """Execute the run subcommand; return a process exit code."""
-    # --- 0. Combinatorics validation (mirrors fix_command) ---------------
-    if args.suggest and args.auto_llm:
-        print(
-            "autofix: --suggest and --auto-llm are mutually exclusive",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE_ERROR
-    if args.auto_llm and not args.apply:
-        print("autofix: --auto-llm requires --apply", file=sys.stderr)
-        return EXIT_USAGE_ERROR
-    if args.max_retries < 0:
-        print(
-            f"autofix: --max-retries must be non-negative, got {args.max_retries}",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE_ERROR
+def _run_one_cycle(
+    args: argparse.Namespace,
+    analyzer_set: list[str] | None,
+    *,
+    fresh_instance: bool = False,
+) -> int:
+    """One full workflow cycle (SCANNING → … → DONE/RETRY/FAILED).
 
+    Extracted from :func:`run` so that ``autofix run --watch``'s
+    per-batch dispatcher can invoke the same body verbatim.
+    ``fresh_instance`` is propagated to ``_run_scan_core`` so the
+    watch path can flag full-sweep cycles distinctly.
+    """
     root: Path = args.root
     quiet: bool = bool(args.quiet)
-    raw_analyzers = (args.analyzers or "").strip()
-    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
-    analyzer_set = parts if parts else None
 
     # State machine — auto-writes initial SCANNING row.
     sm = StateMachine(root=root)
@@ -197,7 +214,7 @@ def run(args: argparse.Namespace) -> int:
         full_sweep=True,
         analyzer_set=analyzer_set,
         scan_id=None,
-        fresh_instance=False,
+        fresh_instance=fresh_instance,
         quiet=quiet,
     )
     if scan_result.exit_code != EXIT_OK:
@@ -371,6 +388,98 @@ def run(args: argparse.Namespace) -> int:
             if patch is not None:
                 retry_successful.append(_finding_id(task.finding))
         applying_evidence = _hash_payload(sorted(retry_successful))
+
+
+def run(args: argparse.Namespace) -> int:
+    """Execute the ``autofix run`` subcommand; return a process exit code.
+
+    Dispatches between the single-shot path (default) and the
+    long-running watch path (``--watch``). All combinatorics
+    validation happens here ONCE, before any session work — bad
+    flag combinations exit ``EXIT_USAGE_ERROR`` regardless of
+    ``--watch``.
+    """
+    # --- 0. Combinatorics validation (mirrors fix_command) ---------------
+    if args.suggest and args.auto_llm:
+        print(
+            "autofix: --suggest and --auto-llm are mutually exclusive",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_ERROR
+    if args.auto_llm and not args.apply:
+        print("autofix: --auto-llm requires --apply", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    if args.max_retries < 0:
+        print(
+            f"autofix: --max-retries must be non-negative, got {args.max_retries}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_ERROR
+
+    raw_analyzers = (args.analyzers or "").strip()
+    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
+    analyzer_set = parts if parts else None
+
+    if not getattr(args, "watch", False):
+        # Single-shot path: identical to ARCH-010 behavior.
+        return _run_one_cycle(args, analyzer_set, fresh_instance=False)
+
+    # --- Watch path -------------------------------------------------------
+    from autofix.cli._watch_loop import run_watch_loop
+    from autofix.cli.watch_command import (
+        WatcherSession,
+        _safety_sweep_seconds,
+        _watch_once_enabled,
+    )
+    from autofix.events.schema import ChangeSet
+
+    try:
+        safety_sweep_seconds = _safety_sweep_seconds(
+            getattr(args, "safety_sweep", None)
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    try:
+        session = WatcherSession(args.root, getattr(args, "since", None))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    try:
+        session.subscribe()
+    except Exception as exc:
+        print(
+            f"pywatchman is required for `autofix watch`. ({exc})",
+            file=sys.stderr,
+        )
+        session.close()
+        return EXIT_USAGE_ERROR
+
+    quiet: bool = bool(args.quiet)
+    cycle_counter = {"n": 0}
+
+    def _dispatcher(changeset: ChangeSet) -> None:
+        cycle_counter["n"] += 1
+        if not quiet:
+            print(
+                f"autofix: [CYCLE {cycle_counter['n']}] dispatching workflow...",
+                file=sys.stderr,
+                flush=True,
+            )
+        _run_one_cycle(
+            args,
+            analyzer_set,
+            fresh_instance=changeset.is_fresh_instance,
+        )
+
+    return run_watch_loop(
+        session,
+        _dispatcher,
+        safety_sweep_seconds=safety_sweep_seconds,
+        once=_watch_once_enabled(),
+    )
 
 
 __all__ = ["HELP_DESCRIPTION", "HELP_EPILOG", "add_arguments", "run"]
