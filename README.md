@@ -151,8 +151,22 @@ events arrive within the threshold.
 
 ## Analyzer set
 
-Default is the cheap analyzer (`cheap`). Compose explicit sets via
-`--analyzers`:
+Defaults depend on `--auto-llm`:
+
+- **Bare `autofix run`** (no `--auto-llm`): only the cheap analyzer
+  (`cheap`) runs. Cheap and predictable.
+- **`autofix run --apply --auto-llm`**: implicit set expands to
+  `cheap,llm:security,llm:code-quality,llm:dead-code,llm:performance` —
+  every LLM bug-finder. If you set `--auto-llm` you almost certainly
+  want them on; this makes "I asked for LLM-driven repair" a single
+  flag instead of a multi-analyzer string.
+
+If you set `--auto-llm` AND pass an explicit `--analyzers` that has
+no `llm:*` entry, autofix prints a stderr warning — the silent
+footgun ("LLM patches will only fire if a non-LLM analyzer's
+finding routes through the LLM tier") is now visible.
+
+Compose explicit sets via `--analyzers`:
 
 ```bash
 # Just ruff
