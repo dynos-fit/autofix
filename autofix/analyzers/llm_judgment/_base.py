@@ -53,6 +53,34 @@ def _resolve_repo_root(parse_result: "ParseResult") -> Path:
     return parse_result.path.parents[walk]
 
 
+def _strip_markdown_json_fence(raw: str) -> str:
+    """Strip a leading ``json ... `` (or ``...``) markdown fence
+    from an LLM response, returning the bare JSON body.
+
+    Handles four common shapes:
+
+    * ``"```json\\n[...]\\n```"`` — explicit json language tag
+    * ``"```\\n[...]\\n```"`` — language tag omitted
+    * ``"   ```json\\n[...]\\n```\\n  "`` — surrounded by whitespace
+    * any of the above with no closing fence (truncated response)
+
+    A response that doesn't look fenced is returned unchanged.
+    """
+    s = raw.strip()
+    if not s.startswith("```"):
+        return raw
+    # Drop the opening fence + any trailing language tag on that line.
+    first_newline = s.find("\n")
+    if first_newline == -1:
+        # No newline after the fence — give up and return unstripped.
+        return raw
+    body = s[first_newline + 1:]
+    # Drop a closing ``` if present on its own (or at end-of-string).
+    if body.rstrip().endswith("```"):
+        body = body.rstrip()[:-3]
+    return body.strip()
+
+
 def _should_log_event(scan_id: str, event_type: str) -> bool:
     """Return True if we should log this event for this scan (first time only).
 
@@ -217,9 +245,14 @@ class LLMJudgmentAnalyzer(ABC):
                     pass
             return iter([])
 
-        # Step 7: Parse and validate JSON
+        # Step 7: Parse and validate JSON. LLMs frequently wrap their
+        # output in a markdown ``json ... `` fence even when the prompt
+        # explicitly says "no preamble or explanation" — strip those
+        # before ``json.loads`` so a finding with the right shape isn't
+        # silently dropped.
+        cleaned = _strip_markdown_json_fence(raw_response)
         try:
-            parsed = json.loads(raw_response)
+            parsed = json.loads(cleaned)
         except (json.JSONDecodeError, ValueError):
             if _should_log_event(scan_id, "AnalyzerError"):
                 try:
