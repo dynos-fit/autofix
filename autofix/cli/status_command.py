@@ -70,15 +70,70 @@ def run_status(*, root: Path) -> int:
 
 
 def _running_line(pidfile: Path) -> str:
-    if not pidfile.exists():
-        return "running: not running"
-    try:
-        pid = int(pidfile.read_text().strip())
-    except (OSError, ValueError):
-        return "running: not running (stale pidfile, unreadable)"
-    if not _process_alive(pid):
+    if pidfile.exists():
+        try:
+            pid = int(pidfile.read_text().strip())
+        except (OSError, ValueError):
+            return "running: not running (stale pidfile, unreadable)"
+        if _process_alive(pid):
+            return f"running: PID {pid}"
         return f"running: not running (stale pidfile, PID {pid})"
-    return f"running: PID {pid}"
+
+    # No pidfile — fall back to scanning the process table for a
+    # python process whose argv contains "autofix" + "--root". This
+    # catches the case where a daemon is running but the pidfile was
+    # deleted (stale cleanup, manual rm, etc.). Best-effort: any
+    # subprocess error means "we couldn't tell" → assume not running.
+    found = _find_autofix_process()
+    if found is not None:
+        return f"running: PID {found} (pidfile missing — process found via ps)"
+    return "running: not running"
+
+
+def _find_autofix_process() -> int | None:
+    """Find a running ``autofix`` daemon by scanning the process
+    table. Returns the PID of the most-recently-started match, or
+    None.
+
+    Matches a process whose argv contains both ``autofix`` and
+    ``--root`` — covers ``autofix --root <p>`` (continuous loop)
+    and ``autofix --root <p> --once`` (single-cycle).
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ps", "-Ao", "pid,args"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+    own_pid = os.getpid()
+    candidates: list[int] = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == own_pid:
+            continue
+        argv = parts[1]
+        if "autofix" not in argv:
+            continue
+        if "--root" not in argv:
+            continue
+        # Filter out the status command itself (which contains
+        # "autofix" in argv but is NOT the daemon).
+        if " status" in argv or argv.endswith("status"):
+            continue
+        candidates.append(pid)
+    if not candidates:
+        return None
+    return candidates[0]
 
 
 def _process_alive(pid: int) -> bool:
