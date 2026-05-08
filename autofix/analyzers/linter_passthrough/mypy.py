@@ -22,8 +22,11 @@ RULE_ID_PREFIX: str = "linter:mypy"
 RULE_VERSION: str = "v1"
 _TIMEOUT_SECONDS: float = 60.0
 
-# Per-scan memoization: maps scan_id -> set of event types already logged.
-# This ensures we log "AnalyzerUnavailable" and "AnalyzerTimeout" at most once per scan.
+# Per-scan memoization: maps scan_id -> set of memo keys already logged.
+# Keys are either bare ``event_type`` strings (for AnalyzerUnavailable,
+# AnalyzerError — at most once per scan), or ``f"{event_type}:{file}"``
+# composites (for AnalyzerTimeout — at most once per (scan_id, file) per
+# AC-6 of the mypy adapter spec).
 _PER_SCAN_EVENTS: dict[str, set[str]] = {}
 
 # Compiled regex to parse mypy output lines.
@@ -124,7 +127,11 @@ def analyze(
         return iter([])
     except subprocess.TimeoutExpired:
         # mypy took too long (60s timeout).
-        if _should_log_event(scan_id, "AnalyzerTimeout"):
+        # AC-6: dedupe per (scan_id, file) so per-file timeouts in the
+        # same scan still emit telemetry — only repeated timeouts on
+        # the SAME file in the SAME scan are suppressed.
+        timeout_memo_key = f"AnalyzerTimeout:{parse_result.relpath}"
+        if _should_log_event(scan_id, timeout_memo_key):
             try:
                 events_log.append_event(
                     root,
