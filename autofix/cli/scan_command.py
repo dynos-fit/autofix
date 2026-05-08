@@ -1,3 +1,6 @@
+# ruff: noqa: E402  (ScanCoreResult NamedTuple + _SCAN_ID_PATTERN are
+# defined alongside the imports because they belong to scan_command's
+# public surface and benefit from co-location with the related imports.)
 """The ``autofix scan`` subcommand.
 
 Pipeline:

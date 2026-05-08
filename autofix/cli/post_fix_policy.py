@@ -44,7 +44,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 from autofix.cli.post_fix_constants import (
     ALLOWED_POST_FIX,

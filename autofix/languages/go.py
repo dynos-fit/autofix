@@ -1,3 +1,6 @@
+# ruff: noqa: E402  (tree_sitter / tree_sitter_go are imported via
+# importlib at module level to avoid a false-positive in the legacy
+# AST-based import-graph builder — see the inline comment.)
 """Go language adapter (task-006 AC #15..#21).
 
 Responsibilities

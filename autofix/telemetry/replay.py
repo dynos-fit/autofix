@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
 
-from autofix.evidence.fingerprints import compute_prompt_prefix_hash
 from autofix.evidence.schema import CandidateFinding
 
 # -- Module-level context vars (AC 38) --------------------------------------
