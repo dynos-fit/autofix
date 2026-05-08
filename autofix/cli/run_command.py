@@ -141,6 +141,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "the watcher forces a full-cycle dispatch regardless of the "
         "Watchman event stream.",
     )
+    from autofix.cli.post_fix_constants import ALLOWED_POST_FIX
+    parser.add_argument(
+        "--post-fix",
+        type=str,
+        default=None,
+        dest="post_fix",
+        choices=ALLOWED_POST_FIX,
+        help="Post-DONE branch-and-commit policy. 'working-tree' "
+        "(default) leaves the working tree dirty; 'branch' creates "
+        "autofix/fixes-<run-id> + commits the applied fixes; "
+        "'branch-pr' additionally runs `gh pr create`. Overrides the "
+        "post_fix key in .autofix/config.json.",
+    )
 
 
 def _hash_payload(payload: object) -> str:
@@ -340,6 +353,20 @@ def _run_one_cycle(
                 to_state=State.DONE,
                 evidence_sha256=_hash_payload(post_finding_ids),
             )
+            # ARCH-015: post-DONE branch-and-commit policy. Fires only
+            # when at least one finding was applied; never on FAILED /
+            # HUMAN_REVIEW / RETRY exit paths (those return earlier).
+            if applied_finding_ids:
+                from autofix.cli.post_fix_policy import (
+                    apply_post_fix_policy,
+                )
+                apply_post_fix_policy(
+                    root=root,
+                    run_id=sm.run_id,
+                    applied_finding_ids=frozenset(applied_finding_ids),
+                    policy=getattr(args, "post_fix", None),
+                    quiet=quiet,
+                )
             return EXIT_OK
 
         if attempt >= args.max_retries:
