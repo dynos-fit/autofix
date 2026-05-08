@@ -40,6 +40,7 @@ from autofix.cli.run_constants import (
     EXIT_FAILED,
     EXIT_HUMAN_REVIEW,
     EXIT_OK,
+    EXIT_USAGE_ERROR,
     LLM_PATCH_THRESHOLD,
     STATE_LABEL_VERBOSE,
 )
@@ -110,13 +111,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         f"(default: {DEFAULT_MAX_RETRIES}).",
     )
     parser.add_argument(
-        "--max-llm-patches",
-        type=int,
-        default=None,
-        help="Cap the number of LLM-patch invocations per run. Cache "
-        "hits do not count.",
-    )
-    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress per-state progress lines on stderr.",
@@ -152,22 +146,16 @@ def run(args: argparse.Namespace) -> int:
             "autofix: --suggest and --auto-llm are mutually exclusive",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_USAGE_ERROR
     if args.auto_llm and not args.apply:
         print("autofix: --auto-llm requires --apply", file=sys.stderr)
-        return 2
+        return EXIT_USAGE_ERROR
     if args.max_retries < 0:
         print(
             f"autofix: --max-retries must be non-negative, got {args.max_retries}",
             file=sys.stderr,
         )
-        return 2
-    if args.max_llm_patches is not None and args.max_llm_patches <= 0:
-        print(
-            f"autofix: --max-llm-patches must be a positive integer, got {args.max_llm_patches}",
-            file=sys.stderr,
-        )
-        return 2
+        return EXIT_USAGE_ERROR
 
     root: Path = args.root
     quiet: bool = bool(args.quiet)
@@ -218,19 +206,24 @@ def run(args: argparse.Namespace) -> int:
         evidence_sha256=_hash_payload(task_ids),
     )
     patches = []
+    successful_finding_ids: list[str] = []
     for task in llm_tasks:
         patch = produce_patch(task, root=root)
         if patch is not None:
             patches.append(patch)
-    patched_ids = sorted(_finding_id(t.finding) for t in llm_tasks)
+            successful_finding_ids.append(_finding_id(task.finding))
+    patched_ids = sorted(successful_finding_ids)
 
     # --- 4. APPLYING / HUMAN_REVIEW ---------------------------------------
     if not args.apply:
-        # Bare run / --suggest: no source mutation.
+        # Bare run / --suggest: no source mutation. Per AC-9, the
+        # PLANNING→HUMAN_REVIEW edge carries the sorted patched-finding-id
+        # payload (NOT EVIDENCE_PLACEHOLDER — that's reserved for FAILED
+        # transitions and the SCANNING→FAILED edge where no payload exists).
         _emit_progress(State.HUMAN_REVIEW, quiet=quiet)
         sm.transition(
             to_state=State.HUMAN_REVIEW,
-            evidence_sha256=EVIDENCE_PLACEHOLDER,
+            evidence_sha256=_hash_payload(patched_ids),
             reason="preview_only",
         )
         return EXIT_HUMAN_REVIEW

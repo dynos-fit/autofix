@@ -17,7 +17,6 @@ def _ns(**kw) -> argparse.Namespace:
         auto_llm=False,
         analyzers="",
         max_retries=3,
-        max_llm_patches=None,
         quiet=True,
     )
     base.update(kw)
@@ -47,13 +46,10 @@ def test_negative_max_retries_rejected(capsys) -> None:
     assert "non-negative" in err
 
 
-def test_zero_max_llm_patches_rejected(capsys) -> None:
-    rc = run_command.run(_ns(max_llm_patches=0))
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "positive integer" in err
+def test_dispatcher_does_not_register_max_llm_patches() -> None:
+    """AC-5: --max-llm-patches is NOT a flag on `autofix run`."""
+    from autofix.cli.main import _build_parser
 
-
-def test_negative_max_llm_patches_rejected(capsys) -> None:
-    rc = run_command.run(_ns(max_llm_patches=-5))
-    assert rc == 2
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--root", "/tmp", "--max-llm-patches", "5"])

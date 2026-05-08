@@ -41,7 +41,6 @@ def _ns(root: Path, **kw) -> argparse.Namespace:
         auto_llm=False,
         analyzers="",
         max_retries=3,
-        max_llm_patches=None,
         quiet=True,
     )
     base.update(kw)

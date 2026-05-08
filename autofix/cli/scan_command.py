@@ -51,6 +51,7 @@ class ScanCoreResult(NamedTuple):
     findings: list
     sarif_path: Path | None
     scan_id: str
+    watcher_confidence: str
 
 # Scan-id must match this shape: alphanumeric, dot, underscore, hyphen only;
 # 1–128 chars. Rejects path-traversal sequences (``..``), absolute paths
@@ -332,7 +333,13 @@ def _run_scan_core(
         _validate_scan_id(scan_id)
     except ValueError as exc:
         print(f"autofix: {exc}", file=sys.stderr)
-        return ScanCoreResult(exit_code=2, findings=[], sarif_path=None, scan_id=scan_id)
+        return ScanCoreResult(
+            exit_code=2,
+            findings=[],
+            sarif_path=None,
+            scan_id=scan_id,
+            watcher_confidence="",
+        )
 
     # Seg-6 (AC #8): resolve commit_sha via ``git rev-parse HEAD`` before
     # entering the correlation-contextvar stack. Empty string means the
@@ -361,13 +368,17 @@ def _run_scan_core(
             changeset, watcher_confidence = detect(root, full_sweep=full_sweep)
         except (GitUnavailableError, NotAGitRepoError) as exc:
             print(f"autofix: {exc}", file=sys.stderr)
-            return ScanCoreResult(exit_code=1, findings=[], sarif_path=None, scan_id=scan_id)
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=""
+            )
         except Exception as exc:  # pragma: no cover - defensive
             print(
                 f"autofix: change detection failed: {exc}",
                 file=sys.stderr,
             )
-            return ScanCoreResult(exit_code=1, findings=[], sarif_path=None, scan_id=scan_id)
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=""
+            )
 
         # AC #3: --fresh-instance forces the bounded full-sweep fast path on
         # the planner regardless of what the detector inferred. ``dataclasses.
@@ -456,7 +467,9 @@ def _run_scan_core(
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
-            return ScanCoreResult(exit_code=1, findings=[], sarif_path=None, scan_id=scan_id)
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=watcher_confidence
+            )
 
         # --- 4. SARIF ------------------------------------------------------------
         sarif_path = (
@@ -472,7 +485,13 @@ def _run_scan_core(
                 f"autofix: refused to write SARIF outside {root}: {sarif_path}",
                 file=sys.stderr,
             )
-            return ScanCoreResult(exit_code=1, findings=list(result.findings), sarif_path=None, scan_id=scan_id)
+            return ScanCoreResult(
+                exit_code=1,
+                findings=list(result.findings),
+                sarif_path=None,
+                scan_id=scan_id,
+                watcher_confidence=watcher_confidence,
+            )
         _progress(f"Writing SARIF to {sarif_path}...")
         try:
             emit_sarif(scan_id, result.findings, sarif_path)
@@ -493,7 +512,13 @@ def _run_scan_core(
                     "error": f"sarif: {type(exc).__name__}: {exc}",
                 },
             )
-            return ScanCoreResult(exit_code=1, findings=list(result.findings), sarif_path=None, scan_id=scan_id)
+            return ScanCoreResult(
+                exit_code=1,
+                findings=list(result.findings),
+                sarif_path=None,
+                scan_id=scan_id,
+                watcher_confidence=watcher_confidence,
+            )
 
         _safe_append(
             root,
@@ -526,6 +551,7 @@ def _run_scan_core(
             findings=list(result.findings),
             sarif_path=sarif_path,
             scan_id=scan_id,
+            watcher_confidence=watcher_confidence,
         )
 
 
