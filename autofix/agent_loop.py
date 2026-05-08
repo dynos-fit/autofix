@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,15 +70,18 @@ def _truncate(text: str, *, limit: int = 6000) -> str:
 def _is_allowed_command(parts: list[str]) -> bool:
     if not parts:
         return False
-    allowed_prefixes = (
+    # git subcommands must match exactly: trailing args like `-c core.pager=<cmd>`,
+    # `--output=<path>`, or `--format=%(...)` can execute commands or write files
+    # outside the worktree, so prefix-matching is unsafe for git.
+    git_exact = {("git", "diff"), ("git", "status"), ("git", "log")}
+    if tuple(parts) in git_exact:
+        return True
+    pytest_prefixes = (
         ["python3", "-m", "pytest"],
         ["python", "-m", "pytest"],
         ["pytest"],
-        ["git", "diff"],
-        ["git", "status"],
-        ["git", "log"],
     )
-    return any(parts[: len(prefix)] == prefix for prefix in allowed_prefixes)
+    return any(parts[: len(prefix)] == prefix for prefix in pytest_prefixes)
 
 
 def _requires_inspection_before_finish(action: dict, *, has_inspected_repo: bool) -> str | None:
@@ -98,14 +102,21 @@ def execute_action(action: dict, *, root: Path, subprocess_module) -> str:
     if kind == "list_files":
         rel = str(action.get("path", ".") or ".")
         target = _resolve_path(root, rel)
+        if target.is_symlink():
+            raise ValueError(f"path is a symlink: {rel}")
         files = []
-        for path in sorted(target.rglob("*")):
-            if any(part in _BLOCKED_PATH_PARTS for part in path.relative_to(root).parts):
-                continue
-            if path.is_file():
-                files.append(str(path.relative_to(root)))
-            if len(files) >= 200:
-                break
+        for dirpath, dirnames, filenames in os.walk(target, followlinks=False):
+            dirnames[:] = [d for d in dirnames if d not in _BLOCKED_PATH_PARTS]
+            for fname in filenames:
+                full = Path(dirpath) / fname
+                if full.is_symlink():
+                    continue
+                rel_parts = full.relative_to(root).parts
+                if any(part in _BLOCKED_PATH_PARTS for part in rel_parts):
+                    continue
+                files.append(str(full.relative_to(root)))
+        files.sort()
+        files = files[:200]
         return json.dumps({"files": files}, indent=2)
 
     if kind == "read_file":
@@ -137,6 +148,7 @@ def execute_action(action: dict, *, root: Path, subprocess_module) -> str:
                 "!.autofix",
                 "--glob",
                 "!.dynos",
+                "--",
                 pattern,
                 str(target),
             ],
