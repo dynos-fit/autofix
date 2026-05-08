@@ -220,44 +220,19 @@ def run(args: argparse.Namespace, *, root: Path | None = None) -> int:
         session.close()
         return 2
 
+    from autofix.cli._watch_loop import run_watch_loop
+
     once = _watch_once_enabled()
-    last_full_sweep = time.monotonic()
-    processed = 0
 
-    try:
-        while True:
-            is_fresh, files = session.next_files()
-            now = time.monotonic()
+    def _dispatcher(changeset: ChangeSet) -> None:
+        _dispatch_scan(effective_root, changeset)
 
-            should_dispatch = bool(files) or is_fresh
-            if (
-                safety_sweep_seconds is not None
-                and (now - last_full_sweep) > safety_sweep_seconds
-            ):
-                # Stale full-sweep deadline: force a fresh-instance dispatch.
-                is_fresh = True
-                should_dispatch = True
-
-            if should_dispatch:
-                changeset = ChangeSet(
-                    paths=tuple(files),
-                    watcher_confidence=("full-sweep" if is_fresh else "watch"),
-                    is_fresh_instance=is_fresh,
-                )
-                _dispatch_scan(effective_root, changeset)
-                if is_fresh:
-                    last_full_sweep = now
-                processed += 1
-
-            if once and processed >= 1:
-                return 0
-            if once and not should_dispatch:
-                # No event arrived within the bounded poll window.
-                return 0
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        session.close()
+    return run_watch_loop(
+        session,
+        _dispatcher,
+        safety_sweep_seconds=safety_sweep_seconds,
+        once=once,
+    )
 
 
 def _dispatch_scan(root: Path, changeset: ChangeSet) -> None:
