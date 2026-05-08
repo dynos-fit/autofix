@@ -34,7 +34,7 @@ def test_continuous_loop_continues_on_cycle_exception(
         # Cycle 2 returns OK and asks the loop to stop via interrupt.
         raise KeyboardInterrupt
 
-    with patch("autofix.crawl.driver.run_crawl_once", side_effect=_flaky_cycle), \
+    with patch("autofix.crawl.driver._run_crawl_once_body", side_effect=_flaky_cycle), \
          patch("autofix.crawl.driver._sleep", lambda _: None):
         rc = driver.run_crawl_continuously(
             root=tmp_path,
@@ -58,7 +58,7 @@ def test_keyboard_interrupt_propagates(tmp_path: Path) -> None:
 
     _git_init(tmp_path)
 
-    with patch("autofix.crawl.driver.run_crawl_once", side_effect=KeyboardInterrupt), \
+    with patch("autofix.crawl.driver._run_crawl_once_body", side_effect=KeyboardInterrupt), \
          patch("autofix.crawl.driver._sleep", lambda _: None):
         rc = driver.run_crawl_continuously(
             root=tmp_path,
@@ -76,7 +76,7 @@ def test_system_exit_propagates(tmp_path: Path) -> None:
 
     _git_init(tmp_path)
 
-    with patch("autofix.crawl.driver.run_crawl_once", side_effect=SystemExit(3)), \
+    with patch("autofix.crawl.driver._run_crawl_once_body", side_effect=SystemExit(3)), \
          patch("autofix.crawl.driver._sleep", lambda _: None):
         with pytest.raises(SystemExit) as exc:
             driver.run_crawl_continuously(
@@ -102,7 +102,7 @@ def test_pidfile_written_and_removed(tmp_path: Path) -> None:
         captured_pid["value"] = pidfile.read_text() if pidfile.exists() else None
         raise KeyboardInterrupt
 
-    with patch("autofix.crawl.driver.run_crawl_once", side_effect=_capture_then_quit), \
+    with patch("autofix.crawl.driver._run_crawl_once_body", side_effect=_capture_then_quit), \
          patch("autofix.crawl.driver._sleep", lambda _: None):
         rc = driver.run_crawl_continuously(
             root=tmp_path,

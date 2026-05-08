@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -29,6 +30,30 @@ from autofix.crawl.ledger import Ledger, LedgerRow
 _PIDFILE_NAME = "crawl.pid"
 
 
+@contextlib.contextmanager
+def _pidfile(root: Path):
+    """Context manager that writes ``.autofix/crawl.pid`` on enter,
+    removes it on exit. Used by BOTH ``run_crawl_once`` and
+    ``run_crawl_continuously`` so ``autofix status`` can reliably
+    detect a running daemon regardless of which entry point is in
+    use.
+
+    Best-effort cleanup: if the pidfile was deleted out from under
+    us (or a permission error blocks unlink), the cleanup swallows
+    the error rather than propagating.
+    """
+    path = root / ".autofix" / _PIDFILE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()))
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def run_crawl_once(
     *,
     root: Path,
@@ -37,7 +62,30 @@ def run_crawl_once(
     analyzer_set: list[str] | None = None,
     quiet: bool = False,
 ) -> int:
-    """One crawl cycle. Returns 0 on clean completion."""
+    """One crawl cycle. Returns 0 on clean completion.
+
+    Writes ``.autofix/crawl.pid`` while the cycle runs so
+    ``autofix status`` can reliably detect a single-cycle
+    invocation as "running". Removed on clean exit (or on any
+    raised exception that propagates out).
+    """
+    with _pidfile(root):
+        return _run_crawl_once_body(
+            root=root, mode=mode, budget=budget,
+            analyzer_set=analyzer_set, quiet=quiet,
+        )
+
+
+def _run_crawl_once_body(
+    *,
+    root: Path,
+    mode: str,
+    budget: str,
+    analyzer_set: list[str] | None,
+    quiet: bool,
+) -> int:
+    """The body of one crawl cycle, factored out so the continuous
+    loop can call it WITHOUT each cycle re-creating a pidfile."""
     tier = resolve_budget_tier(budget)
     analyzers = list(analyzer_set) if analyzer_set else list(tier["analyzers"])
     bundles_per_cycle = tier["bundles_per_cycle"]
@@ -110,33 +158,26 @@ def run_crawl_continuously(
     Returns 0 on ``KeyboardInterrupt``. ``SystemExit`` propagates.
     Per-cycle ``Exception`` is caught + logged; the loop continues.
     """
-    pidfile = root / ".autofix" / _PIDFILE_NAME
-    pidfile.parent.mkdir(parents=True, exist_ok=True)
-    pidfile.write_text(str(os.getpid()))
-
-    try:
-        while True:
-            try:
-                run_crawl_once(
-                    root=root, mode=mode, budget=budget, quiet=quiet,
-                )
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception as exc:
-                if not quiet:
-                    print(
-                        f"autofix: cycle raised {exc!r}; continuing",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-            _sleep(interval_seconds)
-    except KeyboardInterrupt:
-        return 0
-    finally:
+    with _pidfile(root):
         try:
-            pidfile.unlink()
-        except OSError:
-            pass
+            while True:
+                try:
+                    _run_crawl_once_body(
+                        root=root, mode=mode, budget=budget,
+                        analyzer_set=None, quiet=quiet,
+                    )
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as exc:
+                    if not quiet:
+                        print(
+                            f"autofix: cycle raised {exc!r}; continuing",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                _sleep(interval_seconds)
+        except KeyboardInterrupt:
+            return 0
 
 
 # --- Internal helpers ------------------------------------------------------
