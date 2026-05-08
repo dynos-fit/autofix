@@ -22,11 +22,14 @@ from autofix.cli import (
     export_sarif_command,
     fix_command,
     init_command,
+    logs_command,
     policy_command,
     replay_command,
     run_command,
     scan_command,
+    start_command,
     status_command,
+    stop_command,
     watch_command,
 )
 
@@ -47,17 +50,21 @@ _ARGPARSE_SUBCOMMANDS: tuple[str, ...] = (
 _TOP_LEVEL_SUBCOMMANDS: tuple[str, ...] = (
     "init",
     "status",
+    "start",
+    "stop",
+    "logs",
 ) + _ARGPARSE_SUBCOMMANDS
 
 
 _DUMB_USER_HELP = """\
 autofix — find and fix bugs in your code
 
-  autofix              Run continuously (recommended)
   autofix init         Set up autofix for this repo (one-time)
+  autofix start        Run autofix in the background, forever
   autofix status       Show what autofix is doing right now
-  autofix --apply      Actually apply fixes (default: preview only)
-  autofix --once       Run one cycle, then exit
+  autofix logs         Tail the daemon log
+  autofix stop         Stop the background daemon
+  autofix --once       Run one cycle in the foreground, then exit
 
 For one-shot or advanced commands: autofix --help-advanced
 For docs: https://github.com/dynos-fit/autofix
@@ -167,14 +174,17 @@ def _build_advanced_help() -> str:
     full = parser.format_help()
     bare_flags = (
         "\n"
-        "BARE-AUTOFIX (continuous crawl) FLAGS:\n"
+        "BARE-AUTOFIX (continuous crawl, foreground) FLAGS:\n"
         "  --root PATH            Repository to scan (required for crawl)\n"
         "  --apply                Apply fixes (overrides config mode=preview)\n"
         "  --once                 Run one cycle, then exit (no continuous loop)\n"
         "\n"
         "TOP-LEVEL SUBCOMMANDS:\n"
         "  autofix init           Set up autofix for this repo (one-time)\n"
+        "  autofix start          Daemonize the crawl (background, forever)\n"
         "  autofix status         Show what autofix is doing right now\n"
+        "  autofix logs           Tail .autofix/daemon.log\n"
+        "  autofix stop           Send SIGTERM to the running daemon\n"
     )
     return full + bare_flags
 
@@ -193,6 +203,33 @@ def _dispatch_status(argv: list[str]) -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
     return status_command.run_status(root=args.root)
+
+
+def _dispatch_start(argv: list[str]) -> int:
+    """Parse ``autofix start`` flags, daemonize the crawl."""
+    parser = argparse.ArgumentParser(prog="autofix start")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    return start_command.run_start(root=args.root)
+
+
+def _dispatch_stop(argv: list[str]) -> int:
+    """Parse ``autofix stop`` flags, signal the daemon to exit."""
+    parser = argparse.ArgumentParser(prog="autofix stop")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    return stop_command.run_stop(root=args.root)
+
+
+def _dispatch_logs(argv: list[str]) -> int:
+    """Parse ``autofix logs`` flags, stream the daemon log."""
+    parser = argparse.ArgumentParser(prog="autofix logs")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    logs_command.add_arguments(parser)
+    args = parser.parse_args(argv)
+    return logs_command.run_logs(
+        root=args.root, lines=args.lines, follow=args.follow,
+    )
 
 
 def _dispatch_bare_crawl(argv: list[str]) -> int:
@@ -241,11 +278,13 @@ def main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` and dispatch.
 
     Routing:
-    * ``autofix --help`` (or no args) → 6-line dumb-user help, exit 0.
+    * ``autofix --help`` (or no args) → dumb-user help, exit 0.
     * ``autofix --help-advanced`` → full subcommand + flag reference.
-    * ``autofix init`` / ``autofix status`` → new top-level commands.
+    * ``autofix init`` / ``status`` / ``start`` / ``stop`` / ``logs``
+      → top-level daemon commands.
     * ``autofix scan|fix|run|replay|export-sarif|watch|policy`` → argparse.
-    * ``autofix --root <p> [--apply] [--once]`` → continuous crawl.
+    * ``autofix --root <p> [--apply] [--once]`` → continuous crawl
+      (foreground; ``start`` is the daemonized form).
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -266,6 +305,12 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_init(argv[1:])
     if argv[0] == "status":
         return _dispatch_status(argv[1:])
+    if argv[0] == "start":
+        return _dispatch_start(argv[1:])
+    if argv[0] == "stop":
+        return _dispatch_stop(argv[1:])
+    if argv[0] == "logs":
+        return _dispatch_logs(argv[1:])
 
     # Bare-autofix path: first arg starts with `--` (a flag) → crawl.
     if argv[0].startswith("--"):
