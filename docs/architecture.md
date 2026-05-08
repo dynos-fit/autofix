@@ -299,3 +299,62 @@ the policy module body never inlines them.
 Illegal transitions raise `InvalidTransition`. Empty / malformed /
 illegal-sequence logs raise `InvalidLog` on `from_log`. Both are
 public exceptions on `autofix.workflow`.
+
+## Above the run loop: the crawl subsystem
+
+The 5-layer funnel produces findings. The run loop consumes them.
+The **crawl** is the operator-facing default of bare `autofix` —
+it drives the run loop continuously over time, scanning **bundles**
+(graph subsets) instead of singleton files:
+
+```
+                  ┌─────────── autofix (bare) ──────────┐
+                  │   reads .autofix/config.json         │
+                  │   runs the crawl driver continuously │
+                  └───────────────┬──────────────────────┘
+                                  │
+                                  ▼
+              ┌─────── crawl.driver.run_crawl_continuously ───────┐
+              │  loop forever; sleep `interval_seconds` between    │
+              │  cycles; pidfile at .autofix/crawl.pid             │
+              └───────────────┬───────────────────────────────────┘
+                              │ (per cycle)
+                              ▼
+       ┌──── pick bundles ────┐
+       │  freshness × relevance, hub-saturation cap, bounded
+       │  expansion (max_hops / max_files / max_bytes)
+       └──────┬───────────────┘
+              ▼
+       ┌──── analyze each (bundle, analyzer) ────┐
+       │  cheap + LLM analyzers; LLM cache       │
+       │  re-keyed on prompt-content + commit     │
+       └──────┬───────────────┘
+              ▼
+       ┌──── on findings + mode != preview ────┐
+       │  invoke run_command._run_one_cycle    │
+       │  (the existing run loop)              │
+       └────────────────────────────────────────┘
+```
+
+The crawl is what runs by default when an operator types `autofix`.
+The toolkit shipped in ARCH-001..015 (analyzers, repair coordinator,
+LLM patcher, workflow state machine, post-fix policy) is the
+**plumbing** the crawl drives.
+
+### Crawl module map
+
+| Module | Responsibility |
+|---|---|
+| `autofix.crawl.crawl_constants` | Pinned defaults (horizons, caps, weights, budget tiers, mode/budget enums). Side-effect-free. |
+| `autofix.crawl.config` | Read/write `.autofix/config.json`. Resolves budget tier names to dicts. |
+| `autofix.crawl.bundles` | `Bundle` dataclass + `expand_bundle` (BFS bounded by 3 caps + hub saturation). |
+| `autofix.crawl.score` | `file_freshness`, `bundle_freshness`, `relevance`, `priority` — pure scoring functions. |
+| `autofix.crawl.ledger` | `LedgerRow` + `Ledger` — append-only JSONL persistence with `O_APPEND` atomicity. |
+| `autofix.crawl.picker` | `pick_next_batch` — deterministic bundle selection per cycle. |
+| `autofix.crawl.driver` | `run_crawl_once` + `run_crawl_continuously` — loop driver with pidfile lifecycle and per-cycle exception isolation. |
+| `autofix.cli.init_command` | `autofix init` interactive wizard. |
+| `autofix.cli.status_command` | `autofix status` — reads pidfile + ledger, prints summary. |
+| `autofix.cli.main` | Top-level dispatch: bare `autofix` routes to the crawl when `--root` is provided. Layered `--help` / `--help-advanced`. |
+
+Full crawl architecture: [`crawling.md`](crawling.md).
+Full run-loop architecture: [`workflow.md`](workflow.md).
