@@ -335,7 +335,7 @@ class LLMJudgmentAnalyzer(ABC):
                     start_line=start_line,
                     end_line=end_line,
                     changed_slice=changed_slice,
-                    finding_id="",
+                    finding_id=f"{rule_id}@{path}#L{start_line}-{end_line}",
                     provenance=provenance,
                 )
                 findings.append(finding)
@@ -410,15 +410,27 @@ class LLMJudgmentAnalyzer(ABC):
             if not isinstance(item, dict):
                 continue
             try:
+                rule_id = item["rule_id"]
+                path = item["path"]
+                start_line = int(item["start_line"])
+                end_line = int(item["end_line"])
+                stored_fid = item.get("finding_id", "")
+                # Old cache envelopes may have ``finding_id=""`` (pre-fix).
+                # Reconstruct a deterministic, distinct id from identity
+                # fields so the downstream LLM-patch cache key (which keys
+                # on finding_id) does not collapse across distinct findings.
+                effective_fid = stored_fid or (
+                    f"{rule_id}@{path}#L{start_line}-{end_line}"
+                )
                 finding = CandidateFinding(
-                    rule_id=item["rule_id"],
-                    path=item["path"],
+                    rule_id=rule_id,
+                    path=path,
                     symbol_name=item["symbol_name"],
                     normalized_import=item.get("normalized_import", ""),
-                    start_line=int(item["start_line"]),
-                    end_line=int(item["end_line"]),
+                    start_line=start_line,
+                    end_line=end_line,
                     changed_slice=item.get("changed_slice", ""),
-                    finding_id=item.get("finding_id", ""),
+                    finding_id=effective_fid,
                     provenance=item.get("provenance", ""),
                 )
                 findings.append(finding)
