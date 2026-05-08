@@ -369,6 +369,23 @@ def _dispatch_repair_workflow(
     if applied_count == 0:
         return EXIT_OK
 
+    # Cheap VERIFYING — catch obvious false-positive applies (e.g.,
+    # the LLM-dead-code analyzer wrongly flagging an in-use import,
+    # whose deletion breaks the file). Without this, autofix can
+    # commit broken code on its own demo. We byte-compile every
+    # modified file; on syntax/NameError, REVERT to the recovery
+    # branch's pre-apply state and skip the post-fix commit.
+    if not _verify_modified_files_compile(root, quiet=quiet):
+        if not quiet:
+            print(
+                "autofix: VERIFYING failed — modified files don't compile; "
+                "reverting working tree, skipping post-fix policy",
+                file=sys.stderr,
+                flush=True,
+            )
+        _revert_working_tree(root, quiet=quiet)
+        return 1
+
     try:
         outcome = apply_post_fix_policy(
             root=root,
@@ -394,6 +411,80 @@ def _dispatch_repair_workflow(
         return 1
 
     return EXIT_OK
+
+
+def _verify_modified_files_compile(root: Path, *, quiet: bool) -> bool:
+    """Byte-compile every modified Python file in the working tree.
+
+    Cheap VERIFYING for the dispatcher's apply path. Catches the most
+    common false-positive shape: an "unused-import" deletion that
+    breaks the file because the import was actually used (the LLM
+    dead-code analyzer's blind spot).
+
+    Returns True if all modified files compile, False otherwise.
+    Doesn't run tests; doesn't re-scan; just compiles.
+    """
+    import py_compile
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--", "*.py"],
+            cwd=str(root), capture_output=True, text=True,
+            check=True, timeout=10,
+        )
+    except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+        # Can't query git — fail-closed (assume verify failed).
+        return False
+
+    modified_paths = [
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    ]
+    if not modified_paths:
+        # No .py files modified — trivially "verified".
+        return True
+
+    failed: list[tuple[str, str]] = []
+    for relpath in modified_paths:
+        abs_path = root / relpath
+        if not abs_path.is_file():
+            continue
+        try:
+            py_compile.compile(str(abs_path), doraise=True)
+        except py_compile.PyCompileError as exc:
+            failed.append((relpath, str(exc)))
+        except OSError as exc:
+            failed.append((relpath, repr(exc)))
+
+    if failed and not quiet:
+        for relpath, msg in failed:
+            print(
+                f"autofix: VERIFY: {relpath} doesn't compile: {msg[:200]}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return not failed
+
+
+def _revert_working_tree(root: Path, *, quiet: bool) -> None:
+    """Revert all working-tree modifications to HEAD. Used by the
+    dispatcher's verify-failed path to undo a bad apply.
+    """
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["git", "checkout", "--", "."],
+            cwd=str(root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if not quiet:
+            print(
+                f"autofix: VERIFY: failed to revert working tree: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def _build_git_log(root: Path) -> Any:
