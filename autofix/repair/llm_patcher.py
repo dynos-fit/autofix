@@ -427,6 +427,13 @@ def produce_patch(
     except AnalyzerSeamUnavailableError:
         _reject(root, finding_id, file_sha, model, "did_not_apply", cache_path, cache_key)
         return None
+    except (subprocess.TimeoutExpired, OSError):
+        # Transient LLM-CLI failure (claude timeout, broken pipe,
+        # network glitch). Treat as a non-applying finding so the
+        # outer cycle continues — same discipline as the LLM-judgment
+        # base class's timeout handling.
+        _reject(root, finding_id, file_sha, model, "did_not_apply", cache_path, cache_key)
+        return None
 
     # AC-14: parse the response
     diff_body, rejection_reason = _parse_diff(raw_response, finding.path)
