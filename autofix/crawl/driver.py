@@ -90,7 +90,8 @@ def run_crawl_once(
 
         if findings and mode != MODE_PREVIEW:
             _dispatch_repair_workflow(
-                root=root, bundle=bundle, mode=mode, quiet=quiet,
+                root=root, bundle=bundle, mode=mode,
+                analyzers=analyzers, quiet=quiet,
             )
 
     return 0
@@ -149,26 +150,104 @@ def _sleep(seconds: int) -> None:
 def _analyze_bundle(
     *, bundle: Any, analyzer: str, root: Path, commit_sha: str
 ) -> list:
-    """Run one analyzer against a bundle and return its findings.
+    """Run one analyzer against every file in the bundle.
 
-    The actual integration with the LLM-judgment analyzers is deferred
-    to a follow-up — this stub returns ``[]`` so the cycle wiring is
-    fully tested without hitting the LLM seam. Tests patch this
-    function to inject findings.
+    Looks up the analyzer's callable in
+    :data:`autofix.funnel.pipeline._ANALYZER_REGISTRY` and invokes
+    it once per file in the bundle (each call gets that file's
+    ``ParseResult`` + ``SymbolTable``). Returns the union of
+    findings across all files. The LLM cache from the analyzer's
+    base class deduplicates re-scans of unchanged files
+    automatically — same prompt + same commit_sha + same model
+    means a cache hit, free.
+
+    OSError / parse-failure on any single file is swallowed so a
+    bad file doesn't abort the cycle; the rest of the bundle still
+    contributes findings.
     """
-    return []
+    from autofix.funnel.pipeline import _ANALYZER_REGISTRY
+    from autofix.indexing.symbols import build_symbol_table
+    from autofix.parsing.tree_sitter import parse_file
+
+    callable_ = _ANALYZER_REGISTRY.get(analyzer)
+    if callable_ is None:
+        return []
+
+    findings: list = []
+    for path in bundle.file_paths:
+        try:
+            parse_result = parse_file(path, repo_root=root)
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        try:
+            symbol_table = build_symbol_table(parse_result)
+        except (NotImplementedError, OSError):
+            continue
+        try:
+            result = callable_(parse_result, symbol_table)
+            if hasattr(result, "__iter__") and not isinstance(result, list):
+                findings.extend(list(result))
+            else:
+                findings.extend(result)
+        except (NotImplementedError, OSError):
+            continue
+    return findings
 
 
 def _dispatch_repair_workflow(
-    *, root: Path, bundle: Any, mode: str, quiet: bool
+    *,
+    root: Path,
+    bundle: Any,
+    mode: str,
+    analyzers: list[str],
+    quiet: bool,
 ) -> int:
-    """Invoke the existing ``_run_one_cycle`` repair workflow body for
-    a bundle's findings.
+    """Invoke the existing ``_run_one_cycle`` repair workflow body.
 
-    Stub — wiring to ``run_command._run_one_cycle`` happens in the
-    next layer-up integration. Tests patch this function.
+    Maps the crawl's mode to the run-command flag set:
+
+    * ``mode == MODE_COMMIT`` → ``--apply --post-fix branch``
+    * ``mode == MODE_PR``     → ``--apply --post-fix branch-pr``
+
+    The ``--auto-llm`` flag is set whenever any ``llm:*`` analyzer
+    is in the resolved set — that's the signal "this cycle wants
+    LLM-generated patches" for findings the deterministic tier
+    can't fix.
     """
-    return 0
+    import argparse
+    from autofix.cli.run_command import _run_one_cycle
+    from autofix.cli.run_constants import DEFAULT_MAX_RETRIES
+
+    from autofix.crawl.crawl_constants import MODE_PR
+
+    has_llm = any(a.startswith("llm:") for a in analyzers)
+    post_fix = "branch-pr" if mode == MODE_PR else "branch"
+
+    args = argparse.Namespace(
+        root=root,
+        apply=True,
+        suggest=False,
+        auto_llm=has_llm,
+        max_retries=DEFAULT_MAX_RETRIES,
+        quiet=quiet,
+        full_sweep=True,  # the crawl just identified findings via analyze_bundle;
+                          # the run loop's verify needs full-sweep semantics
+                          # because the apply pass may touch files outside
+                          # the bundle.
+        post_fix=post_fix,
+        analyzers=",".join(analyzers),
+    )
+    try:
+        return _run_one_cycle(args, list(analyzers), fresh_instance=False)
+    except Exception as exc:
+        if not quiet:
+            print(
+                f"autofix: repair workflow raised {exc!r}; "
+                f"continuing with the next bundle",
+                file=sys.stderr,
+                flush=True,
+            )
+        return 1
 
 
 def _build_git_log(root: Path) -> Any:
