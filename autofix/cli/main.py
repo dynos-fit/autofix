@@ -16,6 +16,7 @@ from autofix.cli import (
     fix_command,
     policy_command,
     replay_command,
+    run_command,
     scan_command,
     watch_command,
 )
@@ -60,6 +61,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fix_command.add_arguments(fix_parser)
     fix_parser.set_defaults(_runner=fix_command.run)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Drive the full workflow loop (scan → triage → plan → apply → verify).",
+        description=run_command.HELP_DESCRIPTION,
+        epilog=run_command.HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    run_command.add_arguments(run_parser)
+    run_parser.set_defaults(_runner=run_command.run)
 
     replay_parser = subparsers.add_parser(
         "replay",
