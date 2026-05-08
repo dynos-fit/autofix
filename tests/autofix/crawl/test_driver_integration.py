@@ -134,7 +134,7 @@ def test_dispatch_invokes_fix_core_with_preloaded_findings(tmp_path: Path) -> No
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
-    bundle = Bundle(
+    _ = Bundle(
         seed_path=tmp_path / "a.py",
         file_paths=(tmp_path / "a.py",),
         total_bytes=10,
@@ -161,7 +161,7 @@ def test_dispatch_invokes_fix_core_with_preloaded_findings(tmp_path: Path) -> No
          patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
                return_value="branch-pr") as mock_post:
         rc = _dispatch_repair_workflow(
-            root=tmp_path, bundle=bundle, mode="pr",
+            root=tmp_path, mode="pr",
             analyzers=["cheap", "llm:security"], quiet=True,
             findings=findings,
         )
@@ -179,7 +179,7 @@ def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
-    bundle = Bundle(
+    _ = Bundle(
         seed_path=tmp_path / "a.py",
         file_paths=(tmp_path / "a.py",),
         total_bytes=10,
@@ -195,7 +195,7 @@ def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
          patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
                return_value="branch") as mock_post:
         _dispatch_repair_workflow(
-            root=tmp_path, bundle=bundle, mode="commit",
+            root=tmp_path, mode="commit",
             analyzers=["cheap"], quiet=True,
             findings=_fake_findings(1),
         )
@@ -208,7 +208,7 @@ def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
-    bundle = Bundle(
+    _ = Bundle(
         seed_path=tmp_path / "a.py",
         file_paths=(tmp_path / "a.py",),
         total_bytes=10,
@@ -227,7 +227,7 @@ def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
     with patch("autofix.cli.fix_command._run_fix_core",
                side_effect=_fake_fix_core):
         _dispatch_repair_workflow(
-            root=tmp_path, bundle=bundle, mode="pr",
+            root=tmp_path, mode="pr",
             analyzers=["cheap", "linter:ruff"], quiet=True,
             findings=_fake_findings(1),
         )
@@ -241,7 +241,7 @@ def test_dispatch_swallows_fix_core_exception(tmp_path: Path) -> None:
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
-    bundle = Bundle(
+    _ = Bundle(
         seed_path=tmp_path / "a.py",
         file_paths=(tmp_path / "a.py",),
         total_bytes=10,
@@ -251,7 +251,7 @@ def test_dispatch_swallows_fix_core_exception(tmp_path: Path) -> None:
     with patch("autofix.cli.fix_command._run_fix_core",
                side_effect=RuntimeError("boom")):
         rc = _dispatch_repair_workflow(
-            root=tmp_path, bundle=bundle, mode="pr",
+            root=tmp_path, mode="pr",
             analyzers=["cheap"], quiet=True,
             findings=_fake_findings(1),
         )
@@ -264,7 +264,7 @@ def test_dispatch_skips_when_no_findings(tmp_path: Path) -> None:
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
-    bundle = Bundle(
+    _ = Bundle(
         seed_path=tmp_path / "a.py",
         file_paths=(tmp_path / "a.py",),
         total_bytes=10,
@@ -278,7 +278,7 @@ def test_dispatch_skips_when_no_findings(tmp_path: Path) -> None:
          patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
                side_effect=sentinel_post):
         rc = _dispatch_repair_workflow(
-            root=tmp_path, bundle=bundle, mode="pr",
+            root=tmp_path, mode="pr",
             analyzers=["cheap"], quiet=True,
             findings=[],
         )

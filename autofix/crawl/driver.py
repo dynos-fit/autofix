@@ -116,6 +116,13 @@ def _run_crawl_once_body(
             flush=True,
         )
 
+    # Aggregate findings across the whole cycle so the repair
+    # dispatcher fires ONCE at the end (one recovery branch, one
+    # apply pass, one commit) instead of once per bundle (which
+    # caused: N recovery branches, dirty-tree cascade between
+    # bundles, post-fix policy never firing cleanly).
+    aggregated_findings: list = []
+
     for bundle, analyzer in batch:
         findings = _analyze_bundle(
             bundle=bundle,
@@ -136,12 +143,25 @@ def _run_crawl_once_body(
             event_id=_make_event_id(),
         ))
 
-        if findings and mode != MODE_PREVIEW:
-            _dispatch_repair_workflow(
-                root=root, bundle=bundle, mode=mode,
-                analyzers=analyzers, quiet=quiet,
-                findings=findings,
-            )
+        if findings:
+            aggregated_findings.extend(findings)
+
+    if not quiet:
+        print(
+            f"autofix: cycle aggregated {len(aggregated_findings)} findings "
+            f"across {len(batch)} (bundle, analyzer) pairs",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if aggregated_findings and mode != MODE_PREVIEW:
+        _dispatch_repair_workflow(
+            root=root,
+            mode=mode,
+            analyzers=analyzers,
+            quiet=quiet,
+            findings=aggregated_findings,
+        )
 
     return 0
 
@@ -250,34 +270,39 @@ def _analyze_bundle(
 def _dispatch_repair_workflow(
     *,
     root: Path,
-    bundle: Any,
     mode: str,
     analyzers: list[str],
     quiet: bool,
     findings: list | None = None,
 ) -> int:
-    """Apply the bundle's findings via the repair pipeline.
+    """Apply the cycle's aggregated findings via the repair pipeline.
+
+    Called ONCE at the end of a crawl cycle with all findings
+    aggregated across every bundle that was analyzed. This avoids
+    the per-bundle dispatch antipattern that caused N recovery
+    branches, a dirty-tree cascade, and post-fix-not-firing.
 
     Bypasses ``run_command._run_one_cycle`` because that function
     re-runs the full SCAN/TRIAGE/PLAN/APPLY/VERIFY workflow against
-    the entire repo's diff scope — which can be hundreds of files
-    × N analyzers = thousands of LLM calls. The crawl already
-    analyzed the bundle and produced findings; we only need to:
+    the entire repo's diff scope — wasteful when we already have
+    findings from ``_analyze_bundle``. We only need:
 
-    1. Apply via ``_run_fix_core(findings=...)`` — uses
-       preloaded findings, skips re-scanning. The LLM patcher
-       generates unified diffs for LLM-tier findings.
-    2. Run the post-fix policy to branch + commit (and optionally
-       open a PR).
+    1. ``_run_fix_core(findings=...)`` — uses preloaded findings,
+       skips re-scanning. Captures one recovery branch
+       (``autofix/pre-fix-snapshot-<utc>``) before the apply pass.
+       The LLM patcher generates unified diffs for LLM-tier
+       findings; deterministic deletions go through the cheap
+       apply path.
+    2. ``apply_post_fix_policy(...)`` — branch + commit (and
+       optionally ``gh pr create``). Cleans the working tree.
 
-    Maps the crawl's mode to the post-fix policy:
+    Mode → post-fix policy:
 
     * ``mode == MODE_COMMIT`` → ``branch`` (no PR)
     * ``mode == MODE_PR``     → ``branch-pr``
 
-    The ``--auto-llm`` flag is set whenever any ``llm:*`` analyzer
-    is in the resolved set — signals "this cycle wants LLM-generated
-    patches".
+    ``auto_llm=True`` whenever any ``llm:*`` analyzer is in the
+    resolved set.
     """
     from autofix.cli.fix_command import _run_fix_core
     from autofix.cli.post_fix_policy import apply_post_fix_policy
@@ -291,6 +316,14 @@ def _dispatch_repair_workflow(
 
     has_llm = any(a.startswith("llm:") for a in analyzers)
     post_fix = "branch-pr" if mode == MODE_PR else "branch"
+
+    if not quiet:
+        print(
+            f"autofix: dispatcher firing — {len(findings)} findings, "
+            f"mode={mode}, post_fix={post_fix}, auto_llm={has_llm}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     try:
         fix_result = _run_fix_core(
@@ -308,26 +341,48 @@ def _dispatch_repair_workflow(
         if not quiet:
             print(
                 f"autofix: repair workflow raised {exc!r}; "
-                f"continuing with the next bundle",
+                f"continuing",
                 file=sys.stderr,
                 flush=True,
             )
         return 1
 
     if fix_result.exit_code != EXIT_OK:
+        if not quiet:
+            print(
+                f"autofix: _run_fix_core exited {fix_result.exit_code}; "
+                f"working tree may be dirty",
+                file=sys.stderr,
+                flush=True,
+            )
         return fix_result.exit_code
 
-    if not fix_result.applied_finding_ids:
+    applied_count = len(fix_result.applied_finding_ids)
+    if not quiet:
+        print(
+            f"autofix: _run_fix_core applied {applied_count} finding(s); "
+            f"post-fix policy next",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if applied_count == 0:
         return EXIT_OK
 
     try:
-        apply_post_fix_policy(
+        outcome = apply_post_fix_policy(
             root=root,
             run_id=_make_event_id(),
             applied_finding_ids=frozenset(fix_result.applied_finding_ids),
             policy=post_fix,
             quiet=quiet,
         )
+        if not quiet:
+            print(
+                f"autofix: post-fix policy → {outcome}",
+                file=sys.stderr,
+                flush=True,
+            )
     except Exception as exc:
         if not quiet:
             print(
