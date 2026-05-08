@@ -31,6 +31,8 @@ from autofix.analyzers.linter_passthrough.golangci import analyze as _analyze_go
 from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
 from autofix.analyzers.linter_passthrough.mypy import analyze as _analyze_mypy
 from autofix.analyzers.llm_judgment.code_quality import CodeQualityJudgmentAnalyzer
+from autofix.analyzers.llm_judgment.dead_code import DeadCodeJudgmentAnalyzer
+from autofix.analyzers.llm_judgment.performance import PerformanceJudgmentAnalyzer
 from autofix.analyzers.llm_judgment.security import SecurityJudgmentAnalyzer
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
@@ -63,6 +65,8 @@ _ANALYZER_REGISTRY: dict[str, object] = {
     "linter:ruff": _analyze_ruff,
     "linter:mypy": _analyze_mypy,
     "llm:code-quality": CodeQualityJudgmentAnalyzer.analyze,
+    "llm:dead-code": DeadCodeJudgmentAnalyzer.analyze,
+    "llm:performance": PerformanceJudgmentAnalyzer.analyze,
     "llm:security": SecurityJudgmentAnalyzer.analyze,
 }
 
