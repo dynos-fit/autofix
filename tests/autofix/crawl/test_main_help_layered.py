@@ -7,15 +7,22 @@ import pytest
 def test_help_short_lists_dumb_user_anchors(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``autofix --help`` lists init, status, --apply, --once, --help-advanced."""
+    """``autofix --help`` lists the primary daemon UX:
+    init / start / status / logs / stop, plus ``--once`` for the
+    one-shot foreground form and ``--help-advanced`` for the rest.
+
+    ``--apply`` was removed from the dumb-user help when ``start``
+    became the primary path; it remains available via
+    ``--help-advanced`` for operators driving the foreground crawl
+    manually.
+    """
     from autofix.cli.main import main
 
     main(["autofix", "--help"])
     out = capsys.readouterr().out
 
-    assert "init" in out.lower()
-    assert "status" in out.lower()
-    assert "--apply" in out
+    for anchor in ("init", "start", "status", "logs", "stop"):
+        assert anchor in out.lower(), f"missing dumb-user anchor: {anchor!r}"
     assert "--once" in out
     assert "--help-advanced" in out
 
