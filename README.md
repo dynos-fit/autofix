@@ -149,6 +149,25 @@ After three failed retries the workflow ends in `FAILED` (exit code
 `--safety-sweep 30m` to force a full-sweep cycle when no Watchman
 events arrive within the threshold.
 
+### Scope: diff vs full-sweep
+
+`autofix run` defaults to **diff scope** (`HEAD~1..HEAD` via
+`git diff`). Pass `--full-sweep` to scan every Python file in the
+repo. The default is intentional: combined with the auto-LLM
+analyzer expansion, a full-repo sweep × 4 LLM bug-finders is
+easily hundreds of LLM calls and a real token bill.
+
+```bash
+autofix run --root . --apply --auto-llm                # diff scope (default)
+autofix run --root . --apply --auto-llm --full-sweep   # whole repo, opt-in
+```
+
+Combining `--full-sweep` with any LLM analyzer prints a stderr
+warning so the cost is visible before the run starts. The VERIFYING
+state always full-sweeps regardless — the apply pass may have
+touched files outside the original diff scope, and `git diff
+HEAD~1 HEAD` won't include uncommitted modifications.
+
 ## Analyzer set
 
 Defaults depend on `--auto-llm`:

@@ -108,6 +108,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "(every LLM bug-finder); otherwise only 'cheap' runs.",
     )
     parser.add_argument(
+        "--full-sweep",
+        action="store_true",
+        dest="full_sweep",
+        help="Scan every file in the repo. Default is diff-scope "
+        "(HEAD~1..HEAD via git diff). Combined with --auto-llm "
+        "this can mean hundreds of LLM calls — autofix prints a "
+        "pre-flight estimate and a stderr warning so the cost is "
+        "visible.",
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=DEFAULT_MAX_RETRIES,
@@ -268,10 +278,15 @@ def _run_one_cycle(
     sm = StateMachine(root=root)
 
     # --- 1. SCANNING ------------------------------------------------------
+    # Default scope: diff (HEAD~1..HEAD). --full-sweep widens to the
+    # whole repo. The watch dispatcher overrides via fresh_instance
+    # (a Watchman fresh-instance signal triggers a full sweep
+    # regardless of the flag).
+    full_sweep = bool(getattr(args, "full_sweep", False)) or fresh_instance
     _emit_progress(State.SCANNING, quiet=quiet)
     scan_result = _run_scan_core(
         root=root,
-        full_sweep=True,
+        full_sweep=full_sweep,
         analyzer_set=analyzer_set,
         scan_id=None,
         fresh_instance=fresh_instance,
@@ -373,6 +388,10 @@ def _run_one_cycle(
             to_state=State.VERIFYING,
             evidence_sha256=_hash_payload(sorted(applied_finding_ids)),
         )
+        # VERIFYING ALWAYS full-sweeps regardless of the SCANNING
+        # flag — the apply pass may have touched files outside the
+        # original diff scope, and ``git diff HEAD~1 HEAD`` won't
+        # include the uncommitted modifications that just landed.
         verify_result = _run_scan_core(
             root=root,
             full_sweep=True,
@@ -491,6 +510,29 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_USAGE_ERROR
 
     analyzer_set = _resolve_analyzer_set(args)
+
+    # Pre-flight: when --full-sweep is combined with any LLM
+    # analyzer, warn loudly. Each LLM analyzer makes one call per
+    # scanned file; a full-repo sweep × 4 LLM bug-finders is easily
+    # hundreds of calls. The operator should opt into this with
+    # eyes open, not discover the bill mid-run.
+    if (
+        getattr(args, "full_sweep", False)
+        and analyzer_set
+        and any(a.startswith(LLM_ANALYZER_PREFIX) for a in analyzer_set)
+        and not bool(getattr(args, "quiet", False))
+    ):
+        llm_analyzer_count = sum(
+            1 for a in analyzer_set if a.startswith(LLM_ANALYZER_PREFIX)
+        )
+        print(
+            f"autofix: warning: --full-sweep + {llm_analyzer_count} LLM "
+            f"analyzer(s) — every Python file in the repo will hit "
+            f"each LLM analyzer once. Expect a long run and a real "
+            f"token bill. Drop --full-sweep to scope to HEAD~1..HEAD.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if not getattr(args, "watch", False):
         # Single-shot path: identical to ARCH-010 behavior.
