@@ -189,7 +189,18 @@ def _analyze_bundle(
                 findings.extend(list(result))
             else:
                 findings.extend(result)
-        except (NotImplementedError, OSError):
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 — last-resort safety net
+            # Any other analyzer failure (subprocess timeout, network,
+            # parse-tree edge case) is logged and skipped. A single
+            # bad file must not abort a long-running crawl cycle.
+            print(
+                f"autofix: warning: {analyzer} on {path} failed: "
+                f"{type(exc).__name__}: {exc!r}; continuing",
+                file=sys.stderr,
+                flush=True,
+            )
             continue
     return findings
 

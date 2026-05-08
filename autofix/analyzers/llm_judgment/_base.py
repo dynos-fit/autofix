@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -193,6 +194,24 @@ class LLMJudgmentAnalyzer(ABC):
                         repo_root,
                         "AnalyzerUnavailable",
                         {"analyzer": cls.RULE_ID_PREFIX, "scan_id": scan_id},
+                    )
+                except OSError:
+                    pass
+            return iter([])
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            # Transient LLM failure (CLI timeout, broken pipe, network).
+            # Log once per scan and treat as no-findings — a single slow
+            # call must not abort a long-running crawl cycle.
+            if _should_log_event(scan_id, "AnalyzerTimeout"):
+                try:
+                    events_log.append_event(
+                        repo_root,
+                        "AnalyzerTimeout",
+                        {
+                            "analyzer": cls.RULE_ID_PREFIX,
+                            "scan_id": scan_id,
+                            "reason": repr(exc)[:512],
+                        },
                     )
                 except OSError:
                     pass
