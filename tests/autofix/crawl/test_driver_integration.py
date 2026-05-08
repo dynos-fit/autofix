@@ -115,9 +115,21 @@ def test_analyze_bundle_swallows_parse_failure_per_file(tmp_path: Path) -> None:
     assert len(findings) == 1
 
 
-def test_dispatch_repair_workflow_invokes_run_one_cycle(tmp_path: Path) -> None:
-    """Repair dispatch hands off to the existing ``_run_one_cycle``
-    with the crawl's analyzer set + the right post-fix policy."""
+def _fake_findings(n: int = 1) -> list:
+    """Build N MagicMock findings shaped like CandidateFinding."""
+    return [
+        MagicMock(
+            rule_id="llm:security:secret-leak",
+            path="a.py", start_line=10, end_line=10,
+            finding_id=f"F-{i}",
+        )
+        for i in range(n)
+    ]
+
+
+def test_dispatch_invokes_fix_core_with_preloaded_findings(tmp_path: Path) -> None:
+    """Repair dispatch passes the bundle's findings to ``_run_fix_core``
+    via the preloaded findings path — no full-repo re-scan."""
     from autofix.crawl.driver import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
@@ -131,26 +143,35 @@ def test_dispatch_repair_workflow_invokes_run_one_cycle(tmp_path: Path) -> None:
 
     captured: dict = {}
 
-    def _fake_one_cycle(args, analyzer_set, *, fresh_instance):
-        captured["analyzer_set"] = analyzer_set
-        captured["apply"] = args.apply
-        captured["auto_llm"] = args.auto_llm
-        captured["post_fix"] = args.post_fix
-        return 0
+    def _fake_fix_core(*, root, findings, apply_mode, suggest_mode,
+                       auto_llm, force, max_llm_patches,
+                       recovery_branch_already_captured, quiet):
+        captured["findings"] = findings
+        captured["apply_mode"] = apply_mode
+        captured["auto_llm"] = auto_llm
+        result = MagicMock()
+        result.exit_code = 0
+        result.applied_finding_ids = ["F-0"]
+        return result
 
-    with patch(
-        "autofix.cli.run_command._run_one_cycle", side_effect=_fake_one_cycle
-    ):
+    findings = _fake_findings(1)
+
+    with patch("autofix.cli.fix_command._run_fix_core",
+               side_effect=_fake_fix_core), \
+         patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
+               return_value="branch-pr") as mock_post:
         rc = _dispatch_repair_workflow(
             root=tmp_path, bundle=bundle, mode="pr",
             analyzers=["cheap", "llm:security"], quiet=True,
+            findings=findings,
         )
 
     assert rc == 0
-    assert captured["analyzer_set"] == ["cheap", "llm:security"]
-    assert captured["apply"] is True
-    assert captured["auto_llm"] is True  # llm:* in set → auto-llm
-    assert captured["post_fix"] == "branch-pr"  # mode=pr
+    assert captured["findings"] is findings  # preloaded, no rescan
+    assert captured["apply_mode"] is True
+    assert captured["auto_llm"] is True  # llm:* in set
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["policy"] == "branch-pr"  # mode=pr
 
 
 def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
@@ -165,22 +186,24 @@ def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
         fingerprint=Bundle.compute_fingerprint((tmp_path / "a.py",)),
     )
 
-    captured: dict = {}
+    fake_result = MagicMock()
+    fake_result.exit_code = 0
+    fake_result.applied_finding_ids = ["F-0"]
 
-    def _fake(args, _set, *, fresh_instance):
-        captured["post_fix"] = args.post_fix
-        return 0
-
-    with patch("autofix.cli.run_command._run_one_cycle", side_effect=_fake):
+    with patch("autofix.cli.fix_command._run_fix_core",
+               return_value=fake_result), \
+         patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
+               return_value="branch") as mock_post:
         _dispatch_repair_workflow(
             root=tmp_path, bundle=bundle, mode="commit",
             analyzers=["cheap"], quiet=True,
+            findings=_fake_findings(1),
         )
-    assert captured["post_fix"] == "branch"
+    assert mock_post.call_args.kwargs["policy"] == "branch"
 
 
 def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
-    """No ``llm:*`` in analyzer set → ``--auto-llm`` is False."""
+    """No ``llm:*`` in analyzer set → ``auto_llm=False`` to ``_run_fix_core``."""
     from autofix.crawl.driver import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
@@ -193,20 +216,26 @@ def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
     )
 
     captured: dict = {}
-    def _fake(args, _set, *, fresh_instance):
-        captured["auto_llm"] = args.auto_llm
-        return 0
 
-    with patch("autofix.cli.run_command._run_one_cycle", side_effect=_fake):
+    def _fake_fix_core(**kwargs):
+        captured["auto_llm"] = kwargs["auto_llm"]
+        result = MagicMock()
+        result.exit_code = 0
+        result.applied_finding_ids = []  # nothing applied
+        return result
+
+    with patch("autofix.cli.fix_command._run_fix_core",
+               side_effect=_fake_fix_core):
         _dispatch_repair_workflow(
             root=tmp_path, bundle=bundle, mode="pr",
             analyzers=["cheap", "linter:ruff"], quiet=True,
+            findings=_fake_findings(1),
         )
     assert captured["auto_llm"] is False
 
 
-def test_dispatch_swallows_run_one_cycle_exception(tmp_path: Path) -> None:
-    """If ``_run_one_cycle`` raises, the dispatcher logs + returns 1
+def test_dispatch_swallows_fix_core_exception(tmp_path: Path) -> None:
+    """If ``_run_fix_core`` raises, the dispatcher logs + returns 1
     so the crawl loop continues to the next bundle."""
     from autofix.crawl.driver import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
@@ -219,12 +248,40 @@ def test_dispatch_swallows_run_one_cycle_exception(tmp_path: Path) -> None:
         fingerprint=Bundle.compute_fingerprint((tmp_path / "a.py",)),
     )
 
-    with patch(
-        "autofix.cli.run_command._run_one_cycle",
-        side_effect=RuntimeError("boom"),
-    ):
+    with patch("autofix.cli.fix_command._run_fix_core",
+               side_effect=RuntimeError("boom")):
         rc = _dispatch_repair_workflow(
             root=tmp_path, bundle=bundle, mode="pr",
             analyzers=["cheap"], quiet=True,
+            findings=_fake_findings(1),
         )
     assert rc == 1
+
+
+def test_dispatch_skips_when_no_findings(tmp_path: Path) -> None:
+    """Empty findings → no fix-core call, no post-fix call, return 0."""
+    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.crawl.bundles import Bundle
+
+    _git_init_with_files(tmp_path, ["a.py"])
+    bundle = Bundle(
+        seed_path=tmp_path / "a.py",
+        file_paths=(tmp_path / "a.py",),
+        total_bytes=10,
+        fingerprint=Bundle.compute_fingerprint((tmp_path / "a.py",)),
+    )
+
+    sentinel_fix = MagicMock()
+    sentinel_post = MagicMock()
+    with patch("autofix.cli.fix_command._run_fix_core",
+               side_effect=sentinel_fix), \
+         patch("autofix.cli.post_fix_policy.apply_post_fix_policy",
+               side_effect=sentinel_post):
+        rc = _dispatch_repair_workflow(
+            root=tmp_path, bundle=bundle, mode="pr",
+            analyzers=["cheap"], quiet=True,
+            findings=[],
+        )
+    assert rc == 0
+    sentinel_fix.assert_not_called()
+    sentinel_post.assert_not_called()
