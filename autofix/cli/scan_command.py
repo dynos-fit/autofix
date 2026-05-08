@@ -32,8 +32,26 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 import tree_sitter
+
+
+class ScanCoreResult(NamedTuple):
+    """Return value of :func:`_run_scan_core` (ARCH-010 AC-15.a).
+
+    The orchestration surface in :mod:`autofix.cli.run_command` calls
+    ``_run_scan_core`` directly to avoid spawning a subprocess and
+    doubling the ``ScanStarted``/``ScanCompleted`` event pair. The
+    fields here are the post-scan handoff payload the orchestrator
+    needs to drive TRIAGING, PLANNING, etc.
+    """
+
+    exit_code: int
+    findings: list
+    sarif_path: Path | None
+    scan_id: str
+    watcher_confidence: str
 
 # Scan-id must match this shape: alphanumeric, dot, underscore, hyphen only;
 # 1–128 chars. Rejects path-traversal sequences (``..``), absolute paths
@@ -251,28 +269,55 @@ def _compute_policy_sha256(root: Path) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the scan subcommand; return a process exit code.
+    """Argparse-driven entry point for ``autofix scan``.
+
+    Thin wrapper around :func:`_run_scan_core` (ARCH-010 AC-15.a). All
+    pipeline logic lives in the core function so the orchestrator in
+    :mod:`autofix.cli.run_command` can invoke it directly without
+    spawning a subprocess and without doubling the
+    ``ScanStarted``/``ScanCompleted`` event pair.
+    """
+    raw_analyzers = getattr(args, "analyzers", "") or ""
+    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
+    analyzer_set = parts if parts else None
+    result = _run_scan_core(
+        root=args.root,
+        full_sweep=bool(args.full_sweep),
+        analyzer_set=analyzer_set,
+        scan_id=args.scan_id,
+        fresh_instance=bool(getattr(args, "fresh_instance", False)),
+        quiet=bool(getattr(args, "quiet", False)),
+    )
+    return result.exit_code
+
+
+def _run_scan_core(
+    *,
+    root: Path,
+    full_sweep: bool,
+    analyzer_set: list[str] | None,
+    scan_id: str | None = None,
+    fresh_instance: bool = False,
+    quiet: bool = False,
+) -> ScanCoreResult:
+    """Pipeline core for ``autofix scan`` (extracted for ARCH-010).
 
     Any unexpected exception mid-pipeline is caught, a ``ScanCompleted``
     row with an error note is emitted (best-effort), and the caller gets
-    a non-zero exit code. We deliberately do NOT propagate; console
-    scripts should turn exceptions into exit codes.
+    a :class:`ScanCoreResult` with non-zero ``exit_code``. We deliberately
+    do NOT propagate; console scripts should turn exceptions into exit
+    codes.
 
     Seg-6 (AC #8): the three correlation contextvars (``scan_id``,
     ``commit_sha``, ``event_id``) are set via nested ``with`` blocks
     through a :class:`contextlib.ExitStack` so their scope covers the
-    entire ``run()`` body — including ``run_scan()`` and the SARIF
-    emission. ``commit_sha`` is only entered when the ``git rev-parse``
-    probe returns a non-empty value; ``event_id`` is only entered when
+    entire body — including ``run_scan()`` and the SARIF emission.
+    ``commit_sha`` is only entered when the ``git rev-parse`` probe
+    returns a non-empty value; ``event_id`` is only entered when
     ``append_event`` wrote the ``ScanStarted`` row to disk successfully.
     """
-    root: Path = args.root
-    full_sweep: bool = bool(args.full_sweep)
-    scan_id: str = args.scan_id or _mint_scan_id()
-    quiet: bool = bool(getattr(args, "quiet", False))
-    raw_analyzers = getattr(args, "analyzers", "") or ""
-    parts = [p.strip() for p in raw_analyzers.split(",") if p.strip()]
-    analyzer_set = parts if parts else None
+    if scan_id is None:
+        scan_id = _mint_scan_id()
 
     def _progress(msg: str) -> None:
         """Emit one stderr progress line unless --quiet was passed."""
@@ -288,7 +333,13 @@ def run(args: argparse.Namespace) -> int:
         _validate_scan_id(scan_id)
     except ValueError as exc:
         print(f"autofix: {exc}", file=sys.stderr)
-        return 2
+        return ScanCoreResult(
+            exit_code=2,
+            findings=[],
+            sarif_path=None,
+            scan_id=scan_id,
+            watcher_confidence="",
+        )
 
     # Seg-6 (AC #8): resolve commit_sha via ``git rev-parse HEAD`` before
     # entering the correlation-contextvar stack. Empty string means the
@@ -317,20 +368,24 @@ def run(args: argparse.Namespace) -> int:
             changeset, watcher_confidence = detect(root, full_sweep=full_sweep)
         except (GitUnavailableError, NotAGitRepoError) as exc:
             print(f"autofix: {exc}", file=sys.stderr)
-            return 1
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=""
+            )
         except Exception as exc:  # pragma: no cover - defensive
             print(
                 f"autofix: change detection failed: {exc}",
                 file=sys.stderr,
             )
-            return 1
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=""
+            )
 
         # AC #3: --fresh-instance forces the bounded full-sweep fast path on
         # the planner regardless of what the detector inferred. ``dataclasses.
         # replace`` preserves the other ChangeSet fields (paths,
         # watcher_confidence) and goes through ``__post_init__`` for
         # validation.
-        if getattr(args, "fresh_instance", False):
+        if fresh_instance:
             changeset = dataclasses.replace(changeset, is_fresh_instance=True)
 
         # --- 2. Ingest + ScanStarted event --------------------------------------
@@ -412,7 +467,9 @@ def run(args: argparse.Namespace) -> int:
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
-            return 1
+            return ScanCoreResult(
+                exit_code=1, findings=[], sarif_path=None, scan_id=scan_id, watcher_confidence=watcher_confidence
+            )
 
         # --- 4. SARIF ------------------------------------------------------------
         sarif_path = (
@@ -428,7 +485,13 @@ def run(args: argparse.Namespace) -> int:
                 f"autofix: refused to write SARIF outside {root}: {sarif_path}",
                 file=sys.stderr,
             )
-            return 1
+            return ScanCoreResult(
+                exit_code=1,
+                findings=list(result.findings),
+                sarif_path=None,
+                scan_id=scan_id,
+                watcher_confidence=watcher_confidence,
+            )
         _progress(f"Writing SARIF to {sarif_path}...")
         try:
             emit_sarif(scan_id, result.findings, sarif_path)
@@ -449,7 +512,13 @@ def run(args: argparse.Namespace) -> int:
                     "error": f"sarif: {type(exc).__name__}: {exc}",
                 },
             )
-            return 1
+            return ScanCoreResult(
+                exit_code=1,
+                findings=list(result.findings),
+                sarif_path=None,
+                scan_id=scan_id,
+                watcher_confidence=watcher_confidence,
+            )
 
         _safe_append(
             root,
@@ -477,7 +546,13 @@ def run(args: argparse.Namespace) -> int:
         )
 
         _print_summary(result.findings, sarif_path)
-        return 0
+        return ScanCoreResult(
+            exit_code=0,
+            findings=list(result.findings),
+            sarif_path=sarif_path,
+            scan_id=scan_id,
+            watcher_confidence=watcher_confidence,
+        )
 
 
 def _print_summary(findings: list, sarif_path: Path) -> None:

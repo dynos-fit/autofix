@@ -61,6 +61,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from autofix.events.change_detector import (
     GitUnavailableError,
@@ -70,6 +71,18 @@ from autofix.events.change_detector import (
 from autofix.funnel.pipeline import run_scan
 from autofix.repair import coordinate_repairs, RepairTier, produce_patch
 from autofix.telemetry.replay import _REPLAY_EVENTS_SINK
+
+
+class FixCoreResult(NamedTuple):
+    """Return value of :func:`_run_fix_core` (ARCH-010 AC-15.b).
+
+    The orchestration surface in :mod:`autofix.cli.run_command` reads
+    ``applied_finding_ids`` to drive the VERIFYING comparison. The
+    set is empty for code paths that did not run an apply pass.
+    """
+
+    exit_code: int
+    applied_finding_ids: set[str]
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +578,51 @@ def run(args: argparse.Namespace) -> int:
         _REPLAY_EVENTS_SINK.reset(_sink_token)
 
 
+def _run_fix_core(
+    *,
+    root: Path,
+    findings: list | None = None,
+    apply_mode: bool,
+    suggest_mode: bool = False,
+    auto_llm: bool = False,
+    force: bool = False,
+    max_llm_patches: int | None = None,
+    recovery_branch_already_captured: bool = False,
+    quiet: bool = False,
+) -> FixCoreResult:
+    """Pipeline core for ``autofix fix`` (extracted for ARCH-010 AC-15.b).
+
+    Calls into :func:`_run_impl` after setting up the in-memory events
+    sink. The orchestration surface in :mod:`autofix.cli.run_command`
+    invokes this helper directly, passing pre-computed ``findings`` and
+    ``recovery_branch_already_captured=True`` on retry-loop entries so
+    the recovery-branch block runs at most once per ``autofix run``
+    invocation.
+
+    Returns :class:`FixCoreResult`. ``applied_finding_ids`` is the set
+    of finding-ids the apply pass actually patched (empty when no apply
+    happened); used by the orchestrator's VERIFYING comparison.
+    """
+    _fix_sink: list = []
+    _sink_token = _REPLAY_EVENTS_SINK.set(_fix_sink)
+    try:
+        applied: set[str] = set()
+        exit_code = _run_impl(
+            root=root,
+            apply_mode=apply_mode,
+            force=force,
+            suggest=suggest_mode,
+            auto_llm=auto_llm,
+            max_llm_patches=max_llm_patches,
+            preloaded_findings=findings,
+            recovery_branch_already_captured=recovery_branch_already_captured,
+            applied_finding_ids=applied,
+        )
+        return FixCoreResult(exit_code=exit_code, applied_finding_ids=applied)
+    finally:
+        _REPLAY_EVENTS_SINK.reset(_sink_token)
+
+
 def _run_impl(
     *,
     root: Path,
@@ -573,8 +631,23 @@ def _run_impl(
     suggest: bool,
     auto_llm: bool,
     max_llm_patches: int | None,
+    preloaded_findings: list | None = None,
+    recovery_branch_already_captured: bool = False,
+    applied_finding_ids: set[str] | None = None,
 ) -> int:
-    """Core implementation of ``run()``, called with events sink already set."""
+    """Core implementation of ``run()``, called with events sink already set.
+
+    Optional kwargs (default to existing behavior; used by ARCH-010
+    orchestrator path):
+
+    * ``preloaded_findings`` — if not None, skip change detection +
+      ``run_scan`` and use this list. Preserves existing behavior when
+      None.
+    * ``recovery_branch_already_captured`` — when True, skip the
+      recovery-branch creation block.
+    * ``applied_finding_ids`` — caller-supplied set the apply pass
+      mutates with finding-ids actually patched. None disables tracking.
+    """
     # --- 0. Combinatorics validation (before any heavy work) ---------------
     # AC-3: --suggest and --auto-llm are mutually exclusive.
     if suggest and auto_llm:
@@ -603,37 +676,43 @@ def _run_impl(
     # --- 1. Change detection (AC-6) --------------------------------------
     # detect() is invoked unconditionally with full_sweep=True so the fix
     # command sees every tracked *.py — there is no commit-range mode.
-    try:
-        changeset, _watcher_confidence = detect(root, full_sweep=True)
-    except NotAGitRepoError as exc:
-        print(f"autofix: {exc}", file=sys.stderr)
-        return 1
-    except GitUnavailableError as exc:
-        print(f"autofix: {exc}", file=sys.stderr)
-        return 1
+    # ARCH-010 AC-15.b: when ``preloaded_findings`` is supplied by the
+    # orchestrator, skip change detection + ``run_scan`` and use the
+    # caller-supplied list.
+    if preloaded_findings is not None:
+        raw_findings = list(preloaded_findings)
+    else:
+        try:
+            changeset, _watcher_confidence = detect(root, full_sweep=True)
+        except NotAGitRepoError as exc:
+            print(f"autofix: {exc}", file=sys.stderr)
+            return 1
+        except GitUnavailableError as exc:
+            print(f"autofix: {exc}", file=sys.stderr)
+            return 1
 
-    # --- 2. Run the analyzer funnel (AC-7) -------------------------------
-    scan_id = _mint_scan_id()
-    try:
-        result = run_scan(
-            root,
-            changeset,
-            scan_id,
-            progress=None,
-            policy=_fix_policy(),
-        )
-    except Exception as exc:
-        print(f"autofix: scan failed: {exc}", file=sys.stderr)
-        return 1
+        # --- 2. Run the analyzer funnel (AC-7) -------------------------------
+        scan_id = _mint_scan_id()
+        try:
+            result = run_scan(
+                root,
+                changeset,
+                scan_id,
+                progress=None,
+                policy=_fix_policy(),
+            )
+        except Exception as exc:
+            print(f"autofix: scan failed: {exc}", file=sys.stderr)
+            return 1
+        raw_findings = result.findings
 
-    # AC-8: only ``result.findings`` is consumed. ``schedule_decisions`` is
-    # never read.
+    # AC-8: only ``result.findings`` (or preloaded) is consumed.
     # Audit S5: refuse to proceed if the analyzer emitted more findings
     # than the per-run cap. Done BEFORE the dedup pass so a pathological
     # scan cannot exhaust memory in the dedup set.
-    if len(result.findings) > _MAX_FINDINGS_PER_RUN:
+    if len(raw_findings) > _MAX_FINDINGS_PER_RUN:
         print(
-            f"autofix: refusing to process {len(result.findings)} findings "
+            f"autofix: refusing to process {len(raw_findings)} findings "
             f"(cap={_MAX_FINDINGS_PER_RUN}); rerun with a narrower scope",
             file=sys.stderr,
         )
@@ -646,7 +725,7 @@ def _run_impl(
     # "unsafe-multiname" classification — so we dedupe on that triple.
     seen: set[tuple[str, int, int]] = set()
     findings: list = []
-    for f in result.findings:
+    for f in raw_findings:
         key = (
             getattr(f, "path", None),
             getattr(f, "start_line", None),
@@ -698,8 +777,10 @@ def _run_impl(
 
     # --- 3b. Recovery branch (AC-21 — ARCH-008) --------------------------
     # ONLY for --apply --auto-llm. Must be created AFTER dirty-tree gate
-    # and BEFORE any source mutations.
-    if apply_mode and auto_llm:
+    # and BEFORE any source mutations. ARCH-010 AC-15.b/AC-12: skip the
+    # block on retry-loop entries when the orchestrator has already
+    # captured the branch on the first APPLYING entry.
+    if apply_mode and auto_llm and not recovery_branch_already_captured:
         # Compact format (no `:` / `-` in time) — git refs reject `:` per
         # `git check-ref-format`, and the dashed-date form looks confusable.
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
