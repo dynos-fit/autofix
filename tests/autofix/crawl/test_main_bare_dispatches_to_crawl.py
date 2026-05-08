@@ -136,7 +136,7 @@ def test_existing_subcommands_still_work(tmp_path: Path) -> None:
     ):
         # ``scan --help`` triggers argparse's SystemExit(0); catch it.
         try:
-            rc = main_mod.main(["autofix", "scan", "--help"])
+            main_mod.main(["autofix", "scan", "--help"])
         except SystemExit as exc:
             rc = exc.code if exc.code is not None else 0
     assert rc == 0
@@ -153,7 +153,7 @@ def test_init_subcommand_dispatches_to_init_command(tmp_path: Path) -> None:
         return 0
 
     with patch("autofix.cli.init_command.run_init", side_effect=_fake_init):
-        rc = main_mod.main(["autofix", "init", "--root", str(tmp_path)])
+        main_mod.main(["autofix", "init", "--root", str(tmp_path)])
     assert init_called["flag"] is True
 
 
@@ -167,5 +167,5 @@ def test_status_subcommand_dispatches(tmp_path: Path) -> None:
         return 0
 
     with patch("autofix.cli.status_command.run_status", side_effect=_fake_status):
-        rc = main_mod.main(["autofix", "status", "--root", str(tmp_path)])
+        main_mod.main(["autofix", "status", "--root", str(tmp_path)])
     assert status_called["flag"] is True

@@ -50,7 +50,7 @@ def test_help_advanced_lists_all_subcommands(
     """``autofix --help-advanced`` lists every existing subcommand."""
     from autofix.cli.main import main
 
-    rc = main(["autofix", "--help-advanced"])
+    main(["autofix", "--help-advanced"])
     out = capsys.readouterr().out
 
     for cmd in ("scan", "run", "fix", "watch", "replay", "export-sarif", "policy"):
@@ -65,7 +65,7 @@ def test_help_short_under_15_lines(
 
     main(["autofix", "--help"])
     out = capsys.readouterr().out
-    line_count = len([l for l in out.splitlines() if l.strip()])
+    line_count = len([line for line in out.splitlines() if line.strip()])
     assert line_count <= 15, (
         f"Dumb-user help is {line_count} lines — should be ≤ 15"
     )
