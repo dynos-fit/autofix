@@ -1,34 +1,71 @@
 """Top-level entry for the ``autofix`` console script.
 
-Wires a single-level argparse with one subcommand today (``scan``). New
-subcommands should be added by importing their ``add_arguments`` /
-``run`` callables from a dedicated module under ``autofix/cli/`` and
-registering them below — the dispatch stays flat, no global state.
+Bare ``autofix`` is the **default** operator-facing command: when
+called with ``--root <path>`` (and no explicit subcommand), it
+dispatches to the continuous-crawl driver. Layered help: bare
+``autofix --help`` prints the dumb-user 6-line summary;
+``autofix --help-advanced`` lists every subcommand and flag.
+
+The existing subcommands (``scan``, ``fix``, ``run``, ``replay``,
+``export-sarif``, ``watch``, ``policy``) keep working with no
+behavioral change. The new top-level subcommands ``init`` and
+``status`` ship alongside.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from autofix.cli import (
     export_sarif_command,
     fix_command,
+    init_command,
     policy_command,
     replay_command,
     run_command,
     scan_command,
+    status_command,
     watch_command,
 )
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Assemble the top-level parser with every registered subcommand.
+# Subcommand names argparse owns. Used to route between the bare-
+# crawl path and the argparse path. ``init`` and ``status`` are
+# handled OUTSIDE argparse (they have minimal flags + interactive
+# prompts; argparse's subparser model adds no value).
+_ARGPARSE_SUBCOMMANDS: tuple[str, ...] = (
+    "scan",
+    "fix",
+    "run",
+    "replay",
+    "export-sarif",
+    "watch",
+    "policy",
+)
+_TOP_LEVEL_SUBCOMMANDS: tuple[str, ...] = (
+    "init",
+    "status",
+) + _ARGPARSE_SUBCOMMANDS
 
-    Kept as a function (not a module-level constant) so tests can
-    construct a fresh parser in isolation without import-time side
-    effects.
-    """
+
+_DUMB_USER_HELP = """\
+autofix — find and fix bugs in your code
+
+  autofix              Run continuously (recommended)
+  autofix init         Set up autofix for this repo (one-time)
+  autofix status       Show what autofix is doing right now
+  autofix --apply      Actually apply fixes (default: preview only)
+  autofix --once       Run one cycle, then exit
+
+For one-shot or advanced commands: autofix --help-advanced
+For docs: https://github.com/dynos-fit/autofix
+"""
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Assemble the top-level argparse parser (existing subcommands)."""
     parser = argparse.ArgumentParser(
         prog="autofix",
         description=(
@@ -124,32 +161,133 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Parse ``argv`` and dispatch to the requested subcommand.
-
-    Parameters
-    ----------
-    argv:
-        Argument vector (excluding ``argv[0]``). When ``None``, defaults
-        to :data:`sys.argv` ``[1:]`` — mirroring argparse's default.
-
-    Returns
-    -------
-    int
-        Process exit code. ``0`` on success, ``1`` on scan/runtime error,
-        ``2`` on usage error (unknown/missing subcommand).
-    """
+def _build_advanced_help() -> str:
+    """Render the full subcommand + flag reference."""
     parser = _build_parser()
+    full = parser.format_help()
+    bare_flags = (
+        "\n"
+        "BARE-AUTOFIX (continuous crawl) FLAGS:\n"
+        "  --root PATH            Repository to scan (required for crawl)\n"
+        "  --apply                Apply fixes (overrides config mode=preview)\n"
+        "  --once                 Run one cycle, then exit (no continuous loop)\n"
+        "\n"
+        "TOP-LEVEL SUBCOMMANDS:\n"
+        "  autofix init           Set up autofix for this repo (one-time)\n"
+        "  autofix status         Show what autofix is doing right now\n"
+    )
+    return full + bare_flags
+
+
+def _dispatch_init(argv: list[str]) -> int:
+    """Parse ``autofix init`` flags, run the wizard."""
+    parser = argparse.ArgumentParser(prog="autofix init")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    return init_command.run_init(default_root=args.root)
+
+
+def _dispatch_status(argv: list[str]) -> int:
+    """Parse ``autofix status`` flags, print the summary."""
+    parser = argparse.ArgumentParser(prog="autofix status")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    return status_command.run_status(root=args.root)
+
+
+def _dispatch_bare_crawl(argv: list[str]) -> int:
+    """Parse bare-``autofix`` flags and drive the continuous crawl."""
+    from autofix.crawl import driver
+    from autofix.crawl.config import read_config, resolve_budget_tier
+    from autofix.crawl.crawl_constants import (
+        MODE_COMMIT,
+        MODE_PREVIEW,
+    )
+
+    parser = argparse.ArgumentParser(prog="autofix")
+    parser.add_argument("--root", type=Path, default=None)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.root is None:
+        # No subcommand and no --root → print the dumb-user help.
+        print(_DUMB_USER_HELP)
+        return 0
+
+    config = read_config(args.root)
+    mode = config["mode"]
+    budget = config["budget"]
+    if args.apply and mode == MODE_PREVIEW:
+        # --apply overrides the config's preview mode → upgrade to commit.
+        # (The operator can switch to ``pr`` via ``autofix init`` if they
+        # want PR creation instead.)
+        mode = MODE_COMMIT
+
+    interval = resolve_budget_tier(budget)["interval_seconds"]
+
+    if args.once:
+        return driver.run_crawl_once(
+            root=args.root, mode=mode, budget=budget, quiet=args.quiet,
+        )
+    return driver.run_crawl_continuously(
+        root=args.root, mode=mode, budget=budget,
+        interval_seconds=interval, quiet=args.quiet,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse ``argv`` and dispatch.
+
+    Routing:
+    * ``autofix --help`` (or no args) → 6-line dumb-user help, exit 0.
+    * ``autofix --help-advanced`` → full subcommand + flag reference.
+    * ``autofix init`` / ``autofix status`` → new top-level commands.
+    * ``autofix scan|fix|run|replay|export-sarif|watch|policy`` → argparse.
+    * ``autofix --root <p> [--apply] [--once]`` → continuous crawl.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    elif argv and argv[0] == "autofix":
+        # Tests sometimes pass the program name as argv[0]; strip it.
+        argv = argv[1:]
+
+    # Layered help — handle BEFORE argparse sees the args.
+    if not argv or argv == ["--help"] or argv == ["-h"]:
+        print(_DUMB_USER_HELP)
+        return 0
+    if argv[0] == "--help-advanced":
+        print(_build_advanced_help())
+        return 0
+
+    # New top-level commands.
+    if argv[0] == "init":
+        return _dispatch_init(argv[1:])
+    if argv[0] == "status":
+        return _dispatch_status(argv[1:])
+
+    # Bare-autofix path: first arg starts with `--` (a flag) → crawl.
+    if argv[0].startswith("--"):
+        return _dispatch_bare_crawl(argv)
+
+    # Existing subcommand (argparse).
+    if argv[0] in _ARGPARSE_SUBCOMMANDS:
+        parser = _build_parser()
+        args = parser.parse_args(argv)
+        runner = getattr(args, "_runner", None)
+        if runner is None:
+            print(_DUMB_USER_HELP)
+            return 0
+        return int(runner(args))
+
+    # Unknown first arg — fall back to argparse for a uniform error.
+    parser = _build_parser()
+    args = parser.parse_args(argv)
     runner = getattr(args, "_runner", None)
     if runner is None:
-        # No subcommand was supplied. argparse won't error because we
-        # left ``required=False`` to allow ``autofix --help`` to
-        # print the top-level help without demanding a subcommand first.
-        parser.print_help(sys.stderr)
-        return 2
-
+        print(_DUMB_USER_HELP)
+        return 0
     return int(runner(args))
 
 
@@ -158,4 +296,3 @@ if __name__ == "__main__":  # pragma: no cover - exercised via console_script
 
 
 __all__ = ["main"]
-# task-20260506-003: package directory renamed (single CLI namespace)
