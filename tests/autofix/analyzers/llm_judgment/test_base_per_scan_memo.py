@@ -125,12 +125,14 @@ def test_per_scan_memo_with_multiple_files_same_scan(tmp_path) -> None:
     file2.write_text("y = 2\n", encoding="utf-8")
 
     class FakeParseResult1:
-        repo_root = tmp_path
+        path = file1
         relpath = "file1.py"
+        repo_root = tmp_path
 
     class FakeParseResult2:
-        repo_root = tmp_path
+        path = file2
         relpath = "file2.py"
+        repo_root = tmp_path
 
     pr1 = FakeParseResult1()
     pr2 = FakeParseResult2()

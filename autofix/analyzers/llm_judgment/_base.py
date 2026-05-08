@@ -28,6 +28,30 @@ from autofix.telemetry.correlation import current_commit_sha, current_scan_id
 _PER_SCAN_EVENTS: dict[str, set[str]] = {}
 
 
+def _resolve_repo_root(parse_result: "ParseResult") -> Path:
+    """Derive the repository root from a ParseResult.
+
+    ``ParseResult`` exposes ``path`` (absolute) and ``relpath``
+    (repo-relative). The class does NOT expose a ``repo_root``
+    attribute — earlier code in this module wrongly assumed it
+    did, which crashed at runtime the moment any LLM-judgment
+    analyzer fired against a real ``parse_file`` output.
+
+    The relationship is ``path == repo_root / relpath``, so
+    walking ``path``'s parents by ``len(Path(relpath).parts) - 1``
+    recovers the repo root regardless of how deeply nested the
+    file is.
+    """
+    rel_parts = Path(parse_result.relpath).parts
+    if not rel_parts:
+        return parse_result.path.parent
+    # ``path.parents[0]`` is the directory containing ``path``;
+    # ``path.parents[k]`` walks up ``k+1`` components. We want to
+    # discard exactly ``len(rel_parts)`` components from the right.
+    walk = len(rel_parts) - 1
+    return parse_result.path.parents[walk]
+
+
 def _should_log_event(scan_id: str, event_type: str) -> bool:
     """Return True if we should log this event for this scan (first time only).
 
@@ -84,7 +108,7 @@ class LLMJudgmentAnalyzer(ABC):
         """Analyze a file via LLM judgment with caching.
 
         AC-3 flow:
-        1. Read file at parse_result.repo_root / parse_result.relpath as UTF-8.
+        1. Read file at parse_result.path as UTF-8 (after deriving repo_root from path + relpath).
            On OSError or UnicodeDecodeError: return empty iter, NO event.
         2. Generate prompt via prompt_template (propagates NotImplementedError).
         3. Resolve commit_sha (from parse_result, current_commit_sha, or sentinel).
@@ -101,7 +125,10 @@ class LLMJudgmentAnalyzer(ABC):
         Parameters
         ----------
         parse_result : ParseResult
-            Output of parse_file (contains relpath, repo_root, etc).
+            Output of parse_file (carries ``path``, ``relpath``, the
+            tree-sitter ``tree``, ``source_bytes``, and ``lines``).
+            Repo root is derived inside this method via
+            :func:`_resolve_repo_root`.
         symbol_table : SymbolTable
             Unused, required by analyzer interface.
 
@@ -110,8 +137,11 @@ class LLMJudgmentAnalyzer(ABC):
         CandidateFinding
             Zero or more findings from LLM judgment.
         """
+        # Step 0: Resolve repo root from parse_result.path + relpath.
+        repo_root = _resolve_repo_root(parse_result)
+
         # Step 1: Read file (OSError/UnicodeDecodeError -> return empty, no event)
-        file_path = parse_result.repo_root / parse_result.relpath
+        file_path = parse_result.path
         try:
             source_code = file_path.read_text(encoding="utf-8", errors="strict")
         except (OSError, UnicodeDecodeError):
@@ -139,7 +169,7 @@ class LLMJudgmentAnalyzer(ABC):
             raise RuntimeError(f"Invalid cache_key: {cache_key}")
 
         # Step 5: Check cache
-        cache_dir = parse_result.repo_root / ".autofix" / "cache" / "llm_judgment"
+        cache_dir = repo_root / ".autofix" / "cache" / "llm_judgment"
         cache_path = cache_dir / f"{cache_key}.json"
 
         cached_findings = cls._try_read_cache(
@@ -154,13 +184,13 @@ class LLMJudgmentAnalyzer(ABC):
 
         # Step 6: Cache miss — invoke LLM
         try:
-            scheduler = Scheduler(root=parse_result.repo_root)
+            scheduler = Scheduler(root=repo_root)
             raw_response = scheduler.invoke_judgment(prompt, model=cls.MODEL)
         except AnalyzerSeamUnavailableError:
             if _should_log_event(scan_id, "AnalyzerUnavailable"):
                 try:
                     events_log.append_event(
-                        parse_result.repo_root,
+                        repo_root,
                         "AnalyzerUnavailable",
                         {"analyzer": cls.RULE_ID_PREFIX, "scan_id": scan_id},
                     )
@@ -175,7 +205,7 @@ class LLMJudgmentAnalyzer(ABC):
             if _should_log_event(scan_id, "AnalyzerError"):
                 try:
                     events_log.append_event(
-                        parse_result.repo_root,
+                        repo_root,
                         "AnalyzerError",
                         {
                             "analyzer": cls.RULE_ID_PREFIX,
@@ -194,7 +224,7 @@ class LLMJudgmentAnalyzer(ABC):
             if _should_log_event(scan_id, "AnalyzerError"):
                 try:
                     events_log.append_event(
-                        parse_result.repo_root,
+                        repo_root,
                         "AnalyzerError",
                         {
                             "analyzer": cls.RULE_ID_PREFIX,
@@ -220,7 +250,7 @@ class LLMJudgmentAnalyzer(ABC):
                 if _should_log_event(scan_id, "AnalyzerError"):
                     try:
                         events_log.append_event(
-                            parse_result.repo_root,
+                            repo_root,
                             "AnalyzerError",
                             {
                                 "analyzer": cls.RULE_ID_PREFIX,
@@ -267,7 +297,7 @@ class LLMJudgmentAnalyzer(ABC):
             cache_key,
             findings,
             commit_sha,
-            parse_result.repo_root,
+            repo_root,
             scan_id,
         )
 
