@@ -820,6 +820,7 @@ def _run_impl(
     # exactly once, processing its safe deletions in descending start_line
     # order (AC-12).
     safe_by_file: dict[Path, list[tuple[int, str, str]]] = {}
+    safe_finding_ids_by_file: dict[Path, list[str]] = {}
     safe_count = 0
     unsafe_count = 0
     noqa_count = 0
@@ -923,6 +924,9 @@ def _run_impl(
             safe_by_file.setdefault(file_path, []).append(
                 (start_line, line_text, rule_id)
             )
+            safe_finding_ids_by_file.setdefault(file_path, []).append(
+                getattr(finding, "finding_id", "") or ""
+            )
         elif cls == "noqa":
             noqa_count += 1
             display_line = line_text.rstrip()
@@ -972,6 +976,10 @@ def _run_impl(
             return 1
         applied += len(hits_sorted)
         applied_files += 1
+        if applied_finding_ids is not None:
+            for fid in safe_finding_ids_by_file.get(file_path, ()):
+                if fid:
+                    applied_finding_ids.add(fid)
 
     print(
         f"applied {applied} fix(es) across {applied_files} file(s); "
@@ -989,7 +997,8 @@ def _run_impl(
     if auto_llm:
         # AC-12: LLM-apply after deterministic-first pass.
         llm_applied, llm_attempted, llm_failed = _run_llm_apply(
-            llm_tasks, root, max_llm_patches
+            llm_tasks, root, max_llm_patches,
+            applied_finding_ids=applied_finding_ids,
         )
         # AC-19.c: exit code policy for --apply --auto-llm.
         # Exit 1 only if: zero applied AND ≥1 attempted AND ≥1 failed AND
@@ -1069,11 +1078,16 @@ def _run_llm_apply(
     llm_tasks: list,
     root: Path,
     max_llm_patches: int | None,
+    applied_finding_ids: set[str] | None = None,
 ) -> tuple[int, int, int]:
     """Run the LLM-apply (--auto-llm) path.
 
     Returns ``(applied, attempted, failed)`` counts for exit-code logic
-    (AC-19.c).
+    (AC-19.c). When ``applied_finding_ids`` is provided, every finding
+    whose patch landed in the working tree is added to it — the driver
+    uses the populated set to gate VERIFY + post-fix policy. Without
+    this wire-up the dispatcher treated successful LLM applies as
+    no-ops and never opened a PR.
     """
     miss_counter = 0
     budget_event_emitted = False
@@ -1127,6 +1141,8 @@ def _run_llm_apply(
         try:
             _apply_unified_diff(patch_text=patch.patch_text, root=root)
             applied += 1
+            if applied_finding_ids is not None:
+                applied_finding_ids.add(finding_id)
         except (_LLMPatchApplyError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
             failed += 1
             # AC-15: stderr line with one-line summary.
