@@ -26,5 +26,19 @@ from autofix.workflow.state_machine import (
     StateMachine,
     StateRow,
 )
+from autofix.workflow.verify import (
+    VerifyResult,
+    VerifyScanFailed,
+    run_verification,
+)
 
-__all__ = ["State", "StateMachine", "StateRow", "InvalidTransition", "InvalidLog"]
+__all__ = [
+    "State",
+    "StateMachine",
+    "StateRow",
+    "InvalidTransition",
+    "InvalidLog",
+    "VerifyResult",
+    "VerifyScanFailed",
+    "run_verification",
+]
