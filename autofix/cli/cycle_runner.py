@@ -666,10 +666,15 @@ def _revert_working_tree(root: Path, *, quiet: bool) -> None:
 def _build_git_log(root: Path) -> Any:
     """Build a minimal git_log adapter shape used by the picker.
 
-    For now: a duck-typed object exposing ``list_python_files``,
+    A duck-typed object exposing ``list_candidate_files``,
     ``days_since_last_commit``, ``commits_in_last_30_days``,
-    ``import_fanout``. Backed by ``git`` subprocess calls; falls
-    back to ``Path.rglob`` for non-git trees.
+    ``incoming_dependency_count``. Backed by ``git`` subprocess
+    calls; falls back to ``Path.rglob`` for non-git trees.
+
+    Autofix scans Python today, so this adapter narrows
+    ``list_candidate_files`` to ``*.py``. The Python filter is
+    a consumer choice — the crawler subsystem is language-
+    agnostic at the contract layer.
     """
     return _GitLogAdapter(root)
 
@@ -892,7 +897,7 @@ class _GitLogAdapter:
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
 
-    def list_python_files(self) -> list[Path]:
+    def list_candidate_files(self) -> list[Path]:
         import subprocess
         try:
             result = subprocess.run(
@@ -914,7 +919,7 @@ class _GitLogAdapter:
     def commits_in_last_30_days(self, path: Path) -> int | None:
         return 0
 
-    def import_fanout(self, path: Path) -> int | None:
+    def incoming_dependency_count(self, path: Path) -> int | None:
         return 0
 
 

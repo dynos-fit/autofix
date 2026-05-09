@@ -276,10 +276,10 @@ class TestPickerAutofixignoreIntegration:
 
         ledger = Ledger(root=tmp_path)
         git_log = MagicMock()
-        git_log.list_python_files.return_value = [f"f{i}.py" for i in range(3)]
+        git_log.list_candidate_files.return_value = [f"f{i}.py" for i in range(3)]
         git_log.days_since_last_commit.return_value = 1
         git_log.commits_in_last_30_days.return_value = 2
-        git_log.import_fanout.return_value = 1
+        git_log.incoming_dependency_count.return_value = 1
 
         cg = MagicMock()
         cg.neighbors_of.return_value = []
@@ -316,10 +316,10 @@ class TestPickerAutofixignoreIntegration:
         ai = AutofixIgnore.load(tmp_path)
         ledger = Ledger(root=tmp_path)
         git_log = MagicMock()
-        git_log.list_python_files.return_value = ["good.py", "ignored_module.py"]
+        git_log.list_candidate_files.return_value = ["good.py", "ignored_module.py"]
         git_log.days_since_last_commit.return_value = 0
         git_log.commits_in_last_30_days.return_value = 5
-        git_log.import_fanout.return_value = 3
+        git_log.incoming_dependency_count.return_value = 3
 
         cg = MagicMock()
         cg.neighbors_of.return_value = []

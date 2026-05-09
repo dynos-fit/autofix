@@ -53,7 +53,7 @@ def _make_git_log(file_data: dict[str, dict]) -> MagicMock:
 
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.import_fanout.side_effect = _fanout
+    g.incoming_dependency_count.side_effect = _fanout
     return g
 
 
