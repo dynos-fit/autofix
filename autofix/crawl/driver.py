@@ -94,7 +94,9 @@ def _run_crawl_once_body(
 ) -> int:
     """The body of one crawl cycle, factored out so the continuous
     loop can call it WITHOUT each cycle re-creating a pidfile."""
-    _ = debug_crawl  # reserved for downstream tracing; segment-E will wire
+    from autofix.crawl.crawl_observability import CycleStats, emit_cycle_stats
+
+    stats = CycleStats()
     tier = resolve_budget_tier(budget)
     analyzers = list(analyzer_set) if analyzer_set else list(tier["analyzers"])
     bundles_per_cycle = tier["bundles_per_cycle"]
@@ -142,6 +144,21 @@ def _run_crawl_once_body(
             analyzers=analyzers,
             bundles_per_cycle=bundles_per_cycle,
         )
+
+    # Populate the basic stats fields the picker output gives us
+    # directly. Score-breakdown / per-filter counters (junk_sinks,
+    # autofixignore, class, size_cap, budget_hits) require deeper
+    # instrumentation in pick_next_batch + expand_bundle and remain
+    # zero for now — the operator still gets bundle counts, byte
+    # distribution, and seed list.
+    seen_seeds: list[str] = []
+    for bundle, _ in batch:
+        seed_str = str(bundle.seed_path)
+        if seed_str not in seen_seeds:
+            seen_seeds.append(seed_str)
+        stats.bundle_size_bytes_list.append(bundle.total_bytes)
+    stats.bundles_built = len(seen_seeds)
+    stats.top_seeds = seen_seeds[:10]
 
     if not quiet:
         print(
@@ -196,6 +213,11 @@ def _run_crawl_once_body(
             quiet=quiet,
             findings=aggregated_findings,
         )
+
+    # Emit per-cycle stats. quiet=True suppresses everything;
+    # debug_crawl=True emits the full breakdown; otherwise a
+    # single-line INFO summary lands on stderr.
+    emit_cycle_stats(stats, quiet=quiet, debug_crawl=debug_crawl)
 
     return 0
 
