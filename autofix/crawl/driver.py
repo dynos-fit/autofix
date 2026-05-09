@@ -475,15 +475,25 @@ def _dispatch_repair_workflow(
 
 
 def _verify_modified_files_compile(root: Path, *, quiet: bool) -> bool:
-    """Byte-compile every modified Python file in the working tree.
+    """Cheap-VERIFY pass over every modified Python file in the working tree.
 
-    Cheap VERIFYING for the dispatcher's apply path. Catches the most
-    common false-positive shape: an "unused-import" deletion that
-    breaks the file because the import was actually used (the LLM
-    dead-code analyzer's blind spot).
+    Two checks, in order. Both must pass; either failing fails VERIFY.
 
-    Returns True if all modified files compile, False otherwise.
-    Doesn't run tests; doesn't re-scan; just compiles.
+    1. Byte-compile via ``py_compile``. Catches syntax / import-time
+       errors. The most common false-positive shape it catches: an
+       "unused-import" deletion that breaks the file because the
+       import was actually used (the LLM dead-code analyzer's blind
+       spot).
+
+    2. ``mypy --warn-unreachable`` on the modified files. Catches the
+       LLM-patcher's defensive-dead-code shape: e.g. ``getattr(obj,
+       "field_that_does_not_exist", None)`` that's always None,
+       making the guarded branch unreachable. Surfaced by 2026-05-09
+       PR #87 — a patch that compiled cleanly and applied cleanly
+       but added 11 lines of unreachable code.
+
+    Returns True if all modified files pass both checks, False
+    otherwise. Doesn't run tests; doesn't re-scan.
     """
     import py_compile
     import subprocess
@@ -505,6 +515,7 @@ def _verify_modified_files_compile(root: Path, *, quiet: bool) -> bool:
         # No .py files modified — trivially "verified".
         return True
 
+    # --- Check 1: byte-compile ----------------------------------
     failed: list[tuple[str, str]] = []
     for relpath in modified_paths:
         abs_path = root / relpath
@@ -524,7 +535,80 @@ def _verify_modified_files_compile(root: Path, *, quiet: bool) -> bool:
                 file=sys.stderr,
                 flush=True,
             )
-    return not failed
+    if failed:
+        return False
+
+    # --- Check 2: mypy --warn-unreachable -----------------------
+    # We deliberately invoke mypy as a subprocess (not as a library
+    # API) so a mypy crash, missing-stub, or import error degrades
+    # this pass into "no unreachable findings" rather than aborting
+    # the cycle. We only fail VERIFY on the literal substring
+    # ``Statement is unreachable`` which is what mypy emits under
+    # ``--warn-unreachable``. Other mypy errors (unrelated type
+    # mismatches, missing imports, etc.) are NOT enforced here —
+    # this is a targeted dead-code gate, not a full type check.
+    if not _check_no_unreachable_branches(
+        root, modified_paths, quiet=quiet,
+    ):
+        return False
+
+    return True
+
+
+def _check_no_unreachable_branches(
+    root: Path, modified_paths: list[str], *, quiet: bool,
+) -> bool:
+    """Return False iff mypy --warn-unreachable flagged at least one
+    of the modified Python files. Soft on every other failure mode.
+
+    A mypy import / config / crash error is treated as "could not
+    analyze" and returns True (no unreachable found). The intent is
+    a narrow gate against the specific failure shape — a patch that
+    introduces a definitely-dead branch — without making mypy a
+    hard dependency of the crawl pipeline.
+    """
+    import shutil
+    import subprocess
+
+    mypy_bin = shutil.which("mypy")
+    if mypy_bin is None:
+        # Mypy not available in this environment. Fail-soft: the
+        # primary byte-compile gate already passed.
+        return True
+
+    args = [
+        mypy_bin,
+        "--warn-unreachable",
+        "--no-error-summary",
+        "--hide-error-codes",
+        "--no-incremental",
+        "--ignore-missing-imports",
+        *modified_paths,
+    ]
+    try:
+        proc = subprocess.run(
+            args, cwd=str(root), capture_output=True, text=True,
+            timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+
+    output = (proc.stdout or "") + (proc.stderr or "")
+    unreachable_lines = [
+        line for line in output.splitlines()
+        if "Statement is unreachable" in line
+        or "Right operand of" in line and "always" in line
+    ]
+    if unreachable_lines and not quiet:
+        print(
+            "autofix: VERIFY: mypy --warn-unreachable flagged "
+            f"{len(unreachable_lines)} dead branch(es) in modified files:",
+            file=sys.stderr,
+            flush=True,
+        )
+        for line in unreachable_lines[:10]:
+            print(f"autofix: VERIFY:   {line}", file=sys.stderr, flush=True)
+    return not unreachable_lines
 
 
 def _revert_working_tree(root: Path, *, quiet: bool) -> None:
