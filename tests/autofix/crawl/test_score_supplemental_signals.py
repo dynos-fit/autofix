@@ -6,21 +6,19 @@ ACs covered:
 - AC 6: Golden-file regression test — all-flags-off produces exact pre-PR values
 - AC 7: low_value_class_penalty, oversize_file_penalty, entrypoint_boost behaviors
 
-Golden values were derived analytically from the existing score.py formula:
+Golden values were derived analytically from the score.py formula:
   relevance = max(0.0, min(1.0,
       RELEVANCE_WEIGHT_RECENCY * recency
-      + RELEVANCE_WEIGHT_CHURN * churn
-      + RELEVANCE_WEIGHT_CENTRALITY * centrality))
-where RELEVANCE_WEIGHT_RECENCY=0.5, RELEVANCE_WEIGHT_CHURN=0.3,
-      RELEVANCE_WEIGHT_CENTRALITY=0.2, RECENCY_DECAY_DAYS=7.0,
-      CHURN_CAP_COMMITS=10, CENTRALITY_CAP_FANOUT=10.
+      + RELEVANCE_WEIGHT_CHURN * churn))
+where RELEVANCE_WEIGHT_RECENCY=0.6, RELEVANCE_WEIGHT_CHURN=0.4,
+      RECENCY_DECAY_DAYS=7.0, CHURN_CAP_COMMITS=10.
 
-Fixture inputs:
-  source.py:       days=0, churn=5, fanout=3  -> 0.71
-  test_source.py:  days=1, churn=2, fanout=1  -> 0.5134389498750908
-  docs/README.md:  days=3, churn=1, fanout=0  -> 0.3557195287655278
-  vendor/lib.py:   days=0, churn=5, fanout=3  -> 0.71
-  big_file.py:     days=0, churn=5, fanout=3  -> 0.71
+Fixture inputs (centrality dropped — language-specific):
+  source.py:       days=0, churn=5  -> 0.8
+  test_source.py:  days=1, churn=2  -> 0.6001525050068253
+  docs/README.md:  days=3, churn=1  -> 0.4308528115062668
+  vendor/lib.py:   days=0, churn=5  -> 0.8
+  big_file.py:     days=0, churn=5  -> 0.8
 """
 from __future__ import annotations
 
@@ -37,7 +35,7 @@ import pytest
 def _make_git_log(file_data: dict[str, dict]) -> MagicMock:
     """Build a mock git_log with deterministic per-file responses.
 
-    file_data maps filename (basename) to {"days": int, "churn": int, "fanout": int}.
+    file_data maps filename (basename) to {"days": int, "churn": int}.
     """
     g = MagicMock()
     g.is_empty.return_value = False
@@ -48,22 +46,18 @@ def _make_git_log(file_data: dict[str, dict]) -> MagicMock:
     def _churn(path):
         return file_data.get(Path(path).name, {}).get("churn", 0)
 
-    def _fanout(path):
-        return file_data.get(Path(path).name, {}).get("fanout", 0)
-
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.incoming_dependency_count.side_effect = _fanout
     return g
 
 
 # Synthetic 5-file mock fixture (AC 6 / discovery Q4)
 _FIXTURE_FILE_DATA = {
-    "source.py":    {"days": 0, "churn": 5, "fanout": 3},
-    "test_source.py": {"days": 1, "churn": 2, "fanout": 1},
-    "README.md":    {"days": 3, "churn": 1, "fanout": 0},
-    "lib.py":       {"days": 0, "churn": 5, "fanout": 3},  # vendor/lib.py basename
-    "big_file.py":  {"days": 0, "churn": 5, "fanout": 3},
+    "source.py":    {"days": 0, "churn": 5},
+    "test_source.py": {"days": 1, "churn": 2},
+    "README.md":    {"days": 3, "churn": 1},
+    "lib.py":       {"days": 0, "churn": 5},  # vendor/lib.py basename
+    "big_file.py":  {"days": 0, "churn": 5},
 }
 
 
@@ -145,40 +139,37 @@ class TestGoldenFileRegressionAllFlagsOff:
         return relevance(Path(path_str), root=self.root, git_log=self.git_log)
 
     def test_source_py_all_flags_omitted(self) -> None:
-        """source.py: days=0,churn=5,fanout=3 → 0.71 (exact)."""
+        """source.py: days=0,churn=5 → 0.8 (exact)."""
         result = self._rel("source.py")
-        assert result == 0.71, f"Expected 0.71, got {result!r}"
+        assert result == 0.8, f"Expected 0.8, got {result!r}"
 
     def test_test_source_py_all_flags_omitted(self) -> None:
-        """test_source.py: days=1,churn=2,fanout=1 → exact float."""
+        """test_source.py: days=1,churn=2 → exact float."""
         import math as _math
-        expected = _math.exp(-1 / 7.0)  # recency
-        expected = max(0.0, min(1.0, expected))
+        recency = max(0.0, min(1.0, _math.exp(-1 / 7.0)))
         churn = min(1.0, 2 / 10)
-        centrality = min(1.0, 1 / 10)
-        expected_score = max(0.0, min(1.0, 0.5 * expected + 0.3 * churn + 0.2 * centrality))
+        expected_score = max(0.0, min(1.0, 0.6 * recency + 0.4 * churn))
         result = self._rel("test_source.py")
         assert result == expected_score, f"Expected {expected_score!r}, got {result!r}"
 
     def test_readme_all_flags_omitted(self) -> None:
-        """docs/README.md basename=README.md: days=3,churn=1,fanout=0 → exact float."""
+        """docs/README.md basename=README.md: days=3,churn=1 → exact float."""
         import math as _math
         recency = max(0.0, min(1.0, _math.exp(-3 / 7.0)))
         churn = min(1.0, 1 / 10)
-        centrality = min(1.0, 0 / 10)
-        expected = max(0.0, min(1.0, 0.5 * recency + 0.3 * churn + 0.2 * centrality))
+        expected = max(0.0, min(1.0, 0.6 * recency + 0.4 * churn))
         result = self._rel("README.md")
         assert result == expected, f"Expected {expected!r}, got {result!r}"
 
     def test_vendor_lib_py_all_flags_omitted(self) -> None:
-        """vendor/lib.py: days=0,churn=5,fanout=3 → 0.71."""
+        """vendor/lib.py: days=0,churn=5 → 0.8."""
         result = self._rel("lib.py")
-        assert result == 0.71, f"Expected 0.71, got {result!r}"
+        assert result == 0.8, f"Expected 0.8, got {result!r}"
 
     def test_big_file_all_flags_omitted(self) -> None:
-        """big_file.py: days=0,churn=5,fanout=3 → 0.71."""
+        """big_file.py: days=0,churn=5 → 0.8."""
         result = self._rel("big_file.py")
-        assert result == 0.71, f"Expected 0.71, got {result!r}"
+        assert result == 0.8, f"Expected 0.8, got {result!r}"
 
     def test_all_flags_false_scoring_flags_same_as_omitted(self) -> None:
         """Passing ScoringFlags() (all False) must return identical value to omitting flags."""
@@ -274,7 +265,7 @@ class TestLowValueClassPenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(low_value_class_penalty=True)
 
@@ -293,7 +284,7 @@ class TestLowValueClassPenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(low_value_class_penalty=True)
 
@@ -312,7 +303,7 @@ class TestLowValueClassPenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
 
-        git_log = _make_git_log({"test_source.py": {"days": 1, "churn": 2, "fanout": 1}})
+        git_log = _make_git_log({"test_source.py": {"days": 1, "churn": 2}})
         root = Path("/root")
         flags = ScoringFlags(low_value_class_penalty=True)
 
@@ -332,7 +323,7 @@ class TestLowValueClassPenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(low_value_class_penalty=True)
         fc = FileClass(fc_name)
@@ -362,7 +353,7 @@ class TestOversizeFilePenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.crawl_constants import MAX_RELEVANT_FILE_BYTES, OVERSIZE_FILE_PENALTY
 
-        git_log = _make_git_log({"big_file.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"big_file.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(oversize_file_penalty=True)
 
@@ -382,7 +373,7 @@ class TestOversizeFilePenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.crawl_constants import MAX_RELEVANT_FILE_BYTES
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(oversize_file_penalty=True)
 
@@ -401,7 +392,7 @@ class TestOversizeFilePenalty:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.crawl_constants import MAX_RELEVANT_FILE_BYTES
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(oversize_file_penalty=True)
 
@@ -419,7 +410,7 @@ class TestOversizeFilePenalty:
         """file_size_bytes=None → no oversize penalty even if flag is True."""
         from autofix.crawl.score import relevance, ScoringFlags
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(oversize_file_penalty=True)
 
@@ -449,7 +440,7 @@ class TestEntrypointBoost:
         from autofix.crawl.file_classifier import FileClass
         from autofix.crawl.crawl_constants import ENTRYPOINT_BOOST
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(entrypoint_boost=True)
 
@@ -469,7 +460,7 @@ class TestEntrypointBoost:
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         flags = ScoringFlags(entrypoint_boost=True)
 
@@ -489,7 +480,7 @@ class TestEntrypointBoost:
         from autofix.crawl.file_classifier import FileClass
 
         # Very high base score file
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 10, "fanout": 10}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 10}})
         root = Path("/root")
         flags = ScoringFlags(entrypoint_boost=True)
 
@@ -520,7 +511,7 @@ class TestScoringFlagsOrderOfOperations:
             MAX_RELEVANT_FILE_BYTES,
         )
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         # Vendor class + oversize
         flags = ScoringFlags(low_value_class_penalty=True, oversize_file_penalty=True)
@@ -546,7 +537,7 @@ class TestScoringFlagsOrderOfOperations:
         from autofix.crawl.file_classifier import FileClass
         from autofix.crawl.crawl_constants import ENTRYPOINT_BOOST
 
-        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
+        git_log = _make_git_log({"source.py": {"days": 0, "churn": 5}})
         root = Path("/root")
         # entrypoint class is NOT a low-value class, so penalty doesn't apply
         flags = ScoringFlags(low_value_class_penalty=True, entrypoint_boost=True)

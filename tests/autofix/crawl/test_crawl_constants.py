@@ -30,7 +30,6 @@ def test_relevance_weights_sum_to_one() -> None:
     total = (
         c.RELEVANCE_WEIGHT_RECENCY
         + c.RELEVANCE_WEIGHT_CHURN
-        + c.RELEVANCE_WEIGHT_CENTRALITY
     )
     assert abs(total - 1.0) < 1e-9
 
@@ -38,9 +37,8 @@ def test_relevance_weights_sum_to_one() -> None:
 def test_relevance_weight_proportions() -> None:
     from autofix.crawl import crawl_constants as c
 
-    assert c.RELEVANCE_WEIGHT_RECENCY == 0.5
-    assert c.RELEVANCE_WEIGHT_CHURN == 0.3
-    assert c.RELEVANCE_WEIGHT_CENTRALITY == 0.2
+    assert c.RELEVANCE_WEIGHT_RECENCY == 0.6
+    assert c.RELEVANCE_WEIGHT_CHURN == 0.4
 
 
 def test_budget_tier_shape() -> None:
@@ -128,11 +126,9 @@ def test_all_exports() -> None:
         "MAX_BUNDLE_BYTES",
         "RELEVANCE_WEIGHT_RECENCY",
         "RELEVANCE_WEIGHT_CHURN",
-        "RELEVANCE_WEIGHT_CENTRALITY",
         "NON_GIT_FALLBACK_SCORE",
         "RECENCY_DECAY_DAYS",
         "CHURN_CAP_COMMITS",
-        "CENTRALITY_CAP_FANOUT",
         "BUDGET_CHEAP",
         "BUDGET_BALANCED",
         "BUDGET_AGGRESSIVE",
