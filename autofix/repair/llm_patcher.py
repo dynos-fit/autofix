@@ -107,6 +107,27 @@ the path is literally "{path}" (no renaming, no other files).
 - No narration, no explanation, no markdown outside the diff fence.
 - If you cannot produce a valid fix, output an empty <<<DIFF>>><<<END_DIFF>>> block.
 
+Hard constraints to prevent dead-code patches (closing 2026-05-09 PR #87 \
+postmortem):
+- Before referencing any attribute on an object — `obj.field`, \
+`getattr(obj, "field", ...)`, or `setattr(obj, "field", ...)` — you MUST \
+verify that `field` is declared on `obj`'s type by locating its declaration \
+in the file content above. For dataclasses, the declaration is a class-body \
+annotation like `field: T = default`. For protocols/ABCs, the declaration is \
+a method or attribute stub.
+- If you cannot find the attribute declared on the target type, do NOT \
+reference it. Either choose a different fix that uses fields that DO exist, \
+or return an empty diff. Do not paper over the gap with `getattr(obj, \
+"unverified_field", None)` — that is dead code, not a fix.
+- Do not introduce defensive runtime guards for invariants the caller \
+already maintains by construction. If the caller pairs `(parse_result, \
+symbol_table)` together at construction time, an in-analyzer mismatch check \
+is unreachable.
+- Pure adjective-driven changes (renaming a variable to be "clearer", adding \
+a docstring, reformatting a comment) are NOT what this patcher is for. \
+Return an empty diff if the finding does not name a concrete behavioral or \
+correctness issue.
+
 <<<DIFF>>>
 <your unified diff here>
 <<<END_DIFF>>>
