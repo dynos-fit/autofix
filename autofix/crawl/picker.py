@@ -14,9 +14,14 @@
 5. Expand each candidate into a :class:`Bundle` via
    :func:`expand_bundle` (with the ledger, to honor saturation).
 6. Compute :func:`priority` per bundle. Sort descending.
-7. Take the top ``bundles_per_cycle`` bundles.
-8. Emit one ``(bundle, analyzer)`` pair per analyzer in the
-   resolved set.
+7. Take the top ``bundles_per_cycle`` bundles. Return.
+
+The picker is intentionally analyzer-agnostic — it returns
+:class:`Bundle` objects, not ``(Bundle, analyzer)`` pairs. The
+consumer (e.g. ``cycle_runner``) crosses the bundle list with its
+analyzer set after the picker returns. This keeps the crawler
+subsystem free of any knowledge about analyzer names, which
+analyzers exist, or what "analyzer" even means.
 
 Determinism: given identical inputs, the algorithm produces the
 same bundle list in the same order. Verified by
@@ -40,19 +45,19 @@ def pick_next_batch(
     current_commit_sha: str,
     git_log: GitLogAdapter,
     call_graph: CallGraphAdapter,
-    analyzers: list[str],
     bundles_per_cycle: int,
     now: str | None = None,
     autofixignore: Any | None = None,
     scoring_flags: Any | None = None,
     class_aware_config: Any | None = None,
     console_script_paths: Any | None = None,
-) -> list[tuple[Bundle, str]]:
-    """Pick this cycle's bundles + analyzer assignments.
+) -> list[Bundle]:
+    """Pick this cycle's bundles.
 
-    Returns a list of ``(Bundle, analyzer)`` pairs, length
-    ``bundles_per_cycle * len(analyzers)`` (or fewer if there
-    aren't enough candidate seeds in the repo).
+    Returns a list of :class:`Bundle` objects, length up to
+    ``bundles_per_cycle`` (fewer if there aren't enough candidate
+    seeds in the repo). The consumer is responsible for assigning
+    analyzers — the picker is analyzer-agnostic.
 
     Optional adapter parameters:
 
@@ -78,7 +83,7 @@ def pick_next_batch(
     that pass nothing get the legacy behavior pinned by
     ``test_picker_determinism.py``.
     """
-    if not analyzers or bundles_per_cycle <= 0:
+    if bundles_per_cycle <= 0:
         return []
 
     # Candidate seed paths from git (or rglob fallback). The
@@ -193,15 +198,8 @@ def pick_next_batch(
         reverse=True,
     )
 
-    # Step 7: cap at bundles_per_cycle.
-    chosen = expansions[:bundles_per_cycle]
-
-    # Step 8: emit (bundle, analyzer) pairs.
-    out: list[tuple[Bundle, str]] = []
-    for bundle in chosen:
-        for analyzer in analyzers:
-            out.append((bundle, analyzer))
-    return out
+    # Step 7: cap at bundles_per_cycle and return.
+    return expansions[:bundles_per_cycle]
 
 
 def _window_start_iso(now: str | None) -> str:
