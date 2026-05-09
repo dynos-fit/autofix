@@ -137,6 +137,17 @@ def analyze(
         :class:`CandidateFinding` whose ``finding_id`` is deterministic.
     """
 
+    symbol_table_relpath = getattr(symbol_table, "relpath", None)
+    if (
+        symbol_table_relpath is not None
+        and symbol_table_relpath != parse_result.relpath
+    ):
+        raise ValueError(
+            "parse_result/symbol_table mismatch: "
+            f"parse_result.relpath={parse_result.relpath!r} "
+            f"but symbol_table.relpath={symbol_table_relpath!r}"
+        )
+
     with span(
         "autofix.analyze",
         scan_id=current_scan_id(),
