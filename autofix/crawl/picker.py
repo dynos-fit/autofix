@@ -43,6 +43,9 @@ def pick_next_batch(
     bundles_per_cycle: int,
     now: str | None = None,
     autofixignore: Any | None = None,
+    scoring_flags: Any | None = None,
+    class_aware_config: Any | None = None,
+    console_script_paths: Any | None = None,
 ) -> list[tuple[Bundle, str]]:
     """Pick this cycle's bundles + analyzer assignments.
 
@@ -50,9 +53,29 @@ def pick_next_batch(
     ``bundles_per_cycle * len(analyzers)`` (or fewer if there
     aren't enough candidate seeds in the repo).
 
-    Optional ``autofixignore`` filters seed candidates before the
-    relevance sort. Existing call sites that pass nothing get
-    byte-identical behavior; the determinism test pins this.
+    Optional adapter parameters:
+
+    * ``autofixignore`` filters seed candidates and bundle
+      neighbors before scoring.
+    * ``scoring_flags`` (``ScoringFlags``) toggles supplemental
+      scoring signals (entrypoint boost, low-value-class penalty,
+      oversize-file penalty). When ``None`` or all-False, the
+      ``relevance`` short-circuit produces the byte-identical
+      legacy formula.
+    * ``class_aware_config`` (``ClassAwareConfig``) enables
+      class-aware bundle expansion (test→impl mapping, entrypoint
+      multi-hop, junk-sink stop). When ``None``, ``expand_bundle``
+      uses the byte-identical default BFS path.
+    * ``console_script_paths`` is a frozenset of repo-relative
+      :class:`Path` objects declared in ``pyproject.toml``'s
+      ``[project.scripts]``. Threaded into ``classify_file`` so
+      console-script entrypoints rank as ``FileClass.entrypoint``
+      even when their filename doesn't match the standard
+      pattern (``__main__.py``, ``manage.py``, etc).
+
+    All four are byte-identity-safe at None — existing call sites
+    that pass nothing get the legacy behavior pinned by
+    ``test_picker_determinism.py``.
     """
     if not analyzers or bundles_per_cycle <= 0:
         return []
@@ -77,12 +100,60 @@ def pick_next_batch(
             filtered.append(p)
         seed_candidates = filtered
 
-    # Step 3: relevance per candidate.
-    by_relevance = sorted(
-        seed_candidates,
-        key=lambda p: relevance(p, root=root, git_log=git_log),
-        reverse=True,
-    )
+    # Step 3: relevance per candidate. When scoring_flags is None or
+    # all-False, ``relevance`` short-circuits to the legacy formula.
+    # When any supplemental signal is on, we additionally pass
+    # ``file_class`` (via classify_file) and ``file_size_bytes`` (via
+    # stat). The expensive bits — classify_file + stat — are
+    # paid only when needed.
+    if scoring_flags is not None and (
+        scoring_flags.entrypoint_boost
+        or scoring_flags.low_value_class_penalty
+        or scoring_flags.oversize_file_penalty
+    ):
+        from autofix.crawl.file_classifier import classify_file
+
+        # Content-aware generated detection only adds value to the
+        # low_value_class_penalty signal — we don't read content for
+        # the entrypoint or oversize cases. Bound the cost: read at
+        # most 8KB per candidate, errors are swallowed.
+        if scoring_flags.low_value_class_penalty:
+            def _read_head(p: Path) -> str:
+                abs_path = p if p.is_absolute() else (root / p)
+                try:
+                    with abs_path.open("rb") as fh:
+                        head_bytes = fh.read(8 * 1024)
+                except OSError:
+                    return ""
+                return head_bytes.decode("utf-8", errors="replace")
+            read_head: Any = _read_head
+        else:
+            read_head = None
+
+        def _key(p: Path) -> float:
+            cls = classify_file(
+                p,
+                console_script_paths=console_script_paths,
+                read_head=read_head,
+            )
+            try:
+                size = (p if p.is_absolute() else (root / p)).stat().st_size
+            except OSError:
+                size = 0
+            return relevance(
+                p, root=root, git_log=git_log,
+                file_class=cls, file_size_bytes=size,
+                scoring_flags=scoring_flags,
+            )
+
+        by_relevance = sorted(seed_candidates, key=_key, reverse=True)
+    else:
+        # Default fast-path: byte-identical to today.
+        by_relevance = sorted(
+            seed_candidates,
+            key=lambda p: relevance(p, root=root, git_log=git_log),
+            reverse=True,
+        )
 
     # Step 4: over-pick to give priority sort headroom.
     over_pick = max(bundles_per_cycle * 3, bundles_per_cycle)
@@ -103,6 +174,7 @@ def pick_next_batch(
             window_start=window_start,
             now=now,
             autofixignore=autofixignore,
+            class_aware_config=class_aware_config,
         )
         if bundle.fingerprint in seen_fingerprints:
             continue

@@ -108,15 +108,42 @@ def _run_crawl_once_body(
     call_graph = _build_call_graph(root)
     current_commit_sha = _resolve_commit_sha(root)
 
+    from autofix.crawl.autofixignore import AutofixIgnore
+    from autofix.crawl.bundles import ClassAwareConfig
+    from autofix.crawl.config import read_crawler_flags
+    from autofix.crawl.file_classifier import load_console_script_paths
     from autofix.crawl.picker import pick_next_batch
+    from autofix.crawl.score import ScoringFlags
+
+    # Resolve the four operator-tunable feature surfaces from
+    # ``.autofix/config.json`` once per cycle. Each is byte-identity-
+    # safe at the default (all flags False / autofixignore absent / no
+    # console-scripts) — the picker / expand_bundle short-circuits
+    # back to the legacy code path.
+    crawler_flags = read_crawler_flags(root)
+    autofixignore = AutofixIgnore.load(root)
+    console_script_paths = load_console_script_paths(root)
+    scoring_flags: ScoringFlags | None = (
+        ScoringFlags(
+            entrypoint_boost=crawler_flags.entrypoint_boost,
+            low_value_class_penalty=crawler_flags.low_value_class_penalty,
+            oversize_file_penalty=crawler_flags.oversize_file_penalty,
+        )
+        if (
+            crawler_flags.entrypoint_boost
+            or crawler_flags.low_value_class_penalty
+            or crawler_flags.oversize_file_penalty
+        )
+        else None
+    )
+    class_aware_config: ClassAwareConfig | None = (
+        ClassAwareConfig(root=root) if crawler_flags.class_aware else None
+    )
 
     # Impact-cone dispatch. When the impact-cone flag is on AND the
     # working tree has tracked changes, build bundles seeded by the
-    # changed files instead of running the full relevance picker. The
-    # gate currently returns False — segment-E wires it to the real
-    # CrawlerFlags. Returning False keeps existing behavior intact.
-    autofixignore = None
-    use_impact_cone = _should_use_impact_cone(root)
+    # changed files instead of running the full relevance picker.
+    use_impact_cone = crawler_flags.impact_cone
     changed_files: list[Path] = []
     if use_impact_cone:
         changed_files = _detect_working_tree_diff(root)
@@ -143,6 +170,10 @@ def _run_crawl_once_body(
             call_graph=call_graph,
             analyzers=analyzers,
             bundles_per_cycle=bundles_per_cycle,
+            autofixignore=autofixignore,
+            scoring_flags=scoring_flags,
+            class_aware_config=class_aware_config,
+            console_script_paths=console_script_paths,
         )
 
     # Populate the basic stats fields the picker output gives us
@@ -684,23 +715,6 @@ def _build_call_graph(root: Path) -> Any:
     except Exception:
         return _NoNeighbors()
     return CallGraphPathAdapter(cg)
-
-
-def _should_use_impact_cone(root: Path) -> bool:
-    """Whether to bypass the relevance picker for the impact-cone path.
-
-    Reads ``CrawlerFlags.impact_cone`` from ``.autofix/config.json``.
-    Default-off when the file is missing/malformed (see
-    ``config.read_crawler_flags``).
-    """
-    from autofix.crawl.config import read_crawler_flags
-
-    try:
-        return read_crawler_flags(root).impact_cone
-    except Exception:
-        # read_crawler_flags itself swallows IO/parse errors, but stay
-        # defensive — a bug in flag-reading must not abort the cycle.
-        return False
 
 
 def _saturation_window_start(now: str) -> str:
