@@ -105,7 +105,7 @@ def _run_crawl_once_body(
     ledger.replay_from_disk()
 
     git_log = _build_git_log(root)
-    call_graph = _build_call_graph(root)
+    call_graph = _build_call_graph(root, git_log)
     current_commit_sha = _resolve_commit_sha(root)
 
     from autofix.crawl.autofixignore import AutofixIgnore
@@ -693,33 +693,65 @@ class _NoNeighbors:
         return []
 
 
-def _build_call_graph(root: Path) -> Any:
-    """Build a path-level call-graph adapter for the bundle expander.
+def _build_call_graph(root: Path, git_log: Any | None = None) -> Any:
+    """Build a path-level neighbor adapter for the bundle expander.
 
-    Wraps the symbol-level
-    :class:`autofix.invalidation.call_graph.CallGraph` (built from
-    the repo root) with the path-level
-    :class:`autofix.crawl._call_graph_adapter.CallGraphPathAdapter`.
+    Two independent neighbor signals, both fall-soft and additive:
 
-    Fall-soft on any build error: returns a :class:`_NoNeighbors`
-    sentinel so a broken indexer (missing SCIP shards, IO failure,
-    malformed cache) doesn't abort the cycle. The fallback
-    degrades bundles to singletons but keeps the daemon alive.
-    Build-failure modes seen in the wild include: ImportError if
-    SCIP isn't installed, OSError for filesystem issues, and
-    ValueError for malformed cache shards. ``except Exception``
-    is intentional — daemon survival outranks fault diagnosis at
-    this layer.
+    1. **SCIP call graph** — symbol-level via
+       :class:`autofix.invalidation.call_graph.CallGraph`.
+       Precise but covers only languages with a SCIP indexer
+       wired in (Python, TS/JS, Go).
+    2. **Text-reference index** — language-agnostic basename
+       references via
+       :func:`autofix.crawl._text_reference_index.build_text_reference_indexes`.
+       Fuzzy but works for Dart/HTML/anything tracked by git.
+
+    Both feed into :class:`CallGraphPathAdapter`, which unions
+    them per ``neighbors_of(path)`` lookup. If both signals fail
+    to build, returns a :class:`_NoNeighbors` sentinel so bundles
+    degrade to singletons without aborting the cycle.
+
+    ``except Exception`` on each signal is intentional — daemon
+    survival outranks fault diagnosis at this layer. Build-failure
+    modes seen in the wild include ImportError if SCIP isn't
+    installed, OSError for filesystem issues, ValueError for
+    malformed cache shards, and IO errors when reading non-UTF8
+    files for the text index.
     """
+    cg: Any | None = None
     try:
         from autofix.invalidation.call_graph import CallGraph
 
-        from autofix.crawl._call_graph_adapter import CallGraphPathAdapter
-
         cg = CallGraph.build_from_root(root)
     except Exception:
+        cg = None
+
+    text_in: dict[str, Any] | None = None
+    text_out: dict[str, Any] | None = None
+    try:
+        from autofix.crawl._text_reference_index import (
+            build_text_reference_indexes,
+        )
+
+        candidates_source = git_log if git_log is not None else _GitLogAdapter(root)
+        candidates = list(candidates_source.list_candidate_files())
+        text_in, text_out = build_text_reference_indexes(root, candidates)
+    except Exception:
+        text_in = None
+        text_out = None
+
+    if cg is None and not text_in and not text_out:
         return _NoNeighbors()
-    return CallGraphPathAdapter(cg)
+
+    from autofix.crawl._call_graph_adapter import CallGraphPathAdapter
+
+    return CallGraphPathAdapter(
+        cg,
+        root=root,
+        text_incoming=text_in,
+        text_outgoing=text_out,
+    )
 
 
 def _saturation_window_start(now: str) -> str:
