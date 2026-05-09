@@ -1,25 +1,38 @@
-"""Freshness scoring (ARCH-016 AC-7..8)."""
+"""Freshness scoring (ARCH-016 AC-7..8).
+
+Uses real ``LedgerRow`` instances rather than ``MagicMock``s so the
+test can't pass against a fictional row schema. (A prior version of
+this file mocked ``last_scanned_at``, an attribute that doesn't exist
+on ``LedgerRow`` — masked a real production bug for months.)
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock
 
+from autofix.crawl.ledger import LedgerRow
 
 
-def _mk_row(*, last_commit_sha: str, last_scanned_at: str) -> MagicMock:
-    r = MagicMock()
-    r.last_commit_sha = last_commit_sha
-    r.last_scanned_at = last_scanned_at
-    return r
+def _mk_row(*, last_commit_sha: str, ts: str) -> LedgerRow:
+    """Build a real LedgerRow with the fields that affect freshness."""
+    return LedgerRow(
+        ts=ts,
+        bundle_fingerprint="fp",
+        seed_path="seed.py",
+        file_paths=("seed.py",),
+        analyzer="cheap",
+        last_commit_sha=last_commit_sha,
+        last_finding_count=0,
+        cache_hit=False,
+        event_id="evt",
+    )
 
 
 def test_commit_sha_drift_returns_one() -> None:
     from autofix.crawl.score import file_freshness
 
-    row = _mk_row(
-        last_commit_sha="abc123",
-        last_scanned_at="2026-05-08T00:00:00Z",
-    )
+    row = _mk_row(last_commit_sha="abc123", ts="2026-05-08T00:00:00Z")
     score = file_freshness(row, current_commit_sha="def456", now=None)
     assert score == 1.0
 
@@ -30,7 +43,7 @@ def test_no_drift_age_zero_returns_zero() -> None:
     now = datetime(2026, 5, 8, 0, 0, 0, tzinfo=timezone.utc)
     row = _mk_row(
         last_commit_sha="abc123",
-        last_scanned_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     score = file_freshness(row, current_commit_sha="abc123", now=now)
     assert score == 0.0
@@ -44,7 +57,7 @@ def test_no_drift_half_horizon_returns_half() -> None:
     earlier = now - timedelta(hours=12)
     row = _mk_row(
         last_commit_sha="abc123",
-        last_scanned_at=earlier.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ts=earlier.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     score = file_freshness(row, current_commit_sha="abc123", now=now)
     assert abs(score - 0.5) < 0.01
@@ -58,7 +71,7 @@ def test_no_drift_clamps_at_one() -> None:
     earlier = now - timedelta(hours=72)
     row = _mk_row(
         last_commit_sha="abc123",
-        last_scanned_at=earlier.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ts=earlier.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     score = file_freshness(row, current_commit_sha="abc123", now=now)
     assert score == 1.0
@@ -66,23 +79,19 @@ def test_no_drift_clamps_at_one() -> None:
 
 def test_bundle_freshness_takes_max_across_files() -> None:
     """Bundle freshness = max(file_freshness for f in bundle.files)."""
-    from pathlib import Path
     from autofix.crawl.score import bundle_freshness
 
     bundle = MagicMock()
     bundle.file_paths = (Path("file_a.py"), Path("file_b.py"))
 
     ledger = MagicMock()
-    # File a hasn't drifted (freshness ~0.2). File b HAS drifted (freshness 1.0).
-    def _latest(path, analyzer):
-        r = MagicMock()
+
+    # file_a hasn't drifted (low freshness); file_b HAS drifted (1.0).
+    def _latest(path: Path, analyzer: str | None) -> LedgerRow:
         if "b" in str(path):
-            r.last_commit_sha = "different"
-            r.last_scanned_at = "2026-05-07T00:00:00Z"
-        else:
-            r.last_commit_sha = "current"
-            r.last_scanned_at = "2026-05-08T00:00:00Z"
-        return r
+            return _mk_row(last_commit_sha="different", ts="2026-05-07T00:00:00Z")
+        return _mk_row(last_commit_sha="current", ts="2026-05-08T00:00:00Z")
+
     ledger.latest_for.side_effect = _latest
 
     score = bundle_freshness(bundle, ledger, current_commit_sha="current")

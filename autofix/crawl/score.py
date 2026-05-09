@@ -106,7 +106,7 @@ def file_freshness(
 
     if now is None:
         now = datetime.now(timezone.utc)
-    last = _parse_iso_z(row.last_scanned_at)
+    last = _parse_iso_z(row.ts)
     age_hours = (now - last).total_seconds() / 3600
     if age_hours <= 0:
         return 0.0
