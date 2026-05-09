@@ -132,7 +132,6 @@ class TestDefaultOffInvariant:
             current_commit_sha="abc",
             git_log=git_log,
             call_graph=cg,
-            analyzers=["cheap"],
             bundles_per_cycle=2,
         )
 
@@ -142,13 +141,12 @@ class TestDefaultOffInvariant:
             current_commit_sha="abc",
             git_log=git_log,
             call_graph=cg,
-            analyzers=["cheap"],
             bundles_per_cycle=2,
             autofixignore=None,
         )
 
-        fps_pre = [b.fingerprint for b, _ in batch_pre]
-        fps_post = [b.fingerprint for b, _ in batch_post]
+        fps_pre = [b.fingerprint for b in batch_pre]
+        fps_post = [b.fingerprint for b in batch_post]
         assert fps_pre == fps_post, (
             f"Fingerprints differ: {fps_pre!r} vs {fps_post!r}"
         )
@@ -248,12 +246,11 @@ class TestPinnedFingerprintsForMiniRepo:
             current_commit_sha="abc",
             git_log=git_log,
             call_graph=cg,
-            analyzers=["cheap"],
             bundles_per_cycle=1,
         )
 
         assert len(batch) == 1
-        bundle, analyzer = batch[0]
+        bundle = batch[0]
         # alpha.py should be top seed given its high relevance
         assert bundle.seed_path.name == "alpha.py", (
             f"Expected alpha.py as top seed, got {bundle.seed_path.name!r}"

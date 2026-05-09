@@ -45,23 +45,26 @@ def test_picker_deterministic_same_inputs(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="abc",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=3,
     )
     batch2 = pick_next_batch(
         root=repo, ledger=ledger,
         current_commit_sha="abc",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=3,
     )
 
-    fps1 = [b.fingerprint for b, _ in batch1]
-    fps2 = [b.fingerprint for b, _ in batch2]
+    fps1 = [b.fingerprint for b in batch1]
+    fps2 = [b.fingerprint for b in batch2]
     assert fps1 == fps2
 
-def test_picker_emits_one_pair_per_analyzer(tmp_path: Path) -> None:
-    """Each picked bundle yields one (bundle, analyzer) pair per analyzer."""
+def test_picker_returns_one_entry_per_bundle(tmp_path: Path) -> None:
+    """Picker is analyzer-agnostic: returns one Bundle per pick.
+
+    The consumer (cycle_runner) crosses bundles with analyzers
+    afterwards. Verifies the picker stays in the bundle layer.
+    """
+    from autofix.crawl.bundles import Bundle
     from autofix.crawl.ledger import Ledger
     from autofix.crawl.picker import pick_next_batch
 
@@ -78,16 +81,11 @@ def test_picker_emits_one_pair_per_analyzer(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="abc",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap", "llm:security"],
         bundles_per_cycle=2,
     )
-    # 2 bundles × 2 analyzers = 4 pairs
-    assert len(batch) == 4
-    by_fp = {}
-    for b, a in batch:
-        by_fp.setdefault(b.fingerprint, set()).add(a)
-    for analyzers in by_fp.values():
-        assert analyzers == {"cheap", "llm:security"}
+    assert len(batch) == 2
+    for item in batch:
+        assert isinstance(item, Bundle)
 
 def test_picker_respects_bundles_per_cycle_cap(tmp_path: Path) -> None:
     from autofix.crawl.ledger import Ledger
@@ -106,7 +104,6 @@ def test_picker_respects_bundles_per_cycle_cap(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="abc",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=4,
     )
     assert len(batch) == 4
@@ -148,10 +145,9 @@ def test_picker_prefers_high_freshness_after_seen(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="NEW",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=1,
     )
     assert len(batch) == 1
-    bundle, _ = batch[0]
+    bundle = batch[0]
     # f0's commit_sha drifted (OLD vs NEW) → freshness=1.0; f1's didn't → low.
     assert "f0.py" in {p.name for p in bundle.file_paths}

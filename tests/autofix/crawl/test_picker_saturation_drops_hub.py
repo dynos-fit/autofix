@@ -58,12 +58,11 @@ def test_saturated_hub_dropped_from_neighbors(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="def",  # commit drift forces freshness=1.0 for seed.py
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=1,
         now="2026-05-08T03:00:00Z",  # within 24h of all 3 ledger rows
     )
     assert len(batch) == 1
-    bundle, _ = batch[0]
+    bundle = batch[0]
     file_names = {p.name for p in bundle.file_paths}
     assert "seed.py" in file_names
     assert "x.py" in file_names              # non-saturated neighbor kept
@@ -107,11 +106,10 @@ def test_saturated_hub_can_still_be_seed(tmp_path: Path) -> None:
         root=repo, ledger=ledger,
         current_commit_sha="def",
         git_log=git_log, call_graph=cg,
-        analyzers=["cheap"],
         bundles_per_cycle=1,
         now="2026-05-08T06:00:00Z",
     )
     assert len(batch) == 1
-    bundle, _ = batch[0]
+    bundle = batch[0]
     # hub.py is the bundle's seed even though it's saturated as a neighbor.
     assert bundle.seed_path.name == "hub.py"

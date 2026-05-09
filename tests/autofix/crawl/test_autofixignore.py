@@ -281,7 +281,6 @@ class TestPickerAutofixignoreIntegration:
             current_commit_sha="abc",
             git_log=git_log,
             call_graph=cg,
-            analyzers=["cheap"],
             bundles_per_cycle=2,
             autofixignore=None,
         )
@@ -319,13 +318,12 @@ class TestPickerAutofixignoreIntegration:
             current_commit_sha="abc",
             git_log=git_log,
             call_graph=cg,
-            analyzers=["cheap"],
             bundles_per_cycle=2,
             autofixignore=ai,
         )
 
         # ignored_module.py should not appear as a seed in any bundle
-        all_seeds = {b.seed_path.name for b, _ in batch}
+        all_seeds = {b.seed_path.name for b in batch}
         assert "ignored_module.py" not in all_seeds, (
             "ignored_module.py must be filtered out as a seed"
         )

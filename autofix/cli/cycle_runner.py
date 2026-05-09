@@ -151,24 +151,22 @@ def _run_crawl_once_body(
     if use_impact_cone and changed_files:
         now = _utcnow_iso_z()
         window_start = _saturation_window_start(now)
-        batch = _pick_impact_cone_batch(
+        bundles = _pick_impact_cone_batch(
             changed_files,
             root=root,
             call_graph=call_graph,
             ledger=ledger,
-            analyzers=analyzers,
             autofixignore=autofixignore,
             window_start=window_start,
             now=now,
         )
     else:
-        batch = pick_next_batch(
+        bundles = pick_next_batch(
             root=root,
             ledger=ledger,
             current_commit_sha=current_commit_sha,
             git_log=git_log,
             call_graph=call_graph,
-            analyzers=analyzers,
             bundles_per_cycle=bundles_per_cycle,
             autofixignore=autofixignore,
             scoring_flags=scoring_flags,
@@ -176,14 +174,20 @@ def _run_crawl_once_body(
             console_script_paths=console_script_paths,
         )
 
-    # Populate the basic stats fields the picker output gives us
-    # directly. Score-breakdown / per-filter counters (junk_sinks,
-    # autofixignore, class, size_cap, budget_hits) require deeper
-    # instrumentation in pick_next_batch + expand_bundle and remain
-    # zero for now — the operator still gets bundle counts, byte
-    # distribution, and seed list.
+    # Cross bundles × analyzers here in the consumer — the crawler
+    # is analyzer-agnostic. One (bundle, analyzer) pair per analyzer
+    # per bundle.
+    batch: list[tuple[Bundle, str]] = [
+        (bundle, analyzer) for bundle in bundles for analyzer in analyzers
+    ]
+
+    # Populate the basic stats fields. Score-breakdown / per-filter
+    # counters (junk_sinks, autofixignore, class, size_cap,
+    # budget_hits) require deeper instrumentation in pick_next_batch
+    # + expand_bundle and remain zero for now — the operator still
+    # gets bundle counts, byte distribution, and seed list.
     seen_seeds: list[str] = []
-    for bundle, _ in batch:
+    for bundle in bundles:
         seed_str = str(bundle.seed_path)
         if seed_str not in seen_seeds:
             seen_seeds.append(seed_str)
@@ -847,28 +851,24 @@ def _pick_impact_cone_batch(
     root: Path,
     call_graph: Any,
     ledger: Any,
-    analyzers: list[str],
     autofixignore: Any | None,
     window_start: str,
     now: str,
-) -> list[tuple[Bundle, str]]:
-    """Build one bundle per changed file, emit ``(bundle, analyzer)`` pairs.
+) -> list[Bundle]:
+    """Build one bundle per changed file. Returns deduped bundles.
 
     For impact-cone mode: every file in ``changed_files`` becomes a
     bundle seed via :func:`expand_bundle` (1-hop neighbors up to the
-    ledger's hub-saturation cap). Each bundle pairs with EVERY
-    analyzer in ``analyzers``, mirroring ``pick_next_batch``'s pair
-    emission.
+    ledger's hub-saturation cap). Mirrors ``pick_next_batch``'s
+    analyzer-agnostic shape — the caller crosses bundles with
+    analyzers afterwards.
 
-    Empty inputs return an empty list:
-    - empty ``changed_files`` → no bundles
-    - empty ``analyzers``     → no pairs
+    Empty input → empty list.
 
     Duplicate fingerprints (same file set appearing twice) are
-    de-duplicated so a single (bundle, analyzer) pair surfaces once
-    per unique file set.
+    de-duplicated.
     """
-    if not changed_files or not analyzers:
+    if not changed_files:
         return []
 
     bundles: list[Bundle] = []
@@ -893,11 +893,7 @@ def _pick_impact_cone_batch(
         seen_fp.add(bundle.fingerprint)
         bundles.append(bundle)
 
-    out: list[tuple[Bundle, str]] = []
-    for bundle in bundles:
-        for analyzer in analyzers:
-            out.append((bundle, analyzer))
-    return out
+    return bundles
 
 
 def _resolve_commit_sha(root: Path) -> str:

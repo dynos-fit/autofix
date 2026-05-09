@@ -207,16 +207,15 @@ def test_impact_cone_one_staged_change_bundle_count_equals_1(tmp_path: Path) -> 
         root=repo,
         call_graph=cg,
         ledger=ledger,
-        analyzers=["cheap"],
         autofixignore=None,
         window_start="2026-05-08T00:00:00Z",
         now="2026-05-08T01:00:00Z",
     )
 
-    # bundle_count == 1 (one changed file × one analyzer)
+    # bundle_count == 1 (one changed file → one bundle)
     assert len(batch) == 1, f"Expected 1 batch pair, got {len(batch)}"
 
-    bundle, analyzer = batch[0]
+    bundle = batch[0]
     # Changed file must be the seed
     assert bundle.seed_path == changed_file, (
         f"Expected seed {changed_file}, got {bundle.seed_path}"
@@ -240,14 +239,13 @@ def test_impact_cone_seed_is_changed_file(tmp_path: Path) -> None:
         root=repo,
         call_graph=cg,
         ledger=ledger,
-        analyzers=["cheap"],
         autofixignore=None,
         window_start="2026-05-08T00:00:00Z",
         now="2026-05-08T01:00:00Z",
     )
 
     assert len(batch) == 1
-    bundle, _ = batch[0]
+    bundle = batch[0]
     assert bundle.seed_path == changed
 
 
@@ -292,7 +290,6 @@ def test_empty_diff_falls_through_to_pick_next_batch(tmp_path: Path) -> None:
         root=repo,
         call_graph=cg,
         ledger=ledger,
-        analyzers=["cheap"],
         autofixignore=None,
         window_start="2026-05-08T00:00:00Z",
         now="2026-05-08T01:00:00Z",
