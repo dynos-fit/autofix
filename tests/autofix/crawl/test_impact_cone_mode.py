@@ -15,9 +15,8 @@ Uses a real tmp_path git repo (git init, initial commit, then a staged change).
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -93,7 +92,7 @@ def test_detect_working_tree_diff_returns_staged_file(tmp_path: Path) -> None:
     from autofix.crawl.driver import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
-    changed = _make_staged_change(repo, "feature.py")
+    _make_staged_change(repo, "feature.py")
 
     result = _detect_working_tree_diff(repo)
     assert isinstance(result, list)
@@ -316,11 +315,10 @@ def test_impact_cone_flag_off_uses_normal_picker(tmp_path: Path) -> None:
 
     # Verify _pick_impact_cone_batch with non-empty files still works
     # (ensuring the function itself is not the gating mechanism — the driver flag is)
-    from autofix.crawl.driver import _detect_working_tree_diff, _pick_impact_cone_batch
-    from autofix.crawl.ledger import Ledger
+    from autofix.crawl.driver import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
-    changed = _make_staged_change(repo, "changed.py")
+    _make_staged_change(repo, "changed.py")
 
     # Confirm diff is non-empty
     diff = _detect_working_tree_diff(repo)

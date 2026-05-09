@@ -25,7 +25,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +362,7 @@ class TestClassifyFilePerformance:
 
     def test_classify_file_pure_for_many_calls(self) -> None:
         """classify_file produces consistent results for repeated calls."""
-        from autofix.crawl.file_classifier import FileClass, classify_file
+        from autofix.crawl.file_classifier import classify_file
 
         path = Path("mypackage/utils.py")
         results = [classify_file(path) for _ in range(10)]

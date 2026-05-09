@@ -23,6 +23,7 @@ ledger rows (for freshness) or a duck-typed ``git_log`` adapter
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,13 +31,55 @@ from typing import Any
 from autofix.crawl.crawl_constants import (
     CENTRALITY_CAP_FANOUT,
     CHURN_CAP_COMMITS,
+    ENTRYPOINT_BOOST,
+    LOW_VALUE_CLASS_PENALTY,
+    MAX_RELEVANT_FILE_BYTES,
     NON_GIT_FALLBACK_SCORE,
+    OVERSIZE_FILE_PENALTY,
     RECENCY_DECAY_DAYS,
     RELEVANCE_WEIGHT_CENTRALITY,
     RELEVANCE_WEIGHT_CHURN,
     RELEVANCE_WEIGHT_RECENCY,
     STALENESS_HORIZON_HOURS,
 )
+from autofix.crawl.file_classifier import FileClass
+
+
+# Low-value file classes — when ``ScoringFlags.low_value_class_penalty``
+# is on, ``relevance`` multiplies the base score by
+# ``LOW_VALUE_CLASS_PENALTY`` for any file whose ``file_class`` falls in
+# this set. ``source``, ``test``, ``config``, ``entrypoint`` and
+# ``unknown`` are explicitly NOT low-value (no penalty).
+_LOW_VALUE_CLASSES: frozenset[FileClass] = frozenset({
+    FileClass.docs,
+    FileClass.lockfile,
+    FileClass.vendor,
+    FileClass.generated,
+    FileClass.build_output,
+    FileClass.cache,
+    FileClass.binary,
+})
+
+
+@dataclass(frozen=True)
+class ScoringFlags:
+    """Opt-in supplemental relevance signals.
+
+    All three flags default to ``False``. When all flags are off (or
+    ``scoring_flags`` is ``None``), :func:`relevance` takes a strict
+    short-circuit path that produces byte-identical output to the
+    pre-flag formula — golden-file regressions in the test suite pin
+    those exact floats.
+
+    Order of operations when flags are on:
+    ``base -> low_value_class_penalty (multiplicative)
+    -> oversize_file_penalty (multiplicative)
+    -> entrypoint_boost (additive) -> final clamp [0.0, 1.0]``.
+    """
+
+    entrypoint_boost: bool = False
+    low_value_class_penalty: bool = False
+    oversize_file_penalty: bool = False
 
 
 def _parse_iso_z(s: str) -> datetime:
@@ -108,6 +151,9 @@ def relevance(
     root: Path,
     git_log: Any,
     now: datetime | None = None,
+    file_class: FileClass | None = None,
+    file_size_bytes: int | None = None,
+    scoring_flags: ScoringFlags | None = None,
 ) -> float:
     """Per-path relevance.
 
@@ -124,6 +170,20 @@ def relevance(
     When ``git_log.is_empty()`` is True (non-git tree), recency
     and churn fall back to ``0.5`` and centrality also falls back
     to ``0.5`` if the git_log can't compute it.
+
+    Supplemental scoring signals (opt-in via ``scoring_flags``):
+
+    * ``file_class`` — a :class:`~autofix.crawl.file_classifier.FileClass`
+      member used by both ``low_value_class_penalty`` (penalizes
+      low-value classes like ``docs``/``vendor``/``generated``) and
+      ``entrypoint_boost`` (additive boost when the file is an
+      ``entrypoint``).
+    * ``file_size_bytes`` — used by ``oversize_file_penalty`` to
+      multiply the score by ``OVERSIZE_FILE_PENALTY`` when the file
+      strictly exceeds ``MAX_RELEVANT_FILE_BYTES``.
+    * ``scoring_flags`` — a :class:`ScoringFlags` selecting which of
+      the three modifiers to apply. ``None`` or all-False MUST be
+      byte-identical to the pre-flag formula (golden tests pin this).
     """
     # Each subscore independently falls back when its underlying
     # git_log method returns ``None`` (non-git tree, no commit
@@ -149,11 +209,52 @@ def relevance(
     else:
         centrality = min(1.0, fanout / CENTRALITY_CAP_FANOUT)
 
+    # --- Default short-circuit: byte-identical to the pre-flag formula.
+    # Golden-file regression tests pin the exact floats produced here.
+    # Any refactor — even introducing intermediate locals — risks
+    # diverging via FMA folding or different intermediate rounding,
+    # which would silently break callers and the golden suite.
+    if scoring_flags is None or (
+        not scoring_flags.entrypoint_boost
+        and not scoring_flags.low_value_class_penalty
+        and not scoring_flags.oversize_file_penalty
+    ):
+        score = (
+            RELEVANCE_WEIGHT_RECENCY * recency
+            + RELEVANCE_WEIGHT_CHURN * churn
+            + RELEVANCE_WEIGHT_CENTRALITY * centrality
+        )
+        return max(0.0, min(1.0, score))
+
+    # --- Flags-active path. Order of operations:
+    # base -> class penalty (multiplicative) -> oversize penalty
+    # (multiplicative) -> entrypoint boost (additive) -> final clamp.
     score = (
         RELEVANCE_WEIGHT_RECENCY * recency
         + RELEVANCE_WEIGHT_CHURN * churn
         + RELEVANCE_WEIGHT_CENTRALITY * centrality
     )
+
+    if (
+        scoring_flags.low_value_class_penalty
+        and file_class is not None
+        and file_class in _LOW_VALUE_CLASSES
+    ):
+        score = score * LOW_VALUE_CLASS_PENALTY
+
+    if (
+        scoring_flags.oversize_file_penalty
+        and file_size_bytes is not None
+        and file_size_bytes > MAX_RELEVANT_FILE_BYTES
+    ):
+        score = score * OVERSIZE_FILE_PENALTY
+
+    if (
+        scoring_flags.entrypoint_boost
+        and file_class is FileClass.entrypoint
+    ):
+        score = score + ENTRYPOINT_BOOST
+
     return max(0.0, min(1.0, score))
 
 
@@ -172,6 +273,7 @@ def priority(
 
 
 __all__ = [
+    "ScoringFlags",
     "file_freshness",
     "bundle_freshness",
     "relevance",

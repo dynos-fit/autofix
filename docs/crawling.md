@@ -240,6 +240,41 @@ Conscious exclusions:
   The operator runs `autofix status`, or `gh pr` handles it for
   `mode=pr`.
 
+## Optional flags and modes
+
+The crawl ships a handful of opt-in subsystems gated behind keys in
+`.autofix/config.json` under a top-level `crawler.*` namespace. With
+zero configuration none of them activate — the crawl behaves exactly
+as documented in the sections above.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `crawler.scoring.entrypoint_boost` | `false` | Adds `ENTRYPOINT_BOOST` to relevance for `entrypoint`-class files (`__main__.py`, `manage.py`, `cli.py`, …). |
+| `crawler.scoring.low_value_class_penalty` | `false` | Multiplies relevance by `LOW_VALUE_CLASS_PENALTY` for `docs`/`vendor`/`generated`/`build_output`/`lockfile`/`binary`/`cache` files. |
+| `crawler.scoring.oversize_file_penalty` | `false` | Multiplies relevance by `OVERSIZE_FILE_PENALTY` when a file exceeds `MAX_RELEVANT_FILE_BYTES`. |
+| `crawler.expansion.class_aware` | `false` | Switches `expand_bundle` to class-aware BFS: test seeds prioritize the impl mirror, config seeds cap at 1 hop, entrypoints get `MAX_BUNDLE_HOPS_ENTRYPOINT`, junk-sink classes are dropped. |
+| `crawler.modes.impact_cone` | `false` | Seed from the working-tree diff (`git status --porcelain=v1`) instead of running the full relevance picker. Empty diff falls back to the picker. |
+
+For per-flag semantics, observed effects, and tuning guidance, see
+[`crawling-tuning.md`](crawling-tuning.md). For the full list of
+modules touched in this iteration, see
+[`crawling-improvements.md`](crawling-improvements.md).
+
+### `.autofixignore`
+
+A repo-root file with gitignore-style globs. When present, the
+crawler excludes matched paths from seed candidates and neighbor
+expansion. Stacks on top of `.gitignore` —
+`autofixignore can only further-exclude`. Documented in
+[`crawling-tuning.md`](crawling-tuning.md).
+
+### `--debug-crawl`
+
+Top-level CLI flag on the bare-crawl path. When set, the cycle emits
+a multi-line stats breakdown (bundles built, byte-size distribution,
+top seeds, budget-hit counts, drop counts) to stderr. `--quiet`
+overrides `--debug-crawl`. Default off.
+
 ## See also
 
 - [`getting-started.md`](getting-started.md) — dumb-user guide
@@ -247,3 +282,6 @@ Conscious exclusions:
   + crawl fit together
 - [`workflow.md`](workflow.md) — the `autofix run` workflow loop
   (which the crawl invokes per cycle when `mode != preview`)
+- [`crawling-tuning.md`](crawling-tuning.md) — per-flag tuning guide
+- [`crawling-improvements.md`](crawling-improvements.md) — list of
+  modules touched in task-20260508-002

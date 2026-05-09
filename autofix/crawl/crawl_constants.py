@@ -94,6 +94,54 @@ MODE_COMMIT: str = "commit"
 MODE_PR: str = "pr"
 
 
+# --- File-classifier scoring tunables (task-20260508-002) ------------------
+
+# Additive boost applied to entrypoint-class files when scoring.
+ENTRYPOINT_BOOST: float = 0.15
+
+# Multiplicative downrank applied to low-value classes
+# (vendor/generated/build_output/cache/lockfile/binary). Values <1.0
+# move scores toward zero.
+LOW_VALUE_CLASS_PENALTY: float = 0.5
+
+# Multiplicative downrank applied to files exceeding
+# MAX_RELEVANT_FILE_BYTES. Values <1.0 move scores toward zero.
+OVERSIZE_FILE_PENALTY: float = 0.7
+
+# Soft byte cap for "relevant" source files. Files larger than this
+# are penalized via OVERSIZE_FILE_PENALTY when the oversize flag is on.
+MAX_RELEVANT_FILE_BYTES: int = 200_000
+
+# Hop budget specifically for entrypoint-rooted bundle expansion
+# (deeper than the generic MAX_BUNDLE_HOPS).
+MAX_BUNDLE_HOPS_ENTRYPOINT: int = 2
+
+# Sort priority for class-based expansion. Lower rank = higher
+# priority. Junk-sink classes get rank 99 so they sort to the back
+# AND are filtered out by callers that drop rank>=99.
+CLASS_EXPANSION_PRIORITY: dict = {
+    "source": 0,
+    "entrypoint": 1,
+    "test": 2,
+    "config": 3,
+    "docs": 4,
+    "unknown": 5,
+    "lockfile": 99,
+    "binary": 99,
+    "vendor": 99,
+    "generated": 99,
+    "build_output": 99,
+    "cache": 99,
+}
+
+# Reasons a budget tier was hit while picking bundles. Recorded in
+# the ledger so operators can see *why* the picker stopped.
+BUDGET_HIT_REASON_FILES: str = "files"
+BUDGET_HIT_REASON_BYTES: str = "bytes"
+BUDGET_HIT_REASON_HOPS: str = "hops"
+BUDGET_HIT_REASON_NONE: str = "none"
+
+
 __all__ = [
     "STALENESS_HORIZON_HOURS",
     "HUB_SATURATION_WINDOW_HOURS",
@@ -118,4 +166,14 @@ __all__ = [
     "MODE_PREVIEW",
     "MODE_COMMIT",
     "MODE_PR",
+    "ENTRYPOINT_BOOST",
+    "LOW_VALUE_CLASS_PENALTY",
+    "OVERSIZE_FILE_PENALTY",
+    "MAX_RELEVANT_FILE_BYTES",
+    "MAX_BUNDLE_HOPS_ENTRYPOINT",
+    "CLASS_EXPANSION_PRIORITY",
+    "BUDGET_HIT_REASON_FILES",
+    "BUDGET_HIT_REASON_BYTES",
+    "BUDGET_HIT_REASON_HOPS",
+    "BUDGET_HIT_REASON_NONE",
 ]

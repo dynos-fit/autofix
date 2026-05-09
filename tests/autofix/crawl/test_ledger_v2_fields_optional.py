@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +153,9 @@ def test_old_format_file_paths_preserved() -> None:
     from autofix.crawl.ledger import LedgerRow
 
     row = LedgerRow.from_dict(_OLD_ROW_DICT)
-    assert row.file_paths == tuple(_OLD_ROW_DICT["file_paths"])
+    expected_paths = _OLD_ROW_DICT["file_paths"]
+    assert isinstance(expected_paths, list)
+    assert row.file_paths == tuple(expected_paths)
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from autofix.crawl.bundles import Bundle, expand_bundle
 from autofix.crawl.config import resolve_budget_tier
 from autofix.crawl.crawl_constants import (
     MODE_PREVIEW,
@@ -61,6 +62,7 @@ def run_crawl_once(
     budget: str,
     analyzer_set: list[str] | None = None,
     quiet: bool = False,
+    debug_crawl: bool = False,
 ) -> int:
     """One crawl cycle. Returns 0 on clean completion.
 
@@ -68,11 +70,16 @@ def run_crawl_once(
     ``autofix status`` can reliably detect a single-cycle
     invocation as "running". Removed on clean exit (or on any
     raised exception that propagates out).
+
+    ``debug_crawl`` is a verbose-tracing knob threaded down to the
+    cycle body. Off by default; existing callers don't need to touch
+    it.
     """
     with _pidfile(root):
         return _run_crawl_once_body(
             root=root, mode=mode, budget=budget,
             analyzer_set=analyzer_set, quiet=quiet,
+            debug_crawl=debug_crawl,
         )
 
 
@@ -83,9 +90,11 @@ def _run_crawl_once_body(
     budget: str,
     analyzer_set: list[str] | None,
     quiet: bool,
+    debug_crawl: bool = False,
 ) -> int:
     """The body of one crawl cycle, factored out so the continuous
     loop can call it WITHOUT each cycle re-creating a pidfile."""
+    _ = debug_crawl  # reserved for downstream tracing; segment-E will wire
     tier = resolve_budget_tier(budget)
     analyzers = list(analyzer_set) if analyzer_set else list(tier["analyzers"])
     bundles_per_cycle = tier["bundles_per_cycle"]
@@ -99,15 +108,40 @@ def _run_crawl_once_body(
 
     from autofix.crawl.picker import pick_next_batch
 
-    batch = pick_next_batch(
-        root=root,
-        ledger=ledger,
-        current_commit_sha=current_commit_sha,
-        git_log=git_log,
-        call_graph=call_graph,
-        analyzers=analyzers,
-        bundles_per_cycle=bundles_per_cycle,
-    )
+    # Impact-cone dispatch. When the impact-cone flag is on AND the
+    # working tree has tracked changes, build bundles seeded by the
+    # changed files instead of running the full relevance picker. The
+    # gate currently returns False — segment-E wires it to the real
+    # CrawlerFlags. Returning False keeps existing behavior intact.
+    autofixignore = None
+    use_impact_cone = _should_use_impact_cone(root)
+    changed_files: list[Path] = []
+    if use_impact_cone:
+        changed_files = _detect_working_tree_diff(root)
+
+    if use_impact_cone and changed_files:
+        now = _utcnow_iso_z()
+        window_start = _saturation_window_start(now)
+        batch = _pick_impact_cone_batch(
+            changed_files,
+            root=root,
+            call_graph=call_graph,
+            ledger=ledger,
+            analyzers=analyzers,
+            autofixignore=autofixignore,
+            window_start=window_start,
+            now=now,
+        )
+    else:
+        batch = pick_next_batch(
+            root=root,
+            ledger=ledger,
+            current_commit_sha=current_commit_sha,
+            git_log=git_log,
+            call_graph=call_graph,
+            analyzers=analyzers,
+            bundles_per_cycle=bundles_per_cycle,
+        )
 
     if not quiet:
         print(
@@ -173,11 +207,15 @@ def run_crawl_continuously(
     budget: str,
     interval_seconds: int,
     quiet: bool = False,
+    debug_crawl: bool = False,
 ) -> int:
     """Loop forever, sleeping ``interval_seconds`` between cycles.
 
     Returns 0 on ``KeyboardInterrupt``. ``SystemExit`` propagates.
     Per-cycle ``Exception`` is caught + logged; the loop continues.
+
+    ``debug_crawl`` is forwarded to each per-cycle body call. Off by
+    default; existing callers don't need to set it.
     """
     with _pidfile(root):
         try:
@@ -186,6 +224,7 @@ def run_crawl_continuously(
                     _run_crawl_once_body(
                         root=root, mode=mode, budget=budget,
                         analyzer_set=None, quiet=quiet,
+                        debug_crawl=debug_crawl,
                     )
                 except (KeyboardInterrupt, SystemExit):
                     raise
@@ -511,6 +550,169 @@ def _build_call_graph(root: Path) -> Any:
         def neighbors_of(self, path: Path) -> list[Path]:
             return []
     return _NoNeighbors()
+
+
+def _should_use_impact_cone(root: Path) -> bool:
+    """Whether to bypass the relevance picker for the impact-cone path.
+
+    Reads ``CrawlerFlags.impact_cone`` from ``.autofix/config.json``.
+    Default-off when the file is missing/malformed (see
+    ``config.read_crawler_flags``).
+    """
+    from autofix.crawl.config import read_crawler_flags
+
+    try:
+        return read_crawler_flags(root).impact_cone
+    except Exception:
+        # read_crawler_flags itself swallows IO/parse errors, but stay
+        # defensive — a bug in flag-reading must not abort the cycle.
+        return False
+
+
+def _saturation_window_start(now: str) -> str:
+    """Compute the saturation-window start for impact-cone expansions.
+
+    Mirrors the picker's window math but kept local so the driver
+    doesn't reach into picker._window_start_iso (private). Uses
+    HUB_SATURATION_WINDOW_HOURS from crawl_constants — never inlined.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from autofix.crawl.crawl_constants import HUB_SATURATION_WINDOW_HOURS
+
+    end = datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc,
+    )
+    start = end - timedelta(hours=HUB_SATURATION_WINDOW_HOURS)
+    return start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _detect_working_tree_diff(root: Path) -> list[Path]:
+    """Return the list of tracked files dirty in the working tree.
+
+    Runs ``git status --porcelain=v1`` (timeout 10s, matching
+    ``_resolve_commit_sha``). Each output line is two status columns
+    (X = staged, Y = unstaged) followed by space + path. ``?`` in
+    either column means untracked — those rows are dropped. ``R`` in
+    either column means rename; the ``old -> new`` form is split and
+    only the right-hand path is kept.
+
+    Failure modes:
+    - Non-git directory          → CalledProcessError → return []
+    - Repo with no commits       → typically still works, but if not, return []
+    - subprocess timeout         → return []
+    - Any OSError on the binary  → return []
+
+    Returned paths are absolute (rooted under ``root``) so callers
+    can pass them to ``expand_bundle`` without further resolution.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return []
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for raw in result.stdout.splitlines():
+        if len(raw) < 3:
+            continue
+        x, y = raw[0], raw[1]
+        # Skip untracked and clean rows. ``?`` flags untracked; a
+        # space in BOTH cols means clean (shouldn't appear in
+        # porcelain output, but defensive).
+        if x == "?" or y == "?":
+            continue
+        if x == " " and y == " ":
+            continue
+        # Path starts at col 3 (after "XY ").
+        path_str = raw[3:]
+        # Rename: "X  old -> new" — keep the right side.
+        if " -> " in path_str and (x == "R" or y == "R"):
+            path_str = path_str.split(" -> ", 1)[1]
+        # Quoted paths (e.g. "with spaces.py") — strip the wrapping
+        # quotes git emits when the path contains special chars.
+        if path_str.startswith('"') and path_str.endswith('"') and len(path_str) >= 2:
+            path_str = path_str[1:-1]
+        if not path_str or path_str in seen:
+            continue
+        seen.add(path_str)
+        # Compose an absolute path under ``root`` without resolving
+        # symlinks (``.resolve()`` would canonicalize ``/var`` →
+        # ``/private/var`` on macOS, which breaks equality vs the
+        # caller's unresolved tmp_path).
+        candidate = Path(root) / path_str
+        if not candidate.is_absolute():
+            candidate = candidate.absolute()
+        out.append(candidate)
+    return out
+
+
+def _pick_impact_cone_batch(
+    changed_files: list[Path],
+    *,
+    root: Path,
+    call_graph: Any,
+    ledger: Any,
+    analyzers: list[str],
+    autofixignore: Any | None,
+    window_start: str,
+    now: str,
+) -> list[tuple[Bundle, str]]:
+    """Build one bundle per changed file, emit ``(bundle, analyzer)`` pairs.
+
+    For impact-cone mode: every file in ``changed_files`` becomes a
+    bundle seed via :func:`expand_bundle` (1-hop neighbors up to the
+    ledger's hub-saturation cap). Each bundle pairs with EVERY
+    analyzer in ``analyzers``, mirroring ``pick_next_batch``'s pair
+    emission.
+
+    Empty inputs return an empty list:
+    - empty ``changed_files`` → no bundles
+    - empty ``analyzers``     → no pairs
+
+    Duplicate fingerprints (same file set appearing twice) are
+    de-duplicated so a single (bundle, analyzer) pair surfaces once
+    per unique file set.
+    """
+    if not changed_files or not analyzers:
+        return []
+
+    bundles: list[Bundle] = []
+    seen_fp: set[str] = set()
+    for seed in changed_files:
+        seed_abs = seed if seed.is_absolute() else (root / seed)
+        try:
+            bundle = expand_bundle(
+                seed_path=seed_abs,
+                root=root,
+                call_graph=call_graph,
+                ledger=ledger,
+                window_start=window_start,
+                now=now,
+                autofixignore=autofixignore,
+            )
+        except (OSError, ValueError):
+            # A single bad seed must not abort the whole cycle.
+            continue
+        if bundle.fingerprint in seen_fp:
+            continue
+        seen_fp.add(bundle.fingerprint)
+        bundles.append(bundle)
+
+    out: list[tuple[Bundle, str]] = []
+    for bundle in bundles:
+        for analyzer in analyzers:
+            out.append((bundle, analyzer))
+    return out
 
 
 def _resolve_commit_sha(root: Path) -> str:

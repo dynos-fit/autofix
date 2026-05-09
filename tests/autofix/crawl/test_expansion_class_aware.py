@@ -144,7 +144,6 @@ def test_test_seed_mirror_impl_prioritized(tmp_path: Path) -> None:
     (after the seed itself at index 0).
     """
     from autofix.crawl.bundles import expand_bundle, ClassAwareConfig
-    from autofix.crawl.file_classifier import FileClass
 
     # Set up mirror layout: tests/mypkg/test_module.py → mypkg/module.py
     pkg_dir = tmp_path / "mypkg"

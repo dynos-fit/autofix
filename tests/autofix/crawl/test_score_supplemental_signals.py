@@ -24,7 +24,6 @@ Fixture inputs:
 """
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -274,7 +273,6 @@ class TestLowValueClassPenalty:
         """generated class gets penalized."""
         from autofix.crawl.score import relevance, ScoringFlags
         from autofix.crawl.file_classifier import FileClass
-        from autofix.crawl.crawl_constants import LOW_VALUE_CLASS_PENALTY
 
         git_log = _make_git_log({"source.py": {"days": 0, "churn": 5, "fanout": 3}})
         root = Path("/root")
