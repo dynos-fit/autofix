@@ -113,8 +113,29 @@ def pick_next_batch(
     ):
         from autofix.crawl.file_classifier import classify_file
 
+        # Content-aware generated detection only adds value to the
+        # low_value_class_penalty signal — we don't read content for
+        # the entrypoint or oversize cases. Bound the cost: read at
+        # most 8KB per candidate, errors are swallowed.
+        if scoring_flags.low_value_class_penalty:
+            def _read_head(p: Path) -> str:
+                abs_path = p if p.is_absolute() else (root / p)
+                try:
+                    with abs_path.open("rb") as fh:
+                        head_bytes = fh.read(8 * 1024)
+                except OSError:
+                    return ""
+                return head_bytes.decode("utf-8", errors="replace")
+            read_head: Any = _read_head
+        else:
+            read_head = None
+
         def _key(p: Path) -> float:
-            cls = classify_file(p, console_script_paths=console_script_paths)
+            cls = classify_file(
+                p,
+                console_script_paths=console_script_paths,
+                read_head=read_head,
+            )
             try:
                 size = (p if p.is_absolute() else (root / p)).stat().st_size
             except OSError:
