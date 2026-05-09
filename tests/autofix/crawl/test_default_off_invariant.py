@@ -462,7 +462,11 @@ class TestExistingTestsStillExist:
         assert (self._test_dir() / "test_crawl_no_magic_numbers.py").exists()
 
     def test_test_dispatcher_verify_exists(self) -> None:
-        assert (self._test_dir() / "test_dispatcher_verify.py").exists()
+        # task-20260509-001: test_dispatcher_verify.py moved to
+        # tests/autofix/cli/test_cycle_runner_verify.py when driver.py
+        # was relocated out of the crawl/ subsystem.
+        cli_dir = self._test_dir().parent / "cli"
+        assert (cli_dir / "test_cycle_runner_verify.py").exists()
 
     def test_test_main_bare_dispatches_exists(self) -> None:
         assert (self._test_dir() / "test_main_bare_dispatches_to_crawl.py").exists()

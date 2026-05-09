@@ -13,7 +13,6 @@ Imports the private helpers directly:
 from __future__ import annotations
 
 import subprocess
-import types
 from pathlib import Path
 
 import pytest

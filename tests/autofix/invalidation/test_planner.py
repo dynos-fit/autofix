@@ -30,7 +30,6 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from pathlib import Path
-from typing import get_type_hints
 
 import pytest
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from autofix.crawl.bundles import Bundle, expand_bundle
+from autofix.crawl.contracts import CallGraphAdapter, GitLogAdapter
 from autofix.crawl.crawl_constants import HUB_SATURATION_WINDOW_HOURS
 from autofix.crawl.score import priority, relevance
 
@@ -36,8 +37,8 @@ def pick_next_batch(
     root: Path,
     ledger: Any,
     current_commit_sha: str,
-    git_log: Any,
-    call_graph: Any,
+    git_log: GitLogAdapter,
+    call_graph: CallGraphAdapter,
     analyzers: list[str],
     bundles_per_cycle: int,
     now: str | None = None,

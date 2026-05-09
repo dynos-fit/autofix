@@ -20,9 +20,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from autofix.events.schema import ChangeSet
 from autofix.evidence.schema import CandidateFinding

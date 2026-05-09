@@ -1,7 +1,6 @@
 """Registry round-trip for ARCH-013 analyzers (AC-19, AC-20)."""
 from __future__ import annotations
 
-import inspect
 
 from autofix.analyzers.llm_judgment.dead_code import DeadCodeJudgmentAnalyzer
 from autofix.analyzers.llm_judgment.performance import PerformanceJudgmentAnalyzer

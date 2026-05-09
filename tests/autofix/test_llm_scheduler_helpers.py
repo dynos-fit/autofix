@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRIAGE_PATH = REPO_ROOT / "autofix" / "llm" / "triage.py"

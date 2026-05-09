@@ -37,7 +37,7 @@ def test_bare_autofix_with_root_dispatches_to_crawl(tmp_path: Path) -> None:
         return 0
 
     with patch(
-        "autofix.crawl.driver.run_crawl_continuously",
+        "autofix.cli.cycle_runner.run_crawl_continuously",
         side_effect=_fake_continuous,
     ):
         rc = main_mod.main(["autofix", "--root", str(tmp_path)])
@@ -61,8 +61,8 @@ def test_bare_autofix_once_runs_one_cycle(tmp_path: Path) -> None:
         cont_called["flag"] = True
         return 0
 
-    with patch("autofix.crawl.driver.run_crawl_once", side_effect=_once), \
-         patch("autofix.crawl.driver.run_crawl_continuously", side_effect=_cont):
+    with patch("autofix.cli.cycle_runner.run_crawl_once", side_effect=_once), \
+         patch("autofix.cli.cycle_runner.run_crawl_continuously", side_effect=_cont):
         rc = main_mod.main(["autofix", "--root", str(tmp_path), "--once"])
 
     assert rc == 0
@@ -87,7 +87,7 @@ def test_bare_autofix_apply_overrides_preview_mode(tmp_path: Path) -> None:
         captured["mode"] = kwargs["mode"]
         return 0
 
-    with patch("autofix.crawl.driver.run_crawl_continuously", side_effect=_capture_mode):
+    with patch("autofix.cli.cycle_runner.run_crawl_continuously", side_effect=_capture_mode):
         main_mod.main(["autofix", "--root", str(tmp_path), "--apply"])
 
     # --apply forces a non-preview mode.
@@ -112,7 +112,7 @@ def test_bare_autofix_uses_config_when_present(tmp_path: Path) -> None:
         captured["budget"] = kwargs["budget"]
         return 0
 
-    with patch("autofix.crawl.driver.run_crawl_continuously", side_effect=_capture):
+    with patch("autofix.cli.cycle_runner.run_crawl_continuously", side_effect=_capture):
         main_mod.main(["autofix", "--root", str(tmp_path)])
 
     assert captured["mode"] == "pr"
@@ -131,7 +131,7 @@ def test_existing_subcommands_still_work(tmp_path: Path) -> None:
         return 0
 
     with patch(
-        "autofix.crawl.driver.run_crawl_continuously",
+        "autofix.cli.cycle_runner.run_crawl_continuously",
         side_effect=_crawl_called,
     ):
         # ``scan --help`` triggers argparse's SystemExit(0); catch it.

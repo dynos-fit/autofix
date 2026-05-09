@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from autofix.analyzers.llm_judgment._base import LLMJudgmentAnalyzer
-from autofix.parsing.tree_sitter import ParseResult
 
 
 class FakeJudgmentAnalyzer(LLMJudgmentAnalyzer):

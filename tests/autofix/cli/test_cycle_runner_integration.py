@@ -34,7 +34,7 @@ def _git_init_with_files(tmp_path: Path, files: list[str]) -> Path:
 def test_analyze_bundle_invokes_cheap_analyzer(tmp_path: Path) -> None:
     """Bundle with cheap analyzer → ``_analyze_bundle`` invokes the
     cheap callable from the funnel registry per file."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
     from autofix.crawl.bundles import Bundle
 
     src = tmp_path / "x.py"
@@ -67,7 +67,7 @@ def test_analyze_bundle_invokes_cheap_analyzer(tmp_path: Path) -> None:
 
 
 def test_analyze_bundle_unknown_analyzer_returns_empty(tmp_path: Path) -> None:
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
     from autofix.crawl.bundles import Bundle
 
     src = tmp_path / "x.py"
@@ -87,7 +87,7 @@ def test_analyze_bundle_unknown_analyzer_returns_empty(tmp_path: Path) -> None:
 def test_analyze_bundle_swallows_parse_failure_per_file(tmp_path: Path) -> None:
     """One bad file in a multi-file bundle doesn't abort the cycle —
     other files still contribute findings."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
     from autofix.crawl.bundles import Bundle
 
     good = tmp_path / "good.py"
@@ -130,7 +130,7 @@ def _fake_findings(n: int = 1) -> list:
 def test_dispatch_invokes_fix_core_with_preloaded_findings(tmp_path: Path) -> None:
     """Repair dispatch passes the bundle's findings to ``_run_fix_core``
     via the preloaded findings path — no full-repo re-scan."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
@@ -175,7 +175,7 @@ def test_dispatch_invokes_fix_core_with_preloaded_findings(tmp_path: Path) -> No
 
 
 def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
@@ -204,7 +204,7 @@ def test_dispatch_commit_mode_uses_branch_post_fix(tmp_path: Path) -> None:
 
 def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
     """No ``llm:*`` in analyzer set → ``auto_llm=False`` to ``_run_fix_core``."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
@@ -237,7 +237,7 @@ def test_dispatch_no_llm_in_analyzers_disables_auto_llm(tmp_path: Path) -> None:
 def test_dispatch_swallows_fix_core_exception(tmp_path: Path) -> None:
     """If ``_run_fix_core`` raises, the dispatcher logs + returns 1
     so the crawl loop continues to the next bundle."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])
@@ -260,7 +260,7 @@ def test_dispatch_swallows_fix_core_exception(tmp_path: Path) -> None:
 
 def test_dispatch_skips_when_no_findings(tmp_path: Path) -> None:
     """Empty findings → no fix-core call, no post-fix call, return 0."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
     from autofix.crawl.bundles import Bundle
 
     _git_init_with_files(tmp_path, ["a.py"])

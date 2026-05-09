@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from unittest import mock
 
-import pytest
 
 from autofix.telemetry.correlation import set_scan_id
 from tests.autofix.analyzers.llm_judgment.conftest import FakeJudgmentAnalyzer

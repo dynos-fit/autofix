@@ -14,7 +14,6 @@ and autofix/cli/watch_command.py lands.
 
 from __future__ import annotations
 
-import importlib
 import sys
 
 import pytest

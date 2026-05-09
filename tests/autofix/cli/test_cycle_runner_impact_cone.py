@@ -65,13 +65,13 @@ def _make_staged_change(repo: Path, filename: str = "changed.py") -> Path:
 
 def test_detect_working_tree_diff_importable() -> None:
     """_detect_working_tree_diff must be importable from driver."""
-    from autofix.crawl.driver import _detect_working_tree_diff  # noqa: F401
+    from autofix.cli.cycle_runner import _detect_working_tree_diff  # noqa: F401
     assert callable(_detect_working_tree_diff)
 
 
 def test_detect_working_tree_diff_returns_list(tmp_path: Path) -> None:
     """AC 17: _detect_working_tree_diff returns a list."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     # Non-git directory — should return [] without raising
     result = _detect_working_tree_diff(tmp_path)
@@ -80,7 +80,7 @@ def test_detect_working_tree_diff_returns_list(tmp_path: Path) -> None:
 
 def test_detect_working_tree_diff_empty_for_clean_repo(tmp_path: Path) -> None:
     """AC 17: returns [] for a clean git repo."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     result = _detect_working_tree_diff(repo)
@@ -89,7 +89,7 @@ def test_detect_working_tree_diff_empty_for_clean_repo(tmp_path: Path) -> None:
 
 def test_detect_working_tree_diff_returns_staged_file(tmp_path: Path) -> None:
     """AC 17: returns staged file when it exists in the diff."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     _make_staged_change(repo, "feature.py")
@@ -104,7 +104,7 @@ def test_detect_working_tree_diff_returns_staged_file(tmp_path: Path) -> None:
 
 def test_detect_working_tree_diff_returns_unstaged_modified(tmp_path: Path) -> None:
     """AC 17: returns unstaged tracked changes (modified but not staged)."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     # Modify the initially committed file (unstaged change to tracked file)
@@ -118,7 +118,7 @@ def test_detect_working_tree_diff_returns_unstaged_modified(tmp_path: Path) -> N
 
 def test_detect_working_tree_diff_excludes_untracked(tmp_path: Path) -> None:
     """AC 17: untracked files are excluded from the diff."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     # Create untracked file (do NOT git add it)
@@ -132,7 +132,7 @@ def test_detect_working_tree_diff_excludes_untracked(tmp_path: Path) -> None:
 
 def test_detect_working_tree_diff_no_commits_returns_empty(tmp_path: Path) -> None:
     """AC 17: repo with no commits returns [] instead of raising."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     # Init git repo but make no commits
     _git(["init"], tmp_path)
@@ -151,7 +151,7 @@ def test_detect_working_tree_diff_no_commits_returns_empty(tmp_path: Path) -> No
 
 def test_detect_working_tree_diff_non_git_dir_returns_empty(tmp_path: Path) -> None:
     """AC 17: non-git directory returns []."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     result = _detect_working_tree_diff(tmp_path)
     assert result == []
@@ -159,7 +159,7 @@ def test_detect_working_tree_diff_non_git_dir_returns_empty(tmp_path: Path) -> N
 
 def test_detect_working_tree_diff_handles_rename(tmp_path: Path) -> None:
     """AC 17: renamed entries use the right side of '->'."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
 
@@ -186,13 +186,13 @@ def test_detect_working_tree_diff_handles_rename(tmp_path: Path) -> None:
 
 def test_pick_impact_cone_batch_importable() -> None:
     """_pick_impact_cone_batch must be importable from driver."""
-    from autofix.crawl.driver import _pick_impact_cone_batch  # noqa: F401
+    from autofix.cli.cycle_runner import _pick_impact_cone_batch  # noqa: F401
     assert callable(_pick_impact_cone_batch)
 
 
 def test_impact_cone_one_staged_change_bundle_count_equals_1(tmp_path: Path) -> None:
     """AC 19a: one staged change → bundle_count == 1 and changed file is seed."""
-    from autofix.crawl.driver import _pick_impact_cone_batch
+    from autofix.cli.cycle_runner import _pick_impact_cone_batch
     from autofix.crawl.ledger import Ledger
 
     repo = _init_git_repo(tmp_path)
@@ -225,7 +225,7 @@ def test_impact_cone_one_staged_change_bundle_count_equals_1(tmp_path: Path) -> 
 
 def test_impact_cone_seed_is_changed_file(tmp_path: Path) -> None:
     """AC 19a: the staged file appears as the bundle's seed_path."""
-    from autofix.crawl.driver import _pick_impact_cone_batch
+    from autofix.cli.cycle_runner import _pick_impact_cone_batch
     from autofix.crawl.ledger import Ledger
 
     repo = _init_git_repo(tmp_path)
@@ -257,7 +257,7 @@ def test_impact_cone_seed_is_changed_file(tmp_path: Path) -> None:
 
 def test_detect_working_tree_diff_returns_absolute_paths(tmp_path: Path) -> None:
     """AC 17: returned paths should be absolute (rooted in the repo)."""
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     _make_staged_change(repo, "feature.py")
@@ -273,7 +273,7 @@ def test_detect_working_tree_diff_returns_absolute_paths(tmp_path: Path) -> None
 
 def test_empty_diff_falls_through_to_pick_next_batch(tmp_path: Path) -> None:
     """AC 19b: empty diff → _run_crawl_once_body calls pick_next_batch, not impact cone."""
-    from autofix.crawl.driver import _detect_working_tree_diff, _pick_impact_cone_batch
+    from autofix.cli.cycle_runner import _detect_working_tree_diff, _pick_impact_cone_batch
     from autofix.crawl.ledger import Ledger
 
     repo = _init_git_repo(tmp_path)
@@ -315,7 +315,7 @@ def test_impact_cone_flag_off_uses_normal_picker(tmp_path: Path) -> None:
 
     # Verify _pick_impact_cone_batch with non-empty files still works
     # (ensuring the function itself is not the gating mechanism — the driver flag is)
-    from autofix.crawl.driver import _detect_working_tree_diff
+    from autofix.cli.cycle_runner import _detect_working_tree_diff
 
     repo = _init_git_repo(tmp_path)
     _make_staged_change(repo, "changed.py")

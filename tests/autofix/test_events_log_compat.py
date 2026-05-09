@@ -14,7 +14,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
 
 
 def test_append_preserves_existing_file_prefix_bytes(tmp_path: Path) -> None:

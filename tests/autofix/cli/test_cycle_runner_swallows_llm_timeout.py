@@ -13,7 +13,7 @@ Two-layer fix:
    ``subprocess.TimeoutExpired`` and ``OSError`` from the
    scheduler invoke, logs an ``AnalyzerTimeout`` event once per
    scan, and returns an empty iter.
-2. :mod:`autofix.crawl.driver._analyze_bundle` — last-resort
+2. :mod:`autofix.cli.cycle_runner._analyze_bundle` — last-resort
    safety net catches any ``Exception`` from the analyzer
    callable, logs to stderr, and continues to the next file.
    ``KeyboardInterrupt`` / ``SystemExit`` still propagate.
@@ -43,7 +43,7 @@ def _make_bundle(tmp_path: Path) -> object:
 
 def test_analyze_bundle_swallows_timeout_expired(tmp_path: Path) -> None:
     """A registry callable that raises TimeoutExpired must not propagate."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
 
     bundle = _make_bundle(tmp_path)
 
@@ -65,7 +65,7 @@ def test_analyze_bundle_swallows_timeout_expired(tmp_path: Path) -> None:
 
 def test_analyze_bundle_swallows_runtime_error(tmp_path: Path) -> None:
     """Any other unexpected analyzer exception is also swallowed."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
 
     bundle = _make_bundle(tmp_path)
 
@@ -86,7 +86,7 @@ def test_analyze_bundle_swallows_runtime_error(tmp_path: Path) -> None:
 
 def test_analyze_bundle_keyboard_interrupt_propagates(tmp_path: Path) -> None:
     """KeyboardInterrupt must escape the safety-net so Ctrl-C still works."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
 
     bundle = _make_bundle(tmp_path)
 
@@ -106,7 +106,7 @@ def test_analyze_bundle_keyboard_interrupt_propagates(tmp_path: Path) -> None:
 
 def test_analyze_bundle_system_exit_propagates(tmp_path: Path) -> None:
     """SystemExit also escapes the safety-net (``sys.exit(N)`` must work)."""
-    from autofix.crawl.driver import _analyze_bundle
+    from autofix.cli.cycle_runner import _analyze_bundle
 
     bundle = _make_bundle(tmp_path)
 

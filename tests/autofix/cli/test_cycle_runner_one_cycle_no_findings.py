@@ -21,14 +21,14 @@ def _make_repo(tmp_path: Path, files: list[str]) -> Path:
 
 def test_run_crawl_once_empty_ledger_no_findings(tmp_path: Path) -> None:
     """Cycle on a fresh repo with no findings: returns 0, ledger gains rows."""
-    from autofix.crawl.driver import run_crawl_once
+    from autofix.cli.cycle_runner import run_crawl_once
 
     _make_repo(tmp_path, ["a.py", "b.py"])
 
     # Stub the analyzer-dispatch path so this test doesn't hit the real
     # LLM. The driver should still produce ledger rows for each
     # (bundle, analyzer) it picked.
-    with patch("autofix.crawl.driver._analyze_bundle") as mock_analyze:
+    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze:
         mock_analyze.return_value = []  # no findings
 
         rc = run_crawl_once(
@@ -47,11 +47,11 @@ def test_run_crawl_once_empty_ledger_no_findings(tmp_path: Path) -> None:
 def test_run_crawl_once_records_one_row_per_pair(tmp_path: Path) -> None:
     """For each (bundle, analyzer) emitted by the picker, the driver
     records exactly one ledger row."""
-    from autofix.crawl.driver import run_crawl_once
+    from autofix.cli.cycle_runner import run_crawl_once
 
     _make_repo(tmp_path, ["a.py", "b.py", "c.py"])
 
-    with patch("autofix.crawl.driver._analyze_bundle") as mock_analyze:
+    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze:
         mock_analyze.return_value = []
         rc = run_crawl_once(
             root=tmp_path,
@@ -69,12 +69,12 @@ def test_run_crawl_once_records_one_row_per_pair(tmp_path: Path) -> None:
 
 def test_preview_mode_does_not_touch_working_tree(tmp_path: Path) -> None:
     """Mode=preview must NOT invoke the apply / verify pipeline."""
-    from autofix.crawl.driver import run_crawl_once
+    from autofix.cli.cycle_runner import run_crawl_once
 
     _make_repo(tmp_path, ["a.py"])
 
-    with patch("autofix.crawl.driver._analyze_bundle") as mock_analyze, \
-         patch("autofix.crawl.driver._dispatch_repair_workflow") as mock_repair:
+    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze, \
+         patch("autofix.cli.cycle_runner._dispatch_repair_workflow") as mock_repair:
         # Even with findings present, preview mode must not call repair.
         mock_analyze.return_value = [
             MagicMock(rule_id="llm:security:secret-leak", path="a.py")
@@ -91,7 +91,7 @@ def test_preview_mode_does_not_touch_working_tree(tmp_path: Path) -> None:
 
 def test_pr_mode_dispatches_repair_when_findings_present(tmp_path: Path) -> None:
     """Mode=pr with findings → repair workflow is invoked."""
-    from autofix.crawl.driver import run_crawl_once
+    from autofix.cli.cycle_runner import run_crawl_once
 
     _make_repo(tmp_path, ["a.py"])
 
@@ -100,8 +100,8 @@ def test_pr_mode_dispatches_repair_when_findings_present(tmp_path: Path) -> None
         path="a.py",
     )
 
-    with patch("autofix.crawl.driver._analyze_bundle") as mock_analyze, \
-         patch("autofix.crawl.driver._dispatch_repair_workflow") as mock_repair:
+    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze, \
+         patch("autofix.cli.cycle_runner._dispatch_repair_workflow") as mock_repair:
         mock_analyze.return_value = [finding]
         mock_repair.return_value = 0
         rc = run_crawl_once(

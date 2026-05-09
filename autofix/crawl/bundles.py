@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from autofix.crawl.contracts import CallGraphAdapter
 from autofix.crawl.crawl_constants import (
     CLASS_EXPANSION_PRIORITY,
     MAX_BUNDLE_BYTES,
@@ -112,7 +113,7 @@ def expand_bundle(
     *,
     seed_path: Path,
     root: Path,
-    call_graph: Any,
+    call_graph: CallGraphAdapter,
     ledger: Any | None = None,
     max_hops: int = MAX_BUNDLE_HOPS,
     max_files: int = MAX_BUNDLE_FILES,
@@ -227,7 +228,7 @@ def _expand_bundle_class_aware(
     *,
     seed_path: Path,
     root: Path,
-    call_graph: Any,
+    call_graph: CallGraphAdapter,
     ledger: Any | None,
     max_files: int,
     max_bytes: int,

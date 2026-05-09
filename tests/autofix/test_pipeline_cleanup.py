@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -57,7 +56,6 @@ def test_decorator_clears_all_three_adapters_on_success(tiny_repo: Path) -> None
     """@_with_per_scan_cleanup clears ruff, mypy, and llm_judgment memos on success."""
     from autofix.analyzers.linter_passthrough import ruff, mypy
     from autofix.analyzers.llm_judgment._base import (
-        LLMJudgmentAnalyzer,
         _PER_SCAN_EVENTS,
     )
     from autofix.events.schema import ChangeSet
@@ -89,7 +87,6 @@ def test_decorator_clears_all_three_adapters_on_exception(
     """@_with_per_scan_cleanup clears memos even when run_scan raises an exception."""
     from autofix.analyzers.linter_passthrough import ruff, mypy
     from autofix.analyzers.llm_judgment._base import (
-        LLMJudgmentAnalyzer,
         _PER_SCAN_EVENTS,
     )
     from autofix.events.schema import ChangeSet

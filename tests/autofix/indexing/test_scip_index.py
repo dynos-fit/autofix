@@ -308,7 +308,6 @@ def test_reverse_refs_preserves_untouched_entries(tmp_path: Path) -> None:
     """AC #10: an incremental refresh rebuilds reverse_refs for touched
     symbols and keeps entries for untouched symbols verbatim."""
 
-    from autofix.indexing.scip_index import SCIPIndex
     from autofix.invalidation.call_graph import CallGraph
 
     # Build a three-file repo so an incremental touch on ONE file leaves
@@ -578,7 +577,6 @@ def test_apply_incremental_symbol_keyed_refresh(tmp_path: Path) -> None:
     identical content_hash + shard path).
     """
 
-    from autofix.indexing.scip_index import SCIPIndex
     from autofix.invalidation.call_graph import CallGraph
 
     # Four files: hub + two callers + one unrelated orphan.

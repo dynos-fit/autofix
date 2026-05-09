@@ -10,10 +10,8 @@ These tests MUST FAIL until task-20260506-003 lands.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
 
 
 def test_migration_module_does_not_import_legacy_state() -> None:

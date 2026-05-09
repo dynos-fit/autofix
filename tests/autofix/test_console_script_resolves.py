@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import io
 import re
-import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -23,9 +23,7 @@ Covers ACs 1, 2, 3, 4, 5, 6, 7, 14, 15, 22:
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path

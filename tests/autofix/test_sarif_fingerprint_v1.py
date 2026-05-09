@@ -20,7 +20,6 @@ import hashlib
 import re
 from types import SimpleNamespace
 
-import pytest
 
 from autofix.evidence.fingerprints import canonical_json_bytes
 from autofix.telemetry.sarif import (
