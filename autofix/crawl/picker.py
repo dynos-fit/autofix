@@ -2,7 +2,7 @@
 
 :func:`pick_next_batch` is the cycle's selection algorithm:
 
-1. Enumerate candidate seed paths via ``git_log.list_python_files()``.
+1. Enumerate candidate seed paths via ``git_log.list_candidate_files()``.
 2. (Optional) drop seeds matched by ``autofixignore`` before any
    relevance work — saves cycles when the picker would otherwise
    compute scores for ignored files.
@@ -80,8 +80,10 @@ def pick_next_batch(
     if not analyzers or bundles_per_cycle <= 0:
         return []
 
-    # Candidate seed paths from git (or rglob fallback).
-    raw_paths = list(git_log.list_python_files())
+    # Candidate seed paths from git (or rglob fallback). The
+    # adapter decides which file types qualify — the crawler is
+    # language-agnostic at this layer.
+    raw_paths = list(git_log.list_candidate_files())
     seed_candidates: list[Path] = [
         Path(p) if not isinstance(p, Path) else p
         for p in raw_paths

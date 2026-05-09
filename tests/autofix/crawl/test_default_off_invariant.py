@@ -69,8 +69,8 @@ def _make_git_log(files: list[Path]) -> MagicMock:
 
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.import_fanout.side_effect = _fanout
-    g.list_python_files.side_effect = _list_files
+    g.incoming_dependency_count.side_effect = _fanout
+    g.list_candidate_files.side_effect = _list_files
     return g
 
 
@@ -170,7 +170,7 @@ class TestDefaultOffInvariant:
         git_log = MagicMock()
         git_log.days_since_last_commit.side_effect = lambda p: data.get(Path(p).name, {}).get("days", 999)
         git_log.commits_in_last_30_days.side_effect = lambda p: data.get(Path(p).name, {}).get("churn", 0)
-        git_log.import_fanout.side_effect = lambda p: data.get(Path(p).name, {}).get("fanout", 0)
+        git_log.incoming_dependency_count.side_effect = lambda p: data.get(Path(p).name, {}).get("fanout", 0)
 
         path = Path("alpha.py")
         root = tmp_path

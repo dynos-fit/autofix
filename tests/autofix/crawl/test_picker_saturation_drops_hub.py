@@ -47,10 +47,10 @@ def test_saturated_hub_dropped_from_neighbors(tmp_path: Path) -> None:
     git_log.commits_in_last_30_days.side_effect = (
         lambda p: relevances.get(Path(p).name, {}).get("churn", 0)
     )
-    git_log.import_fanout.side_effect = (
+    git_log.incoming_dependency_count.side_effect = (
         lambda p: relevances.get(Path(p).name, {}).get("fanout", 0)
     )
-    git_log.list_python_files.return_value = ["seed.py", "hub.py", "x.py"]
+    git_log.list_candidate_files.return_value = ["seed.py", "hub.py", "x.py"]
 
     # call graph: seed.py imports hub.py and x.py.
     cg = MagicMock()
@@ -105,10 +105,10 @@ def test_saturated_hub_can_still_be_seed(tmp_path: Path) -> None:
     git_log.commits_in_last_30_days.side_effect = (
         lambda p: 50 if Path(p).name == "hub.py" else 0
     )
-    git_log.import_fanout.side_effect = (
+    git_log.incoming_dependency_count.side_effect = (
         lambda p: 100 if Path(p).name == "hub.py" else 1
     )
-    git_log.list_python_files.return_value = ["hub.py", "x.py"]
+    git_log.list_candidate_files.return_value = ["hub.py", "x.py"]
 
     cg = MagicMock()
     cg.neighbors_of.return_value = []

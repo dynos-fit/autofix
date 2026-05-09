@@ -164,8 +164,8 @@ def relevance(
       committed today get ~1.0; files untouched 30 days get ~0.01.
     * ``churn = min(1.0, commits_in_last_30_days / 10)`` —
       capped at 10 commits / month.
-    * ``centrality = min(1.0, import_fanout / 10)`` — capped at
-      10 inbound imports.
+    * ``centrality = min(1.0, incoming_dependency_count / 10)`` —
+      capped at 10 inbound dependency edges.
 
     When ``git_log.is_empty()`` is True (non-git tree), recency
     and churn fall back to ``0.5`` and centrality also falls back
@@ -203,7 +203,7 @@ def relevance(
     else:
         churn = min(1.0, cnt / CHURN_CAP_COMMITS)
 
-    fanout = git_log.import_fanout(path)
+    fanout = git_log.incoming_dependency_count(path)
     if fanout is None:
         centrality = NON_GIT_FALLBACK_SCORE
     else:

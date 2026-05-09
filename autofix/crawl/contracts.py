@@ -48,10 +48,17 @@ class GitLogAdapter(Protocol):
     ``git_log`` argument to ``pick_next_batch``. The picker uses
     them to score candidate seed paths via ``relevance(...)``:
 
-    * ``list_python_files`` — enumerate scan candidates.
+    * ``list_candidate_files`` — enumerate scan candidates. The
+      adapter decides which file types qualify; the crawler is
+      language-agnostic. Python-only consumers ship an adapter
+      that filters to ``*.py``; multi-language consumers return
+      every source path the picker should consider.
     * ``days_since_last_commit`` — recency subscore (50% weight).
     * ``commits_in_last_30_days`` — churn subscore (30% weight).
-    * ``import_fanout`` — centrality subscore (20% weight).
+    * ``incoming_dependency_count`` — centrality subscore
+      (20% weight). The adapter decides what counts as a
+      dependency edge (Python imports, JS ``require``/``import``,
+      build-graph edges, etc).
 
     Implementations may back these by ``git`` subprocess calls,
     GitHub API calls, an LSP server, or any other source — the
@@ -59,13 +66,13 @@ class GitLogAdapter(Protocol):
     ``stat().st_mtime``) is acceptable for non-git trees.
     """
 
-    def list_python_files(self) -> list[str]: ...
+    def list_candidate_files(self) -> list[str]: ...
 
     def days_since_last_commit(self, path: str) -> int: ...
 
     def commits_in_last_30_days(self, path: str) -> int: ...
 
-    def import_fanout(self, path: str) -> int: ...
+    def incoming_dependency_count(self, path: str) -> int: ...
 
 
 @runtime_checkable

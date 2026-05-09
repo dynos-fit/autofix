@@ -14,7 +14,7 @@ from autofix.crawl import CallGraphAdapter, GitLogAdapter
 class _GitLogConformingMock:
     """Minimum object that satisfies the GitLogAdapter Protocol."""
 
-    def list_python_files(self) -> list[str]:
+    def list_candidate_files(self) -> list[str]:
         return []
 
     def days_since_last_commit(self, path: str) -> int:
@@ -23,14 +23,14 @@ class _GitLogConformingMock:
     def commits_in_last_30_days(self, path: str) -> int:
         return 0
 
-    def import_fanout(self, path: str) -> int:
+    def incoming_dependency_count(self, path: str) -> int:
         return 0
 
 
 class _GitLogMissingOneMethod:
-    """Conforming except for ``import_fanout`` — should fail isinstance."""
+    """Conforming except for ``incoming_dependency_count`` — should fail isinstance."""
 
-    def list_python_files(self) -> list[str]:
+    def list_candidate_files(self) -> list[str]:
         return []
 
     def days_since_last_commit(self, path: str) -> int:

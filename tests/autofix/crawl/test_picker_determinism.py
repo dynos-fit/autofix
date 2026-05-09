@@ -28,8 +28,8 @@ def _git_log_with_relevance(file_relevances: dict[str, dict]) -> MagicMock:
 
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.import_fanout.side_effect = _fanout
-    g.list_python_files.side_effect = _list_files
+    g.incoming_dependency_count.side_effect = _fanout
+    g.list_candidate_files.side_effect = _list_files
     return g
 
 
