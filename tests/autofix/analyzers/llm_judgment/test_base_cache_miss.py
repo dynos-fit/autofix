@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from unittest import mock
 
-import pytest
 
 from tests.autofix.analyzers.llm_judgment.conftest import FakeJudgmentAnalyzer
 

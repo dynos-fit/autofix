@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 
 def _run_analyzer(tmp_path: Path, src: str, filename: str = "sample.py"):

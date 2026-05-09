@@ -15,13 +15,11 @@ task-20260417-008 plus the AD-10 schema-version kill switch:
 
 from __future__ import annotations
 
-import builtins
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

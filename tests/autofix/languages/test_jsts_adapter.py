@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import inspect
 import sys
-from typing import Any
 
 import pytest
 

@@ -78,5 +78,5 @@ def test_no_legacy_namespace_in_source_or_docs() -> None:
         if ln and Path(ln).resolve() != Path(__file__).resolve()
     ]
     assert not lines, (
-        f"files still contain the old namespace:\n  " + "\n  ".join(lines)
+        "files still contain the old namespace:\n  " + "\n  ".join(lines)
     )

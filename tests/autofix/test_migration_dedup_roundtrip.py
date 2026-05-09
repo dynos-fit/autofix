@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from autofix.dedup.cascade import DedupCascade, DedupDecision
+from autofix.dedup.cascade import DedupCascade
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.schema import CandidateFinding
 from autofix.ranking.priority_scorer import PriorityScorer

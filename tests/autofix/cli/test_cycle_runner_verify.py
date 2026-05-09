@@ -35,7 +35,7 @@ def _git_init(tmp_path: Path, contents: dict[str, str]) -> Path:
 
 def test_verify_passes_when_all_files_compile(tmp_path: Path) -> None:
     """Modified files that compile cleanly → verify returns True."""
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     # Modify a.py to a still-valid form.
@@ -45,7 +45,7 @@ def test_verify_passes_when_all_files_compile(tmp_path: Path) -> None:
 
 def test_verify_fails_on_syntax_error(tmp_path: Path) -> None:
     """Modified file with a syntax error → verify returns False."""
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = (\n")  # truncated, syntax error
@@ -54,7 +54,7 @@ def test_verify_fails_on_syntax_error(tmp_path: Path) -> None:
 
 def test_verify_passes_with_no_modifications(tmp_path: Path) -> None:
     """A clean working tree trivially passes verify."""
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     assert _verify_modified_files_compile(tmp_path, quiet=True) is True
@@ -63,7 +63,7 @@ def test_verify_passes_with_no_modifications(tmp_path: Path) -> None:
 def test_verify_logs_failure_to_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = (\n")
@@ -76,7 +76,7 @@ def test_verify_logs_failure_to_stderr(
 def test_verify_quiet_suppresses_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = (\n")
@@ -86,7 +86,7 @@ def test_verify_quiet_suppresses_output(
 
 
 def test_revert_working_tree_clears_modifications(tmp_path: Path) -> None:
-    from autofix.crawl.driver import _revert_working_tree
+    from autofix.cli.cycle_runner import _revert_working_tree
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("CORRUPTED\n")
@@ -111,7 +111,7 @@ def _fake_finding() -> object:
 def test_dispatcher_skips_post_fix_when_verify_fails(tmp_path: Path) -> None:
     """``_run_fix_core`` applied a fix; verify catches it as broken;
     dispatcher reverts and does NOT call post-fix."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     # Simulate a "bad apply" — _run_fix_core returns success but
@@ -144,7 +144,7 @@ def test_dispatcher_skips_post_fix_when_verify_fails(tmp_path: Path) -> None:
 
 def test_dispatcher_proceeds_to_post_fix_when_verify_passes(tmp_path: Path) -> None:
     """Apply produces valid code → verify passes → post-fix called."""
-    from autofix.crawl.driver import _dispatch_repair_workflow
+    from autofix.cli.cycle_runner import _dispatch_repair_workflow
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
 

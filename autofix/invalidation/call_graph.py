@@ -227,6 +227,51 @@ class CallGraph:
             frontier = next_frontier
         return frozenset(result)
 
+    def callees_of(
+        self, symbol_ids: Iterable[str], max_depth: int
+    ) -> frozenset[str]:
+        """Symbols that ``symbol_ids`` transitively reach (downstream).
+
+        Mirror of :meth:`callers_of` walking ``_callees`` instead of
+        ``_callers``. Identical semantics:
+
+        * ``max_depth <= 0`` → empty frozenset.
+        * Seeds are **never** included in the return value.
+        * Cycles visited at most once.
+        * Bare ``str`` raises :class:`TypeError` (same per-character
+          shatter trap as ``callers_of``).
+
+        Used by the crawler's path-level adapter
+        (``autofix/crawl/_call_graph_adapter.py``) to compute
+        ``neighbors_of(path) = callers ∪ callees`` at one hop.
+        """
+
+        if isinstance(symbol_ids, str):
+            raise TypeError(
+                "symbol_ids must be an iterable of str, not str itself"
+            )
+        if max_depth <= 0:
+            return frozenset()
+
+        seeds = set(symbol_ids)
+        visited: set[str] = set(seeds)
+        frontier: set[str] = set(seeds)
+        result: set[str] = set()
+
+        for _ in range(max_depth):
+            next_frontier: set[str] = set()
+            for node in frontier:
+                for callee in self._callees.get(node, ()):
+                    if callee in visited:
+                        continue
+                    visited.add(callee)
+                    result.add(callee)
+                    next_frontier.add(callee)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return frozenset(result)
+
     def __getitem__(self, symbol_id: str) -> SymbolInfo:
         """Return the :class:`SymbolInfo` for ``symbol_id``.
 

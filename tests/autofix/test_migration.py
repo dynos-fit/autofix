@@ -10,7 +10,6 @@ autofix/migration.py is created by the production code segment.
 from __future__ import annotations
 
 import json
-import pytest
 
 # This import MUST raise ImportError until production code lands.
 from autofix.migration import load_legacy_findings  # noqa: E402

@@ -61,7 +61,7 @@ def test_unreachable_branch_after_return_fails_verify(tmp_path: Path) -> None:
     """Code after a no-conditional ``return`` is unreachable; VERIFY
     must fail.
     """
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "def f() -> int:\n    return 1\n"})
     # Modify a.py to add code after an unconditional return.
@@ -133,7 +133,7 @@ def test_reachable_code_passes_verify(tmp_path: Path) -> None:
     """A simple modification with all branches reachable still
     passes VERIFY.
     """
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = 2\ny = 3\n")
@@ -142,7 +142,7 @@ def test_reachable_code_passes_verify(tmp_path: Path) -> None:
 
 def test_clean_tree_passes_verify(tmp_path: Path) -> None:
     """No modifications → trivially verified."""
-    from autofix.crawl.driver import _verify_modified_files_compile
+    from autofix.cli.cycle_runner import _verify_modified_files_compile
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     assert _verify_modified_files_compile(tmp_path, quiet=True) is True
@@ -157,7 +157,7 @@ def test_mypy_unavailable_falls_through_softly(
     runtime dep of the crawl pipeline.
     """
     import shutil as shutil_mod
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = 2\n")
@@ -177,7 +177,7 @@ def test_mypy_timeout_falls_through_softly(
     returns True. The dead-branch gate is best-effort, not load-bearing.
     """
     import subprocess as subprocess_mod
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path, {"a.py": "x = 1\n"})
     (tmp_path / "a.py").write_text("x = 2\n")

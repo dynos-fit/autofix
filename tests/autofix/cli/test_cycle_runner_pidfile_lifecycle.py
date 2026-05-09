@@ -37,7 +37,7 @@ def _git_init(tmp_path: Path) -> None:
 
 def test_run_crawl_once_writes_pidfile(tmp_path: Path) -> None:
     """During ``run_crawl_once``, the pidfile exists with our PID."""
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path)
     pidfile = tmp_path / ".autofix" / "crawl.pid"
@@ -50,7 +50,7 @@ def test_run_crawl_once_writes_pidfile(tmp_path: Path) -> None:
         return 0
 
     with patch(
-        "autofix.crawl.driver._run_crawl_once_body",
+        "autofix.cli.cycle_runner._run_crawl_once_body",
         side_effect=_capture_pid_during_cycle,
     ):
         rc = driver.run_crawl_once(
@@ -64,12 +64,12 @@ def test_run_crawl_once_writes_pidfile(tmp_path: Path) -> None:
 
 def test_run_crawl_once_removes_pidfile_on_clean_exit(tmp_path: Path) -> None:
     """After ``run_crawl_once`` exits cleanly, the pidfile is gone."""
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path)
     pidfile = tmp_path / ".autofix" / "crawl.pid"
 
-    with patch("autofix.crawl.driver._run_crawl_once_body", return_value=0):
+    with patch("autofix.cli.cycle_runner._run_crawl_once_body", return_value=0):
         driver.run_crawl_once(
             root=tmp_path, mode="preview", budget="cheap", quiet=True,
         )
@@ -78,13 +78,13 @@ def test_run_crawl_once_removes_pidfile_on_clean_exit(tmp_path: Path) -> None:
 
 def test_run_crawl_once_removes_pidfile_on_exception(tmp_path: Path) -> None:
     """Exception inside the cycle still cleans up the pidfile."""
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path)
     pidfile = tmp_path / ".autofix" / "crawl.pid"
 
     with patch(
-        "autofix.crawl.driver._run_crawl_once_body",
+        "autofix.cli.cycle_runner._run_crawl_once_body",
         side_effect=RuntimeError("boom"),
     ):
         with pytest.raises(RuntimeError):
@@ -96,7 +96,7 @@ def test_run_crawl_once_removes_pidfile_on_exception(tmp_path: Path) -> None:
 
 def test_continuous_loop_still_writes_pidfile(tmp_path: Path) -> None:
     """``run_crawl_continuously`` keeps its pidfile semantics intact."""
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
 
     _git_init(tmp_path)
     pidfile = tmp_path / ".autofix" / "crawl.pid"
@@ -107,9 +107,9 @@ def test_continuous_loop_still_writes_pidfile(tmp_path: Path) -> None:
         raise KeyboardInterrupt
 
     with patch(
-        "autofix.crawl.driver._run_crawl_once_body",
+        "autofix.cli.cycle_runner._run_crawl_once_body",
         side_effect=_check_then_quit,
-    ), patch("autofix.crawl.driver._sleep", lambda _: None):
+    ), patch("autofix.cli.cycle_runner._sleep", lambda _: None):
         rc = driver.run_crawl_continuously(
             root=tmp_path, mode="preview", budget="cheap",
             interval_seconds=1, quiet=True,

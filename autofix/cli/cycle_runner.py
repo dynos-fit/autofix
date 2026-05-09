@@ -643,19 +643,47 @@ def _build_git_log(root: Path) -> Any:
     return _GitLogAdapter(root)
 
 
-def _build_call_graph(root: Path) -> Any:
-    """Build a call-graph adapter exposing ``neighbors_of(path) ->
-    list[Path]``.
+class _NoNeighbors:
+    """Fall-soft adapter — returns empty neighbors for any path.
 
-    Stub for v1: returns no neighbors for any path. The bundle
-    expansion still works (singletons bundles), and ARCH-013/014
-    LLM analyzers still get cross-file context via the real
-    ``invalidation.planner.plan`` once it's wired in a follow-up.
+    Used by ``_build_call_graph`` when ``CallGraph.build_from_root``
+    fails (missing SCIP shards, IO errors, etc.). The bundle
+    expander degrades to singleton bundles in this mode — the
+    crawler keeps running, but cross-file value is suspended until
+    the indexer is repaired.
     """
-    class _NoNeighbors:
-        def neighbors_of(self, path: Path) -> list[Path]:
-            return []
-    return _NoNeighbors()
+
+    def neighbors_of(self, path: Path) -> list[Path]:
+        return []
+
+
+def _build_call_graph(root: Path) -> Any:
+    """Build a path-level call-graph adapter for the bundle expander.
+
+    Wraps the symbol-level
+    :class:`autofix.invalidation.call_graph.CallGraph` (built from
+    the repo root) with the path-level
+    :class:`autofix.crawl._call_graph_adapter.CallGraphPathAdapter`.
+
+    Fall-soft on any build error: returns a :class:`_NoNeighbors`
+    sentinel so a broken indexer (missing SCIP shards, IO failure,
+    malformed cache) doesn't abort the cycle. The fallback
+    degrades bundles to singletons but keeps the daemon alive.
+    Build-failure modes seen in the wild include: ImportError if
+    SCIP isn't installed, OSError for filesystem issues, and
+    ValueError for malformed cache shards. ``except Exception``
+    is intentional — daemon survival outranks fault diagnosis at
+    this layer.
+    """
+    try:
+        from autofix.invalidation.call_graph import CallGraph
+
+        from autofix.crawl._call_graph_adapter import CallGraphPathAdapter
+
+        cg = CallGraph.build_from_root(root)
+    except Exception:
+        return _NoNeighbors()
+    return CallGraphPathAdapter(cg)
 
 
 def _should_use_impact_cone(root: Path) -> bool:

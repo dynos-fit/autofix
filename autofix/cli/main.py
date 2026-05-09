@@ -236,7 +236,7 @@ def _dispatch_logs(argv: list[str]) -> int:
 
 def _dispatch_bare_crawl(argv: list[str]) -> int:
     """Parse bare-``autofix`` flags and drive the continuous crawl."""
-    from autofix.crawl import driver
+    from autofix.cli import cycle_runner as driver
     from autofix.crawl.config import read_config, resolve_budget_tier
     from autofix.crawl.crawl_constants import (
         MODE_COMMIT,

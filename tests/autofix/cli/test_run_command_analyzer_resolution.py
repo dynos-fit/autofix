@@ -14,8 +14,6 @@ Two related behaviors:
 from __future__ import annotations
 
 import argparse
-import io
-import sys
 
 import pytest
 

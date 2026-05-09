@@ -10,9 +10,7 @@ import json
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
-from autofix.evidence.schema import CandidateFinding
 from tests.autofix.analyzers.llm_judgment.conftest import FakeJudgmentAnalyzer
 
 

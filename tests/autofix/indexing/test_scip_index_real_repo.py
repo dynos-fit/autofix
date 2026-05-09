@@ -92,7 +92,7 @@ def test_cold_build_autofix_standalone_under_30s(tmp_path: Path) -> None:
     elapsed = time.monotonic() - start
 
     assert graph.symbol_count > 0, (
-        f"real-repo build produced symbol_count=0; build is broken"
+        "real-repo build produced symbol_count=0; build is broken"
     )
 
     # AC #17 contributor: the cold build must persist the SCIP index

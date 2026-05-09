@@ -5,7 +5,6 @@ Populate _PER_SCAN_EVENTS, call _reset_per_scan_state(), assert empty.
 
 from __future__ import annotations
 
-import pytest
 
 from autofix.analyzers.llm_judgment._base import LLMJudgmentAnalyzer, _PER_SCAN_EVENTS
 
