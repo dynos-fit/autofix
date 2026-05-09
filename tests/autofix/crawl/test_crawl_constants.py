@@ -143,5 +143,18 @@ def test_all_exports() -> None:
         "MODE_PREVIEW",
         "MODE_COMMIT",
         "MODE_PR",
+        # task-20260508-002 additions: supplemental scoring + class-aware
+        # expansion + budget-hit-reason constants. These are consumed
+        # only by flagged code paths; default behavior is unchanged.
+        "ENTRYPOINT_BOOST",
+        "LOW_VALUE_CLASS_PENALTY",
+        "OVERSIZE_FILE_PENALTY",
+        "MAX_RELEVANT_FILE_BYTES",
+        "MAX_BUNDLE_HOPS_ENTRYPOINT",
+        "CLASS_EXPANSION_PRIORITY",
+        "BUDGET_HIT_REASON_FILES",
+        "BUDGET_HIT_REASON_BYTES",
+        "BUDGET_HIT_REASON_HOPS",
+        "BUDGET_HIT_REASON_NONE",
     }
     assert set(c.__all__) == expected

@@ -35,7 +35,15 @@ def _parse_iso_z(s: str) -> datetime:
 
 @dataclass(frozen=True)
 class LedgerRow:
-    """One bundle-scan record. Immutable on construction."""
+    """One bundle-scan record. Immutable on construction.
+
+    The first nine fields are the original (v1) schema. The remaining
+    four fields were appended in v2 — every one defaults to ``None``
+    so old-format JSONL rows parse without error and so writers that
+    don't yet populate them produce on-disk lines that are
+    byte-identical to the v1 format (``to_jsonl_line`` filters None
+    keys out).
+    """
 
     ts: str
     bundle_fingerprint: str
@@ -46,16 +54,31 @@ class LedgerRow:
     last_finding_count: int
     cache_hit: bool
     event_id: str
+    # --- v2 optional fields (appended; never reordered) -----------------
+    scan_count_for_seed: int | None = None
+    imported_by_count_at_scan: int | None = None
+    bundle_size_bytes: int | None = None
+    budget_hit_reason: str | None = None
 
     def to_jsonl_line(self) -> str:
-        """Render this row as one JSONL line (newline-terminated)."""
+        """Render this row as one JSONL line (newline-terminated).
+
+        Keys whose value is ``None`` are filtered out so v2 writers
+        producing rows with no v2 data emit lines indistinguishable
+        from v1 — protects backward-compat for any external reader
+        that wasn't updated for v2.
+        """
         d = asdict(self)
         # tuple → list for JSON.
         d["file_paths"] = list(self.file_paths)
+        d = {k: v for k, v in d.items() if v is not None}
         return json.dumps(d, separators=(",", ":")) + "\n"
 
     @classmethod
     def from_dict(cls, d: dict) -> "LedgerRow":
+        scan_count = d.get("scan_count_for_seed")
+        imported_by = d.get("imported_by_count_at_scan")
+        bundle_size = d.get("bundle_size_bytes")
         return cls(
             ts=d["ts"],
             bundle_fingerprint=d["bundle_fingerprint"],
@@ -66,6 +89,16 @@ class LedgerRow:
             last_finding_count=int(d["last_finding_count"]),
             cache_hit=bool(d["cache_hit"]),
             event_id=d["event_id"],
+            scan_count_for_seed=(
+                int(scan_count) if scan_count is not None else None
+            ),
+            imported_by_count_at_scan=(
+                int(imported_by) if imported_by is not None else None
+            ),
+            bundle_size_bytes=(
+                int(bundle_size) if bundle_size is not None else None
+            ),
+            budget_hit_reason=d.get("budget_hit_reason"),
         )
 
 

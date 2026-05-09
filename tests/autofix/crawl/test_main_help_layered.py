@@ -90,3 +90,30 @@ def test_subcommand_help_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     # scan has --root, --full-sweep — both should show up.
     assert "--root" in out
+
+
+def test_debug_crawl_flag_appears_in_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC 22: ``--debug-crawl`` flag must appear in the CLI help text.
+
+    The help output for the top-level parser (or the advanced help)
+    must include ``--debug-crawl`` so operators can discover it.
+    """
+    from autofix.cli.main import main
+
+    # Try the advanced help first (most likely location for a debug flag)
+    try:
+        main(["autofix", "--help-advanced"])
+    except SystemExit:
+        pass
+    out_advanced = capsys.readouterr().out
+
+    # Also try bare help
+    main(["autofix", "--help"])
+    out_basic = capsys.readouterr().out
+
+    combined = out_advanced + out_basic
+    assert "--debug-crawl" in combined, (
+        "--debug-crawl flag must appear in autofix help output (--help or --help-advanced)"
+    )

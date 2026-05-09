@@ -178,6 +178,8 @@ def _build_advanced_help() -> str:
         "  --root PATH            Repository to scan (required for crawl)\n"
         "  --apply                Apply fixes (overrides config mode=preview)\n"
         "  --once                 Run one cycle, then exit (no continuous loop)\n"
+        "  --quiet                Suppress per-cycle progress output\n"
+        "  --debug-crawl          Verbose per-cycle stats (overridden by --quiet)\n"
         "\n"
         "TOP-LEVEL SUBCOMMANDS:\n"
         "  autofix init           Set up autofix for this repo (one-time)\n"
@@ -246,6 +248,12 @@ def _dispatch_bare_crawl(argv: list[str]) -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--debug-crawl",
+        action="store_true",
+        dest="debug_crawl",
+        help="Emit verbose per-cycle stats to stderr (overridden by --quiet).",
+    )
     args = parser.parse_args(argv)
 
     if args.root is None:
@@ -264,13 +272,21 @@ def _dispatch_bare_crawl(argv: list[str]) -> int:
 
     interval = resolve_budget_tier(budget)["interval_seconds"]
 
+    # Forward debug_crawl ONLY when set, so legacy mocks that don't accept
+    # the kwarg keep working (the driver default is False either way).
+    extra: dict = {}
+    if args.debug_crawl:
+        extra["debug_crawl"] = True
+
     if args.once:
         return driver.run_crawl_once(
             root=args.root, mode=mode, budget=budget, quiet=args.quiet,
+            **extra,
         )
     return driver.run_crawl_continuously(
         root=args.root, mode=mode, budget=budget,
         interval_seconds=interval, quiet=args.quiet,
+        **extra,
     )
 
 

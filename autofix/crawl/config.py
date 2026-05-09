@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from autofix.crawl.crawl_constants import (
@@ -127,9 +128,109 @@ def resolve_budget_tier(budget_name: str) -> dict:
     return _BUDGET_NAME_TO_TIER[budget_name]
 
 
+@dataclass(frozen=True)
+class CrawlerFlags:
+    """Frozen feature-flag bundle for the optional crawl subsystems.
+
+    Every flag defaults to ``False`` so a vanilla ``.autofix/config.json``
+    (or no config file at all) preserves the pre-task-20260508-002
+    behavior bit-for-bit. ``read_crawler_flags`` is the sole IO entry
+    point — this class itself is import-pure with zero side effects.
+
+    Configuration keys consulted (all under the top-level ``crawler``
+    namespace; missing keys silently fall through to ``False``):
+
+    * ``crawler.scoring.entrypoint_boost``
+    * ``crawler.scoring.low_value_class_penalty``
+    * ``crawler.scoring.oversize_file_penalty``
+    * ``crawler.expansion.class_aware``
+    * ``crawler.modes.impact_cone``
+    """
+
+    entrypoint_boost: bool = False
+    low_value_class_penalty: bool = False
+    oversize_file_penalty: bool = False
+    class_aware: bool = False
+    impact_cone: bool = False
+
+
+def _coerce_bool(value: object) -> bool:
+    """Coerce a config value to ``bool``. Anything not strictly ``True``
+    or ``"true"`` (case-insensitive) is treated as ``False``.
+
+    The strict mapping prevents truthy strings like ``"false"`` from
+    silently flipping a flag on.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+def read_crawler_flags(root: Path) -> CrawlerFlags:
+    """Read ``.autofix/config.json`` and return a populated CrawlerFlags.
+
+    Default-off invariant: when the file is missing, malformed, or has
+    no ``crawler`` section, returns ``CrawlerFlags()`` (all False). All
+    file-IO and JSON-parse errors are swallowed and replaced with the
+    safe default — this function MUST NOT raise for any caller input.
+
+    Reads keys:
+        crawler.scoring.entrypoint_boost
+        crawler.scoring.low_value_class_penalty
+        crawler.scoring.oversize_file_penalty
+        crawler.expansion.class_aware
+        crawler.modes.impact_cone
+
+    Any missing key → False for that flag.
+    """
+    p = config_path(root)
+    if not p.is_file():
+        return CrawlerFlags()
+
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return CrawlerFlags()
+
+    if not isinstance(raw, dict):
+        return CrawlerFlags()
+
+    crawler = raw.get("crawler")
+    if not isinstance(crawler, dict):
+        return CrawlerFlags()
+
+    # Hoist into typed locals so mypy can narrow correctly. The
+    # previous ternary form (`x if isinstance(x, dict) else {}`)
+    # called `crawler.get()` twice and confused mypy's union-attr
+    # narrowing across the two calls — see audit-finding cq-001.
+    scoring_raw = crawler.get("scoring")
+    scoring: dict = scoring_raw if isinstance(scoring_raw, dict) else {}
+    expansion_raw = crawler.get("expansion")
+    expansion: dict = expansion_raw if isinstance(expansion_raw, dict) else {}
+    modes_raw = crawler.get("modes")
+    modes: dict = modes_raw if isinstance(modes_raw, dict) else {}
+
+    return CrawlerFlags(
+        entrypoint_boost=_coerce_bool(scoring.get("entrypoint_boost", False)),
+        low_value_class_penalty=_coerce_bool(
+            scoring.get("low_value_class_penalty", False)
+        ),
+        oversize_file_penalty=_coerce_bool(
+            scoring.get("oversize_file_penalty", False)
+        ),
+        class_aware=_coerce_bool(expansion.get("class_aware", False)),
+        impact_cone=_coerce_bool(modes.get("impact_cone", False)),
+    )
+
+
 __all__ = [
     "config_path",
     "read_config",
     "write_config",
     "resolve_budget_tier",
+    "CrawlerFlags",
+    "read_crawler_flags",
 ]
