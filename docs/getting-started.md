@@ -138,8 +138,16 @@ control:
 - `autofix scan/run/fix/watch` — one-shot or interactive primitives
 - `docs/crawling.md` — the architecture, the scoring math, and
   every tunable knob
+- `docs/crawling-tuning.md` — when to enable each optional flag
+  (entrypoint boost, low-value-class penalty, class-aware
+  expansion, impact-cone mode) and how to read the debug output
 - `.autofix/config.json` — the full set of operator-facing
-  configuration keys
+  configuration keys (including the optional `crawler.*` flags)
+- `.autofixignore` — drop a `.gitignore`-style file at the repo
+  root to further-exclude paths from the crawl
+- `autofix --debug-crawl --once` — emit per-cycle stats (top
+  seeds, score breakdowns, bundle stats) to stderr; useful when
+  tuning
 
 But for the dumb-user path you don't need any of that. `init`,
 `autofix`, `status`. Three commands. Done.

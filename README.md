@@ -166,6 +166,70 @@ saturation thresholds) live in
 [`autofix/crawl/crawl_constants.py`](autofix/crawl/crawl_constants.py).
 Edit the file directly if you need to tune them.
 
+### Optional crawler flags
+
+All off by default — flip any of these in `.autofix/config.json`
+under a top-level `crawler` key to enable. With every flag false
+(or the `crawler` section absent entirely) the crawl is byte-
+identical to the baseline.
+
+```json
+{
+  "version": 1,
+  "mode": "pr",
+  "budget": "balanced",
+  "crawler": {
+    "scoring": {
+      "entrypoint_boost": false,
+      "low_value_class_penalty": false,
+      "oversize_file_penalty": false
+    },
+    "expansion": {
+      "class_aware": false
+    },
+    "modes": {
+      "impact_cone": false
+    }
+  }
+}
+```
+
+| Flag | Effect when true |
+|---|---|
+| `scoring.entrypoint_boost` | Boost relevance for `__main__.py`, `manage.py`, `wsgi.py`, `cli.py`, `app.py`, console-script paths |
+| `scoring.low_value_class_penalty` | Downrank docs / lockfile / vendor / generated / build_output / cache / binary files |
+| `scoring.oversize_file_penalty` | Downrank files larger than `MAX_RELEVANT_FILE_BYTES` (200KB default) |
+| `expansion.class_aware` | Bundle expander prefers test→impl mapping; treats config seeds as 1-hop; expands entrypoints by 2 hops; drops junk-sink neighbors |
+| `modes.impact_cone` | When the working tree differs from `HEAD`, skip the relevance picker and seed bundles from the changed files instead |
+
+See [`docs/crawling-tuning.md`](docs/crawling-tuning.md) for
+per-flag tuning notes.
+
+### `.autofixignore`
+
+Optional `.autofixignore` at the repo root excludes paths from the
+crawl. Same syntax as `.gitignore` (uses `pathspec` under the hood).
+The file is additive on top of `.gitignore` — autofixignore can
+only further-exclude, never un-exclude something `.gitignore`
+already hid.
+
+```gitignore
+# .autofixignore
+generated/
+*.snapshot.json
+docs/draft-*
+```
+
+If the file is absent, behavior is unchanged.
+
+### Debug output
+
+`autofix --root . --once --debug-crawl` (or the same flag on
+`autofix start` / `autofix --root . [--apply]`) emits per-cycle
+stats on stderr — top seeds with score breakdowns, bundle byte
+distribution, budget-hit reasons, skip counts. Useful when
+tuning the optional flags above.
+
 ## Exit codes
 
 | Code | Meaning |
