@@ -892,10 +892,26 @@ def _make_event_id() -> str:
 
 
 class _GitLogAdapter:
-    """Minimal git_log adapter used by the picker."""
+    """git-subprocess-backed adapter used by the picker.
+
+    Recency and churn are computed via two batch ``git log`` calls
+    (one per cycle, lazily on first lookup) and cached as
+    ``{relpath: value}`` dicts. Per-file lookups are then O(1) dict
+    hits — no subprocess fan-out, no quadratic cycle cost.
+
+    Centrality (``incoming_dependency_count``) is still a stub
+    returning 0 — a real import-graph walker is a separate piece of
+    work. With the centrality term flat, relevance becomes
+    ``0.5 * recency + 0.3 * churn``, which is enough to actually
+    rank files instead of all-equal-0.5 (the prior degenerate state).
+    """
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
+        self._days_cache: dict[str, int] | None = None
+        self._churn_cache: dict[str, int] | None = None
+        self._days_loaded = False
+        self._churn_loaded = False
 
     def list_candidate_files(self) -> list[Path]:
         import subprocess
@@ -913,13 +929,88 @@ class _GitLogAdapter:
         except (subprocess.CalledProcessError, OSError):
             return [p for p in self._root.rglob("*.py") if p.is_file()]
 
+    def _path_key(self, path: Path | str) -> str:
+        p = Path(path) if not isinstance(path, Path) else path
+        if p.is_absolute():
+            try:
+                return str(p.relative_to(self._root))
+            except ValueError:
+                return str(p)
+        return str(p)
+
+    def _ensure_days_cache(self) -> None:
+        if self._days_loaded:
+            return
+        self._days_loaded = True
+        import subprocess
+        import time
+        cache: dict[str, int] = {}
+        try:
+            result = subprocess.run(
+                ["git", "log", "--name-only", "--pretty=format:__C__%ct"],
+                cwd=str(self._root), capture_output=True, text=True,
+                check=True, timeout=60,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            self._days_cache = None
+            return
+        now = int(time.time())
+        cur_ts: int | None = None
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("__C__"):
+                try:
+                    cur_ts = int(line[5:])
+                except ValueError:
+                    cur_ts = None
+                continue
+            if cur_ts is None or line in cache:
+                continue
+            cache[line] = max(0, (now - cur_ts) // 86400)
+        self._days_cache = cache
+
+    def _ensure_churn_cache(self) -> None:
+        if self._churn_loaded:
+            return
+        self._churn_loaded = True
+        import subprocess
+        cache: dict[str, int] = {}
+        try:
+            result = subprocess.run(
+                ["git", "log", "--since=30.days.ago", "--name-only", "--pretty=format:__C__"],
+                cwd=str(self._root), capture_output=True, text=True,
+                check=True, timeout=60,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            self._churn_cache = None
+            return
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line or line == "__C__":
+                continue
+            cache[line] = cache.get(line, 0) + 1
+        self._churn_cache = cache
+
     def days_since_last_commit(self, path: Path) -> int | None:
-        return 0
+        self._ensure_days_cache()
+        if self._days_cache is None:
+            return None
+        return self._days_cache.get(self._path_key(path))
 
     def commits_in_last_30_days(self, path: Path) -> int | None:
-        return 0
+        self._ensure_churn_cache()
+        if self._churn_cache is None:
+            return None
+        return self._churn_cache.get(self._path_key(path), 0)
 
     def incoming_dependency_count(self, path: Path) -> int | None:
+        # TODO: wire to a real import-graph walker (or reuse the
+        # CallGraph that's built each cycle for bundle expansion).
+        # Stubbed at 0 means centrality is flat across files — the
+        # 0.2 weight in `relevance` is effectively dead until this
+        # lands. Tracking issue: follow-up to PR #91.
         return 0
 
 
