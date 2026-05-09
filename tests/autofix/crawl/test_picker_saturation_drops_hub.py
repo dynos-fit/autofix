@@ -4,13 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
-
 def _seed_repo(tmp_path: Path, files: list[str]) -> Path:
     for f in files:
         (tmp_path / f).write_text(f"# file {f}\n")
     return tmp_path
-
 
 def test_saturated_hub_dropped_from_neighbors(tmp_path: Path) -> None:
     """A hub neighbor that has appeared in 3+ bundles in 24h must NOT
@@ -37,18 +34,15 @@ def test_saturated_hub_dropped_from_neighbors(tmp_path: Path) -> None:
     git_log = MagicMock()
     git_log.is_empty.return_value = False
     relevances = {
-        "seed.py": {"days": 0, "churn": 10, "fanout": 5},
-        "hub.py": {"days": 0, "churn": 0, "fanout": 99},
-        "x.py": {"days": 50, "churn": 0, "fanout": 1},
+        "seed.py": {"days": 0, "churn": 10},
+        "hub.py": {"days": 0, "churn": 0},
+        "x.py": {"days": 50, "churn": 0},
     }
     git_log.days_since_last_commit.side_effect = (
         lambda p: relevances.get(Path(p).name, {}).get("days", 999)
     )
     git_log.commits_in_last_30_days.side_effect = (
         lambda p: relevances.get(Path(p).name, {}).get("churn", 0)
-    )
-    git_log.incoming_dependency_count.side_effect = (
-        lambda p: relevances.get(Path(p).name, {}).get("fanout", 0)
     )
     git_log.list_candidate_files.return_value = ["seed.py", "hub.py", "x.py"]
 
@@ -74,7 +68,6 @@ def test_saturated_hub_dropped_from_neighbors(tmp_path: Path) -> None:
     assert "seed.py" in file_names
     assert "x.py" in file_names              # non-saturated neighbor kept
     assert "hub.py" not in file_names         # saturated neighbor dropped
-
 
 def test_saturated_hub_can_still_be_seed(tmp_path: Path) -> None:
     """Saturation only filters neighbors, not seeds. A hot hub still gets
@@ -104,9 +97,6 @@ def test_saturated_hub_can_still_be_seed(tmp_path: Path) -> None:
     )
     git_log.commits_in_last_30_days.side_effect = (
         lambda p: 50 if Path(p).name == "hub.py" else 0
-    )
-    git_log.incoming_dependency_count.side_effect = (
-        lambda p: 100 if Path(p).name == "hub.py" else 1
     )
     git_log.list_candidate_files.return_value = ["hub.py", "x.py"]
 

@@ -25,8 +25,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
-
 # ---------------------------------------------------------------------------
 # Mini-repo fixture helpers
 # ---------------------------------------------------------------------------
@@ -43,16 +41,15 @@ def _create_mini_repo(tmp_path: Path) -> tuple[Path, list[Path]]:
         files.append(f)
     return tmp_path, files
 
-
 def _make_git_log(files: list[Path]) -> MagicMock:
     """Build a deterministic git_log for the mini-repo files."""
     g = MagicMock()
     g.is_empty.return_value = False
 
     data = {
-        "alpha.py": {"days": 0, "churn": 5, "fanout": 3},
-        "beta.py":  {"days": 2, "churn": 3, "fanout": 1},
-        "gamma.py": {"days": 5, "churn": 1, "fanout": 0},
+        "alpha.py": {"days": 0, "churn": 5},
+        "beta.py":  {"days": 2, "churn": 3},
+        "gamma.py": {"days": 5, "churn": 1},
     }
 
     def _days(path):
@@ -61,25 +58,19 @@ def _make_git_log(files: list[Path]) -> MagicMock:
     def _churn(path):
         return data.get(Path(path).name, {}).get("churn", 0)
 
-    def _fanout(path):
-        return data.get(Path(path).name, {}).get("fanout", 0)
-
     def _list_files(*_a, **_k):
         return [f.name for f in files]
 
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.incoming_dependency_count.side_effect = _fanout
     g.list_candidate_files.side_effect = _list_files
     return g
-
 
 def _compute_expected_fingerprint(file_paths: list[Path]) -> str:
     """Compute the expected Bundle fingerprint for a list of paths."""
     canonical = sorted(str(p) for p in file_paths)
     payload = json.dumps(canonical, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
 
 # ---------------------------------------------------------------------------
 # AC 25 — default-off invariant: new kwargs at defaults → byte-identical output
@@ -166,11 +157,10 @@ class TestDefaultOffInvariant:
         """relevance with ScoringFlags() (all False) == relevance without new kwargs."""
         from autofix.crawl.score import relevance, ScoringFlags
 
-        data = {"alpha.py": {"days": 0, "churn": 5, "fanout": 3}}
+        data = {"alpha.py": {"days": 0, "churn": 5}}
         git_log = MagicMock()
         git_log.days_since_last_commit.side_effect = lambda p: data.get(Path(p).name, {}).get("days", 999)
         git_log.commits_in_last_30_days.side_effect = lambda p: data.get(Path(p).name, {}).get("churn", 0)
-        git_log.incoming_dependency_count.side_effect = lambda p: data.get(Path(p).name, {}).get("fanout", 0)
 
         path = Path("alpha.py")
         root = tmp_path
@@ -185,7 +175,6 @@ class TestDefaultOffInvariant:
         assert score_pre == score_post, (
             f"All-flags-off must be byte-identical: {score_pre!r} != {score_post!r}"
         )
-
 
 # ---------------------------------------------------------------------------
 # AC 25 — Pinned (bundle_fingerprint, seed_path) tuples for synthetic mini-repo
@@ -242,7 +231,7 @@ class TestPinnedFingerprintsForMiniRepo:
         assert bundle.fingerprint == expected_fp
 
     def test_picker_produces_alpha_as_top_seed(self, tmp_path: Path) -> None:
-        """Alpha.py has highest relevance (days=0, churn=5, fanout=3) → top seed."""
+        """Alpha.py has highest relevance (days=0, churn=5) → top seed."""
         from autofix.crawl.picker import pick_next_batch
         from autofix.crawl.ledger import Ledger
 
@@ -269,7 +258,6 @@ class TestPinnedFingerprintsForMiniRepo:
         assert bundle.seed_path.name == "alpha.py", (
             f"Expected alpha.py as top seed, got {bundle.seed_path.name!r}"
         )
-
 
 # ---------------------------------------------------------------------------
 # AC 27 — Structural: constants are imported, not inlined
@@ -343,7 +331,6 @@ class TestConstantsImported:
                 f"{cls!r} missing from CLASS_EXPANSION_PRIORITY"
             )
 
-
 # ---------------------------------------------------------------------------
 # AC 28 — Performance: classify_file is O(path-string operations), no I/O
 # ---------------------------------------------------------------------------
@@ -389,7 +376,6 @@ class TestClassifyFilePerformance:
         content = filler + "# DO NOT EDIT"
         result = is_generated(Path("fake.py"), content=content)
         assert result is False, "Must only inspect first 8KB"
-
 
 # ---------------------------------------------------------------------------
 # AC 29 — Security: is_generated reads only caller-supplied content
@@ -443,7 +429,6 @@ class TestSecurityInvariants:
         assert MAX_RELEVANT_FILE_BYTES > 0
         # Should be at least 1KB (100KB typical, 500KB per plan)
         assert MAX_RELEVANT_FILE_BYTES >= 1024
-
 
 # ---------------------------------------------------------------------------
 # AC 26 — Verify the 5 pinned existing test files still exist (structural)

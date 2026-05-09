@@ -33,21 +33,25 @@ MAX_BUNDLE_BYTES: int = 50_000
 
 
 # --- Relevance weights (must sum to 1.0) ----------------------------------
+#
+# Centrality (incoming-dependency count) was removed because it
+# required language-specific import-graph walking and broke the
+# "any-file" property — the crawler now hands ANY tracked file to
+# downstream analyzers regardless of language. Recency + churn are
+# both git-only signals and language-agnostic.
 
-RELEVANCE_WEIGHT_RECENCY: float = 0.5
-RELEVANCE_WEIGHT_CHURN: float = 0.3
-RELEVANCE_WEIGHT_CENTRALITY: float = 0.2
+RELEVANCE_WEIGHT_RECENCY: float = 0.6
+RELEVANCE_WEIGHT_CHURN: float = 0.4
 
 # Fallback score used when the git_log adapter reports an empty
 # repo (non-git tree, missing log) — each subscore defaults to this
 # value so the weighted sum lands at neutral.
 NON_GIT_FALLBACK_SCORE: float = 0.5
 
-# Tunables for the recency / churn / centrality subscores. Pinned
-# here so the no-magic-numbers grep test catches inline literals.
+# Tunables for the recency / churn subscores. Pinned here so the
+# no-magic-numbers grep test catches inline literals.
 RECENCY_DECAY_DAYS: float = 7.0
 CHURN_CAP_COMMITS: int = 10
-CENTRALITY_CAP_FANOUT: int = 10
 
 
 # --- Budget tiers ----------------------------------------------------------
@@ -151,11 +155,9 @@ __all__ = [
     "MAX_BUNDLE_BYTES",
     "RELEVANCE_WEIGHT_RECENCY",
     "RELEVANCE_WEIGHT_CHURN",
-    "RELEVANCE_WEIGHT_CENTRALITY",
     "NON_GIT_FALLBACK_SCORE",
     "RECENCY_DECAY_DAYS",
     "CHURN_CAP_COMMITS",
-    "CENTRALITY_CAP_FANOUT",
     "BUDGET_CHEAP",
     "BUDGET_BALANCED",
     "BUDGET_AGGRESSIVE",

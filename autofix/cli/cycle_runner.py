@@ -667,14 +667,14 @@ def _build_git_log(root: Path) -> Any:
     """Build a minimal git_log adapter shape used by the picker.
 
     A duck-typed object exposing ``list_candidate_files``,
-    ``days_since_last_commit``, ``commits_in_last_30_days``,
-    ``incoming_dependency_count``. Backed by ``git`` subprocess
-    calls; falls back to ``Path.rglob`` for non-git trees.
+    ``days_since_last_commit``, ``commits_in_last_30_days``.
+    Backed by ``git`` subprocess calls; falls back to ``Path.rglob``
+    for non-git trees.
 
-    Autofix scans Python today, so this adapter narrows
-    ``list_candidate_files`` to ``*.py``. The Python filter is
-    a consumer choice — the crawler subsystem is language-
-    agnostic at the contract layer.
+    The adapter is language-agnostic — ``list_candidate_files``
+    returns every tracked path. Downstream analyzers decide what to
+    do with each file (Python AST analyzers no-op on non-Python;
+    LLM analyzers handle whatever they're given).
     """
     return _GitLogAdapter(root)
 
@@ -899,11 +899,10 @@ class _GitLogAdapter:
     ``{relpath: value}`` dicts. Per-file lookups are then O(1) dict
     hits — no subprocess fan-out, no quadratic cycle cost.
 
-    Centrality (``incoming_dependency_count``) is still a stub
-    returning 0 — a real import-graph walker is a separate piece of
-    work. With the centrality term flat, relevance becomes
-    ``0.5 * recency + 0.3 * churn``, which is enough to actually
-    rank files instead of all-equal-0.5 (the prior degenerate state).
+    Language-agnostic: ``list_candidate_files`` returns every
+    tracked path. The crawler hands whatever it picks to the
+    analyzer pipeline; analyzers decide whether they can do
+    something with it.
     """
 
     def __init__(self, root: Path) -> None:
@@ -917,7 +916,7 @@ class _GitLogAdapter:
         import subprocess
         try:
             result = subprocess.run(
-                ["git", "ls-files", "*.py"],
+                ["git", "ls-files"],
                 cwd=str(self._root), capture_output=True, text=True,
                 check=True, timeout=30,
             )
@@ -927,7 +926,10 @@ class _GitLogAdapter:
                 if line.strip()
             ]
         except (subprocess.CalledProcessError, OSError):
-            return [p for p in self._root.rglob("*.py") if p.is_file()]
+            return [
+                p for p in self._root.rglob("*")
+                if p.is_file() and not _has_hidden_component(p, self._root)
+            ]
 
     def _path_key(self, path: Path | str) -> str:
         p = Path(path) if not isinstance(path, Path) else path
@@ -1005,13 +1007,22 @@ class _GitLogAdapter:
             return None
         return self._churn_cache.get(self._path_key(path), 0)
 
-    def incoming_dependency_count(self, path: Path) -> int | None:
-        # TODO: wire to a real import-graph walker (or reuse the
-        # CallGraph that's built each cycle for bundle expansion).
-        # Stubbed at 0 means centrality is flat across files — the
-        # 0.2 weight in `relevance` is effectively dead until this
-        # lands. Tracking issue: follow-up to PR #91.
-        return 0
+
+def _has_hidden_component(path: Path, root: Path) -> bool:
+    """True if any path component (relative to root) starts with '.'.
+
+    Used by the rglob fallback in ``_GitLogAdapter.list_candidate_files``
+    to skip ``.git/``, ``.venv/``, ``__pycache__`` (the leading
+    underscore variant is handled separately if needed) and any other
+    hidden directory git would have skipped via ``ls-files``. Without
+    this, the non-git fallback would enumerate ``.git/objects/*`` and
+    flood the picker with thousands of bogus candidates.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    return any(part.startswith(".") for part in rel.parts)
 
 
 __all__ = [

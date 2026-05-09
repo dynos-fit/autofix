@@ -80,13 +80,12 @@ def test_no_inline_max_bundle_bytes(filename: str) -> None:
 
 @pytest.mark.parametrize("filename", _CONSUMER_MODULES)
 def test_no_inline_relevance_weights(filename: str) -> None:
-    """Bare ``0.5`` / ``0.3`` / ``0.2`` MUST NOT appear in consumer bodies."""
+    """Bare ``0.6`` / ``0.4`` MUST NOT appear in consumer bodies."""
     body = _body(filename)
     # Each weight has a named constant; use it.
     forbidden_pairs = [
-        ("0.5", "RELEVANCE_WEIGHT_RECENCY"),
-        ("0.3", "RELEVANCE_WEIGHT_CHURN"),
-        ("0.2", "RELEVANCE_WEIGHT_CENTRALITY"),
+        ("0.6", "RELEVANCE_WEIGHT_RECENCY"),
+        ("0.4", "RELEVANCE_WEIGHT_CHURN"),
     ]
     for raw, _const in forbidden_pairs:
         # ``\b`` doesn't work for floats; require the literal to NOT be

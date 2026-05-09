@@ -23,12 +23,9 @@ class _GitLogConformingMock:
     def commits_in_last_30_days(self, path: str) -> int:
         return 0
 
-    def incoming_dependency_count(self, path: str) -> int:
-        return 0
-
 
 class _GitLogMissingOneMethod:
-    """Conforming except for ``incoming_dependency_count`` — should fail isinstance."""
+    """Conforming except for ``commits_in_last_30_days`` — should fail isinstance."""
 
     def list_candidate_files(self) -> list[str]:
         return []
@@ -36,17 +33,14 @@ class _GitLogMissingOneMethod:
     def days_since_last_commit(self, path: str) -> int:
         return 0
 
-    def commits_in_last_30_days(self, path: str) -> int:
-        return 0
-
 
 def test_gitlog_conforming_mock_passes_isinstance() -> None:
-    """A mock with all four methods satisfies the Protocol."""
+    """A mock with all three methods satisfies the Protocol."""
     assert isinstance(_GitLogConformingMock(), GitLogAdapter)
 
 
 def test_gitlog_missing_method_fails_isinstance() -> None:
-    """A mock missing one of the four methods does NOT satisfy the Protocol."""
+    """A mock missing one of the three methods does NOT satisfy the Protocol."""
     assert not isinstance(_GitLogMissingOneMethod(), GitLogAdapter)
 
 

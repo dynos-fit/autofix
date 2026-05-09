@@ -4,13 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
-
 def _seed_repo(tmp_path: Path, n: int = 8) -> Path:
     for i in range(n):
         (tmp_path / f"f{i}.py").write_text(f"# file {i}\n")
     return tmp_path
-
 
 def _git_log_with_relevance(file_relevances: dict[str, dict]) -> MagicMock:
     """Build a mock git_log whose per-file responses are deterministic."""
@@ -21,17 +18,13 @@ def _git_log_with_relevance(file_relevances: dict[str, dict]) -> MagicMock:
         return file_relevances.get(str(path).split("/")[-1], {}).get("days", 999)
     def _churn(path):
         return file_relevances.get(str(path).split("/")[-1], {}).get("churn", 0)
-    def _fanout(path):
-        return file_relevances.get(str(path).split("/")[-1], {}).get("fanout", 0)
     def _list_files(*_a, **_k):
         return [f for f in file_relevances]
 
     g.days_since_last_commit.side_effect = _days
     g.commits_in_last_30_days.side_effect = _churn
-    g.incoming_dependency_count.side_effect = _fanout
     g.list_candidate_files.side_effect = _list_files
     return g
-
 
 def test_picker_deterministic_same_inputs(tmp_path: Path) -> None:
     """Two calls with identical inputs must return the same bundle ordering."""
@@ -41,7 +34,7 @@ def test_picker_deterministic_same_inputs(tmp_path: Path) -> None:
     repo = _seed_repo(tmp_path, n=6)
     ledger = Ledger(root=repo)
     git_log = _git_log_with_relevance({
-        f"f{i}.py": {"days": i, "churn": 10 - i, "fanout": 5}
+        f"f{i}.py": {"days": i, "churn": 10 - i}
         for i in range(6)
     })
 
@@ -67,7 +60,6 @@ def test_picker_deterministic_same_inputs(tmp_path: Path) -> None:
     fps2 = [b.fingerprint for b, _ in batch2]
     assert fps1 == fps2
 
-
 def test_picker_emits_one_pair_per_analyzer(tmp_path: Path) -> None:
     """Each picked bundle yields one (bundle, analyzer) pair per analyzer."""
     from autofix.crawl.ledger import Ledger
@@ -76,7 +68,7 @@ def test_picker_emits_one_pair_per_analyzer(tmp_path: Path) -> None:
     repo = _seed_repo(tmp_path, n=3)
     ledger = Ledger(root=repo)
     git_log = _git_log_with_relevance({
-        f"f{i}.py": {"days": i, "churn": 10 - i, "fanout": 5}
+        f"f{i}.py": {"days": i, "churn": 10 - i}
         for i in range(3)
     })
     cg = MagicMock()
@@ -97,7 +89,6 @@ def test_picker_emits_one_pair_per_analyzer(tmp_path: Path) -> None:
     for analyzers in by_fp.values():
         assert analyzers == {"cheap", "llm:security"}
 
-
 def test_picker_respects_bundles_per_cycle_cap(tmp_path: Path) -> None:
     from autofix.crawl.ledger import Ledger
     from autofix.crawl.picker import pick_next_batch
@@ -105,7 +96,7 @@ def test_picker_respects_bundles_per_cycle_cap(tmp_path: Path) -> None:
     repo = _seed_repo(tmp_path, n=20)
     ledger = Ledger(root=repo)
     git_log = _git_log_with_relevance({
-        f"f{i}.py": {"days": i, "churn": 1, "fanout": 1}
+        f"f{i}.py": {"days": i, "churn": 1}
         for i in range(20)
     })
     cg = MagicMock()
@@ -119,7 +110,6 @@ def test_picker_respects_bundles_per_cycle_cap(tmp_path: Path) -> None:
         bundles_per_cycle=4,
     )
     assert len(batch) == 4
-
 
 def test_picker_prefers_high_freshness_after_seen(tmp_path: Path) -> None:
     """A seen-but-stale file ranks AHEAD of a seen-and-fresh file."""
@@ -148,8 +138,8 @@ def test_picker_prefers_high_freshness_after_seen(tmp_path: Path) -> None:
     ))
 
     git_log = _git_log_with_relevance({
-        "f0.py": {"days": 0, "churn": 5, "fanout": 5},
-        "f1.py": {"days": 0, "churn": 5, "fanout": 5},
+        "f0.py": {"days": 0, "churn": 5},
+        "f1.py": {"days": 0, "churn": 5},
     })
     cg = MagicMock()
     cg.neighbors_of.return_value = []

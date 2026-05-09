@@ -11,9 +11,11 @@ Three composable scores in ``[0.0, 1.0]``:
   ``(fingerprint, analyzer)`` key on any of the bundle's files)
   count as ``1.0`` (maximally stale).
 * :func:`relevance` — per-path. Weighted sum of recency
-  (exponential decay over 7 days), churn (capped at 10
-  commits/30d), centrality (capped at 10 import fanout). Weights
-  come from :mod:`crawl_constants`.
+  (exponential decay over 7 days) and churn (capped at 10
+  commits/30d). Weights come from :mod:`crawl_constants`.
+  Centrality (incoming-dependency count) was removed because it
+  required language-specific import-graph walking — the crawler
+  is language-agnostic at the contract layer.
 * :func:`priority` — ``bundle_freshness × relevance(seed)``.
 
 All scoring is pure — no I/O, no global state. Inputs are either
@@ -29,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from autofix.crawl.crawl_constants import (
-    CENTRALITY_CAP_FANOUT,
     CHURN_CAP_COMMITS,
     ENTRYPOINT_BOOST,
     LOW_VALUE_CLASS_PENALTY,
@@ -37,7 +38,6 @@ from autofix.crawl.crawl_constants import (
     NON_GIT_FALLBACK_SCORE,
     OVERSIZE_FILE_PENALTY,
     RECENCY_DECAY_DAYS,
-    RELEVANCE_WEIGHT_CENTRALITY,
     RELEVANCE_WEIGHT_CHURN,
     RELEVANCE_WEIGHT_RECENCY,
     STALENESS_HORIZON_HOURS,
@@ -157,19 +157,21 @@ def relevance(
 ) -> float:
     """Per-path relevance.
 
-    ``relevance = w_recency * recency + w_churn * churn +
-    w_centrality * centrality``, where:
+    ``relevance = w_recency * recency + w_churn * churn``, where:
 
     * ``recency = exp(-days_since_last_commit / 7)`` — files
       committed today get ~1.0; files untouched 30 days get ~0.01.
     * ``churn = min(1.0, commits_in_last_30_days / 10)`` —
       capped at 10 commits / month.
-    * ``centrality = min(1.0, incoming_dependency_count / 10)`` —
-      capped at 10 inbound dependency edges.
 
-    When ``git_log.is_empty()`` is True (non-git tree), recency
-    and churn fall back to ``0.5`` and centrality also falls back
-    to ``0.5`` if the git_log can't compute it.
+    Centrality (incoming-dependency count) was removed because it
+    required language-specific import-graph walking and broke the
+    "any-file" property of the crawler subsystem. Both surviving
+    pillars are git-only and language-agnostic.
+
+    When the git_log adapter returns ``None`` for a subscore (non-git
+    tree, missing log), that pillar falls back to
+    :data:`NON_GIT_FALLBACK_SCORE`.
 
     Supplemental scoring signals (opt-in via ``scoring_flags``):
 
@@ -182,14 +184,9 @@ def relevance(
       multiply the score by ``OVERSIZE_FILE_PENALTY`` when the file
       strictly exceeds ``MAX_RELEVANT_FILE_BYTES``.
     * ``scoring_flags`` — a :class:`ScoringFlags` selecting which of
-      the three modifiers to apply. ``None`` or all-False MUST be
-      byte-identical to the pre-flag formula (golden tests pin this).
+      the three modifiers to apply. ``None`` or all-False produces
+      the pure two-pillar formula above.
     """
-    # Each subscore independently falls back when its underlying
-    # git_log method returns ``None`` (non-git tree, no commit
-    # history, no SCIP index for centrality, etc.). The overall
-    # ``is_empty`` heuristic is unnecessary — None returns from the
-    # individual probes are the canonical "no data" signal.
     days = git_log.days_since_last_commit(path)
     if days is None:
         recency = NON_GIT_FALLBACK_SCORE
@@ -203,17 +200,6 @@ def relevance(
     else:
         churn = min(1.0, cnt / CHURN_CAP_COMMITS)
 
-    fanout = git_log.incoming_dependency_count(path)
-    if fanout is None:
-        centrality = NON_GIT_FALLBACK_SCORE
-    else:
-        centrality = min(1.0, fanout / CENTRALITY_CAP_FANOUT)
-
-    # --- Default short-circuit: byte-identical to the pre-flag formula.
-    # Golden-file regression tests pin the exact floats produced here.
-    # Any refactor — even introducing intermediate locals — risks
-    # diverging via FMA folding or different intermediate rounding,
-    # which would silently break callers and the golden suite.
     if scoring_flags is None or (
         not scoring_flags.entrypoint_boost
         and not scoring_flags.low_value_class_penalty
@@ -222,7 +208,6 @@ def relevance(
         score = (
             RELEVANCE_WEIGHT_RECENCY * recency
             + RELEVANCE_WEIGHT_CHURN * churn
-            + RELEVANCE_WEIGHT_CENTRALITY * centrality
         )
         return max(0.0, min(1.0, score))
 
@@ -232,7 +217,6 @@ def relevance(
     score = (
         RELEVANCE_WEIGHT_RECENCY * recency
         + RELEVANCE_WEIGHT_CHURN * churn
-        + RELEVANCE_WEIGHT_CENTRALITY * centrality
     )
 
     if (

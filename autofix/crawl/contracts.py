@@ -44,26 +44,27 @@ from typing import Protocol, runtime_checkable
 class GitLogAdapter(Protocol):
     """Read-only contract for the picker's git/file-history needs.
 
-    Any object exposing these four methods can be passed as the
+    Any object exposing these three methods can be passed as the
     ``git_log`` argument to ``pick_next_batch``. The picker uses
     them to score candidate seed paths via ``relevance(...)``:
 
     * ``list_candidate_files`` — enumerate scan candidates. The
-      adapter decides which file types qualify; the crawler is
-      language-agnostic. Python-only consumers ship an adapter
-      that filters to ``*.py``; multi-language consumers return
-      every source path the picker should consider.
-    * ``days_since_last_commit`` — recency subscore (50% weight).
-    * ``commits_in_last_30_days`` — churn subscore (30% weight).
-    * ``incoming_dependency_count`` — centrality subscore
-      (20% weight). The adapter decides what counts as a
-      dependency edge (Python imports, JS ``require``/``import``,
-      build-graph edges, etc).
+      crawler is language-agnostic; the adapter returns every
+      tracked path it wants the picker to consider, of any type.
+      Downstream analyzers decide what to do with each file.
+    * ``days_since_last_commit`` — recency subscore (60% weight).
+    * ``commits_in_last_30_days`` — churn subscore (40% weight).
 
     Implementations may back these by ``git`` subprocess calls,
     GitHub API calls, an LSP server, or any other source — the
     crawler is agnostic. A pure stdlib fallback (``Path.rglob`` +
     ``stat().st_mtime``) is acceptable for non-git trees.
+
+    Centrality (incoming-dependency count) was removed from the
+    contract because it required language-specific import-graph
+    walking. Files that are heavily depended on float to the top
+    via ``churn`` instead — repeatedly-edited central files tend
+    to win on that signal anyway.
     """
 
     def list_candidate_files(self) -> list[str]: ...
@@ -71,8 +72,6 @@ class GitLogAdapter(Protocol):
     def days_since_last_commit(self, path: str) -> int: ...
 
     def commits_in_last_30_days(self, path: str) -> int: ...
-
-    def incoming_dependency_count(self, path: str) -> int: ...
 
 
 @runtime_checkable

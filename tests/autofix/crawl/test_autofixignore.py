@@ -16,8 +16,6 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
-
 # ---------------------------------------------------------------------------
 # AC 11 — AutofixIgnore importable and has required interface
 # ---------------------------------------------------------------------------
@@ -27,7 +25,6 @@ def test_autofixignore_importable() -> None:
     from autofix.crawl.autofixignore import AutofixIgnore  # noqa: F401
     assert AutofixIgnore is not None
 
-
 def test_autofixignore_has_load_classmethod() -> None:
     """AutofixIgnore.load must be a classmethod."""
     from autofix.crawl.autofixignore import AutofixIgnore
@@ -36,14 +33,12 @@ def test_autofixignore_has_load_classmethod() -> None:
     assert hasattr(AutofixIgnore, "load")
     assert isinstance(inspect.getattr_static(AutofixIgnore, "load"), classmethod)
 
-
 def test_autofixignore_has_matches_method() -> None:
     """AutofixIgnore.matches must exist and be callable."""
     from autofix.crawl.autofixignore import AutofixIgnore
 
     assert hasattr(AutofixIgnore, "matches")
     assert callable(AutofixIgnore.matches)
-
 
 # ---------------------------------------------------------------------------
 # AC 14a — file present, patterns honored
@@ -101,7 +96,6 @@ class TestAutofixIgnoreFilePresent:
         ai = AutofixIgnore.load(tmp_path)
         assert ai.matches(tmp_path / "generated" / "schema.py", tmp_path) is True
 
-
 # ---------------------------------------------------------------------------
 # AC 14b — file absent, behavior identical to baseline (no filtering)
 # ---------------------------------------------------------------------------
@@ -132,7 +126,6 @@ class TestAutofixIgnoreFileAbsent:
         # Should not raise
         ai = AutofixIgnore.load(nonexistent_root)
         assert ai is not None
-
 
 # ---------------------------------------------------------------------------
 # AC 14c — permissive pattern: autofixignore can only further-exclude
@@ -190,7 +183,6 @@ class TestAutofixIgnorePermissiveLimitation:
             "docs/crawling-tuning.md must contain the limitation note "
             "'autofixignore can only further-exclude'"
         )
-
 
 # ---------------------------------------------------------------------------
 # AC 14d — malformed pattern: logs warning, skips, does not raise
@@ -257,7 +249,6 @@ class TestAutofixIgnoreMalformedPattern:
         ai = AutofixIgnore.load(tmp_path)
         assert ai.matches(tmp_path / "generated" / "schema.py", tmp_path) is True
 
-
 # ---------------------------------------------------------------------------
 # AC 12 — pick_next_batch accepts autofixignore kwarg; seeds filtered
 # ---------------------------------------------------------------------------
@@ -279,7 +270,6 @@ class TestPickerAutofixignoreIntegration:
         git_log.list_candidate_files.return_value = [f"f{i}.py" for i in range(3)]
         git_log.days_since_last_commit.return_value = 1
         git_log.commits_in_last_30_days.return_value = 2
-        git_log.incoming_dependency_count.return_value = 1
 
         cg = MagicMock()
         cg.neighbors_of.return_value = []
@@ -319,7 +309,6 @@ class TestPickerAutofixignoreIntegration:
         git_log.list_candidate_files.return_value = ["good.py", "ignored_module.py"]
         git_log.days_since_last_commit.return_value = 0
         git_log.commits_in_last_30_days.return_value = 5
-        git_log.incoming_dependency_count.return_value = 3
 
         cg = MagicMock()
         cg.neighbors_of.return_value = []
@@ -340,7 +329,6 @@ class TestPickerAutofixignoreIntegration:
         assert "ignored_module.py" not in all_seeds, (
             "ignored_module.py must be filtered out as a seed"
         )
-
 
 # ---------------------------------------------------------------------------
 # AC 13 — expand_bundle accepts autofixignore kwarg; neighbors filtered; seeds never excluded

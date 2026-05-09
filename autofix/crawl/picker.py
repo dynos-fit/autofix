@@ -2,7 +2,8 @@
 
 :func:`pick_next_batch` is the cycle's selection algorithm:
 
-1. Enumerate candidate seed paths via ``git_log.list_candidate_files()``.
+1. Enumerate candidate seed paths via ``git_log.list_candidate_files()``
+   (any tracked file — language-agnostic).
 2. (Optional) drop seeds matched by ``autofixignore`` before any
    relevance work — saves cycles when the picker would otherwise
    compute scores for ignored files.
