@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from autofix.cli.scan_command import _run_scan_core
+from autofix.scan_core import _run_scan_core
 from autofix.workflow.verify_constants import (
     CONFIG_PATH_RELATIVE,
     DEFAULT_TIMEOUT_SECONDS,
