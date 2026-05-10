@@ -304,6 +304,22 @@ or TypeScript, install the matching adapter:
 Without external SCIP binaries, the language adapter falls back to
 a Tree-sitter-only path (works, less precise).
 
+## Using the crawler in your own project
+
+`autofix/crawl/` is a standalone subsystem. You can import it
+without dragging in the rest of autofix (an architectural guard
+test pins the import boundary). The picker and bundle expander
+take two `runtime_checkable` Protocols from
+`autofix.crawl.contracts` — `GitLogAdapter` (3 methods:
+`list_candidate_files`, `days_since_last_commit`,
+`commits_in_last_30_days`) and `CallGraphAdapter` (1 method:
+`neighbors_of`). Implement them against whatever your project
+uses for file enumeration and call-graph data; the crawler runs
+unchanged.
+
+See [`docs/crawling.md`](docs/crawling.md#using-the-crawler-standalone)
+for the Protocol shapes and a minimal integrator example.
+
 ## Documentation
 
 - [`docs/getting-started.md`](docs/getting-started.md) — dumb-user guide
