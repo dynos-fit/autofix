@@ -19,7 +19,7 @@ from pathlib import Path
 
 from autofix.evidence.schema import CandidateFinding
 from autofix.indexing.symbols import SymbolTable
-from autofix.llm.scheduler import AnalyzerSeamUnavailableError, Scheduler
+from autofix.llm.scheduler import LLMSeamUnavailableError, Scheduler
 from autofix.parsing.tree_sitter import ParseResult
 from autofix.telemetry import events_log
 from autofix.telemetry.correlation import current_commit_sha, current_scan_id
@@ -144,7 +144,7 @@ class LLMJudgmentAnalyzer(ABC):
         4. Compute cache key (sha256).
         5. Check cache (version 1 match returns cached findings).
         6. Cache miss: invoke_judgment via Scheduler.
-           On AnalyzerSeamUnavailableError: log once per scan, return empty iter.
+           On LLMSeamUnavailableError: log once per scan, return empty iter.
         7. Parse JSON: validate list-of-dicts with required keys.
            On failure: log AnalyzerError once per scan, return empty iter.
         8. Build CandidateFinding per item.
@@ -215,7 +215,7 @@ class LLMJudgmentAnalyzer(ABC):
         try:
             scheduler = Scheduler(root=repo_root)
             raw_response = scheduler.invoke_judgment(prompt, model=cls.MODEL)
-        except AnalyzerSeamUnavailableError:
+        except LLMSeamUnavailableError:
             if _should_log_event(scan_id, "AnalyzerUnavailable"):
                 try:
                     events_log.append_event(

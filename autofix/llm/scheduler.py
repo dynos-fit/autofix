@@ -84,8 +84,21 @@ from autofix.telemetry.replay import _REPLAY_ACTIVE
 from autofix.telemetry.tracer import span
 
 
-class AnalyzerSeamUnavailableError(Exception):
-    """LLM seam reported unavailable (binary missing, API key unconfigured, etc.)."""
+class LLMSeamUnavailableError(Exception):
+    """LLM seam reported unavailable (binary missing, API key unconfigured, etc.).
+
+    Renamed from ``AnalyzerSeamUnavailableError`` (PROACTIVE-10) to be
+    use-case-neutral — the same error fires from non-analyzer callers
+    (e.g. ``autofix.repair.llm_patcher``). ``AnalyzerSeamUnavailableError``
+    remains as an alias below for backward compatibility.
+    """
+
+
+# Back-compat alias for callers that historically imported
+# ``AnalyzerSeamUnavailableError``. Same class object, so ``except
+# AnalyzerSeamUnavailableError`` and ``raise AnalyzerSeamUnavailableError(...)``
+# continue to work transparently.
+AnalyzerSeamUnavailableError = LLMSeamUnavailableError
 
 # Decision literal shared by the scheduler's public surface and by the
 # ``LLMCallGated`` event payload. The exact ten-member set is pinned by
@@ -679,8 +692,8 @@ class Scheduler:
         """Free-form LLM judgment entry point for LLMJudgmentAnalyzer subclasses.
 
         Routes through autofix.llm_backend.run_prompt(prompt, model=model).
-        Raises AnalyzerSeamUnavailableError when the seam reports the LLM is
-        unconfigured. Other exceptions propagate unchanged.
+        Raises :class:`LLMSeamUnavailableError` when the seam reports the
+        LLM is unconfigured. Other exceptions propagate unchanged.
         """
         result = _llm_backend.run_prompt(
             prompt,
@@ -690,7 +703,7 @@ class Scheduler:
             cwd=self._root,
         )
         if result.returncode != 0:
-            raise AnalyzerSeamUnavailableError(result.stderr)
+            raise LLMSeamUnavailableError(result.stderr)
         return result.stdout
 
     def schedule(
@@ -988,5 +1001,6 @@ __all__ = [
     "Scheduler",
     "ScheduleDecision",
     "ScheduleDecisionName",
-    "AnalyzerSeamUnavailableError",
+    "LLMSeamUnavailableError",
+    "AnalyzerSeamUnavailableError",  # back-compat alias
 ]
