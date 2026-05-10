@@ -46,7 +46,7 @@ from autofix.cli.run_constants import (
     LLM_PATCH_THRESHOLD,
     STATE_LABEL_VERBOSE,
 )
-from autofix.cli.scan_command import _run_scan_core
+from autofix.scan_core import _run_scan_core
 from autofix.repair import RepairTier, coordinate_repairs, produce_patch
 from autofix.workflow import State, StateMachine
 
