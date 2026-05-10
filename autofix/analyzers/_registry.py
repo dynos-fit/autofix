@@ -68,6 +68,56 @@ def _bind_correlation_ctx(
             var.reset(token)
 
 
+# Per-scan cleanup target list. Each entry is
+# ``(import_path, attr_path)`` resolved lazily inside
+# :func:`_reset_passthrough_analyzer_state`.
+#
+# Adding a new analyzer with per-scan state means appending one tuple
+# here, NOT copy-pasting another try/except block. The lazy-import
+# shape preserves the previous behavior (a missing module is silently
+# skipped because the import itself raises).
+_PASSTHROUGH_RESET_TARGETS: tuple[tuple[str, str], ...] = (
+    ("autofix.analyzers.linter_passthrough.eslint", "_reset_per_scan_state"),
+    ("autofix.analyzers.linter_passthrough.golangci", "_reset_per_scan_state"),
+    ("autofix.analyzers.linter_passthrough.ruff", "_reset_per_scan_state"),
+    ("autofix.analyzers.linter_passthrough.mypy", "_reset_per_scan_state"),
+    (
+        "autofix.analyzers.llm_judgment._base",
+        "LLMJudgmentAnalyzer._reset_per_scan_state",
+    ),
+)
+
+
+def _emit_unknown_analyzer_warning(unknown_names: list[str]) -> None:
+    """Print a stderr warning naming unknown analyzers + closest registry keys.
+
+    PROACTIVE-05: silent registry-miss → zero findings is a real
+    foot-gun. ``--analyzers ruf`` (typo of ``linter:ruff``) used to
+    return a clean green scan with no signal. Now it also lands a
+    warning line on stderr that points at the closest known name(s).
+
+    Cleanup must never raise — telemetry/UX loss never aborts a scan.
+    """
+    import difflib
+    import sys
+    try:
+        known = sorted(_ANALYZER_REGISTRY.keys())
+        for name in unknown_names:
+            close = difflib.get_close_matches(name, known, n=3, cutoff=0.5)
+            suggestion = (
+                f" Did you mean: {', '.join(close)}?"
+                if close
+                else f" Known names: {', '.join(known)}."
+            )
+            print(
+                f"autofix: warning: unknown analyzer {name!r}; skipped.{suggestion}",
+                file=sys.stderr,
+                flush=True,
+            )
+    except Exception:
+        pass
+
+
 def _reset_passthrough_analyzer_state() -> None:
     """Clear per-scan memo dicts of every passthrough adapter.
 
@@ -76,36 +126,22 @@ def _reset_passthrough_analyzer_state() -> None:
     leak one memo entry per scan_id when ``analyze_files`` raises.
     Cleanup must never raise — operators see a leak eventually rather
     than a hard failure now.
+
+    Iterates :data:`_PASSTHROUGH_RESET_TARGETS`. Each target is
+    resolved by import + attribute walk (so ``ClassName.method`` works
+    for the LLM-judgment class-level reset). Any exception in the
+    resolve-or-call path is swallowed: the failure mode of cleanup is
+    "no-op", not "explode the cycle".
     """
-    try:
-        from autofix.analyzers.linter_passthrough import eslint as _eslint
-        _eslint._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import golangci as _golangci
-        _golangci._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import (
-            ruff as _linter_ruff_mod,
-        )
-        _linter_ruff_mod._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import (
-            mypy as _linter_mypy_mod,
-        )
-        _linter_mypy_mod._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.llm_judgment import _base as _llm_judgment_base
-        _llm_judgment_base.LLMJudgmentAnalyzer._reset_per_scan_state()
-    except Exception:
-        pass
+    import importlib
+    for module_path, attr_path in _PASSTHROUGH_RESET_TARGETS:
+        try:
+            obj: object = importlib.import_module(module_path)
+            for attr in attr_path.split("."):
+                obj = getattr(obj, attr)
+            obj()  # type: ignore[operator]
+        except Exception:
+            pass
 
 
 def analyze_files(
@@ -146,6 +182,17 @@ def analyze_files(
     findings: list[CandidateFinding] = []
     with _bind_correlation_ctx(commit_sha, scan_id, event_id):
         try:
+            unknown_names = [
+                n for n in analyzers if n not in _ANALYZER_REGISTRY
+            ]
+            if unknown_names:
+                # PROACTIVE-05: a typo'd analyzer name used to silently
+                # produce zero findings — the loop just skipped unknown
+                # entries with no signal beyond a JSONL telemetry event.
+                # Print a stderr warning that names the unknown entries and
+                # the closest registry keys so the user can spot typos
+                # without grepping the events log.
+                _emit_unknown_analyzer_warning(unknown_names)
             for analyzer_name in analyzers:
                 callable_ = _ANALYZER_REGISTRY.get(analyzer_name)
                 if callable_ is None:

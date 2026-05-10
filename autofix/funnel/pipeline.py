@@ -712,9 +712,11 @@ def run_scan(
             active_analyzers: list[object] = [_analyze_unused]
         else:
             active_analyzers = []
+            unknown_names: list[str] = []
             for name in analyzer_set:
                 mod = _ANALYZER_REGISTRY.get(name)
                 if mod is None:
+                    unknown_names.append(name)
                     try:
                         events_log.append_event(
                             root,
@@ -725,6 +727,14 @@ def run_scan(
                         pass
                     continue
                 active_analyzers.append(mod)
+            if unknown_names:
+                # PROACTIVE-05: surface unknown analyzer names beyond the
+                # JSONL event so a typo'd CLI flag gets a stderr warning
+                # immediately rather than a silent green scan.
+                from autofix.analyzers._registry import (
+                    _emit_unknown_analyzer_warning,
+                )
+                _emit_unknown_analyzer_warning(unknown_names)
 
         # AC #21: build the graph once if the caller didn't supply one. This
         # is the production path — the CLI doesn't cache across invocations,
