@@ -29,7 +29,7 @@ from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
-from autofix.evidence.schema import CandidateFinding
+from autofix.evidence.schema import CandidateFinding, PriorityScore
 from autofix.events.schema import ChangeSet
 from autofix.indexing.embedding import EmbeddingSidecar, SymbolRecall
 from autofix.indexing.symbols import build_symbol_table
@@ -42,7 +42,7 @@ from autofix.invalidation.planner import (
 from autofix.llm.scheduler import ScheduleDecision, Scheduler
 from autofix.migration import load_legacy_findings
 from autofix.parsing.tree_sitter import parse_file, ParseResult
-from autofix.ranking.priority_scorer import PriorityScore, PriorityScorer
+from autofix.ranking.priority_scorer import PriorityScorer
 from autofix.telemetry import events_log
 from autofix.telemetry.correlation import (
     current_commit_sha,
