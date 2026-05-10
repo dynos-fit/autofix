@@ -27,6 +27,7 @@ from autofix.crawl.crawl_constants import (
     MODE_PREVIEW,
 )
 from autofix.crawl.ledger import Ledger, LedgerRow
+from autofix.telemetry.correlation import set_commit_sha, set_scan_id
 
 
 _PIDFILE_NAME = "crawl.pid"
@@ -94,7 +95,22 @@ def _run_crawl_once_body(
     debug_crawl: bool = False,
 ) -> int:
     """The body of one crawl cycle, factored out so the continuous
-    loop can call it WITHOUT each cycle re-creating a pidfile."""
+    loop can call it WITHOUT each cycle re-creating a pidfile.
+
+    Per-cycle correlation contextvar binding (PROACTIVE-11):
+
+    A fresh ``scan_id`` is minted and bound for the duration of this
+    cycle via :func:`autofix.telemetry.correlation.set_scan_id`; the
+    resolved ``commit_sha`` is bound via ``set_commit_sha`` when
+    non-empty. Both bindings reset at the boundary on success AND
+    exception (the SEC-RUFF-02 lesson generalized to the daemon
+    outer loop). Without this, a long-running daemon
+    (``run_crawl_continuously``) would leak whatever scan_id /
+    commit_sha was in the parent process's contextvars across every
+    cycle, and any failure mid-cycle would leave a stale id visible
+    to the next cycle's downstream readers (LLM cache keys,
+    telemetry events, finding fingerprints).
+    """
     from autofix.crawl.crawl_observability import CycleStats, emit_cycle_stats
 
     stats = CycleStats()
@@ -108,6 +124,56 @@ def _run_crawl_once_body(
     git_log = _build_git_log(root)
     call_graph = _build_call_graph(root, git_log)
     current_commit_sha = _resolve_commit_sha(root)
+
+    # Bind correlation contextvars for the duration of THIS cycle.
+    # Stack the two setters via ExitStack so a missing commit_sha
+    # (the "_no_commit" sentinel from _resolve_commit_sha) skips
+    # the commit binding without breaking nesting symmetry.
+    with contextlib.ExitStack() as _correlation_stack:
+        _correlation_stack.enter_context(set_scan_id(_mint_cycle_scan_id()))
+        if current_commit_sha and current_commit_sha != "_no_commit":
+            _correlation_stack.enter_context(set_commit_sha(current_commit_sha))
+        return _run_crawl_once_inner(
+            root=root, mode=mode, analyzers=analyzers,
+            bundles_per_cycle=bundles_per_cycle,
+            ledger=ledger, git_log=git_log, call_graph=call_graph,
+            current_commit_sha=current_commit_sha,
+            quiet=quiet, debug_crawl=debug_crawl, stats=stats,
+            emit_cycle_stats=emit_cycle_stats,
+        )
+
+
+def _mint_cycle_scan_id() -> str:
+    """Return a per-cycle scan id ``crawl-<UTCstamp>-<8hex>``.
+
+    Format mirrors :func:`autofix.scan_core._mint_scan_id` so log
+    consumers and replay tools can parse both. The ``crawl-`` prefix
+    makes daemon cycles distinguishable from one-shot ``autofix scan``
+    invocations during forensics.
+    """
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"crawl-{stamp}-{os.urandom(4).hex()}"
+
+
+def _run_crawl_once_inner(
+    *,
+    root: Path,
+    mode: str,
+    analyzers: list[str],
+    bundles_per_cycle: int,
+    ledger: Any,
+    git_log: Any,
+    call_graph: Any,
+    current_commit_sha: str,
+    quiet: bool,
+    debug_crawl: bool,
+    stats: Any,
+    emit_cycle_stats: Any,
+) -> int:
+    """Core cycle body. Called by ``_run_crawl_once_body`` inside the
+    correlation-contextvar binding.
+    """
 
     from autofix.crawl.autofixignore import AutofixIgnore
     from autofix.crawl.bundles import ClassAwareConfig
