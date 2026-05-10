@@ -26,14 +26,6 @@ from pathlib import Path
 
 from autofix import languages
 from autofix.analyzers.cheap.unused_import import analyze as _analyze_unused
-from autofix.analyzers.linter_passthrough.eslint import analyze as _analyze_eslint
-from autofix.analyzers.linter_passthrough.golangci import analyze as _analyze_golangci
-from autofix.analyzers.linter_passthrough.ruff import analyze as _analyze_ruff
-from autofix.analyzers.linter_passthrough.mypy import analyze as _analyze_mypy
-from autofix.analyzers.llm_judgment.code_quality import CodeQualityJudgmentAnalyzer
-from autofix.analyzers.llm_judgment.dead_code import DeadCodeJudgmentAnalyzer
-from autofix.analyzers.llm_judgment.performance import PerformanceJudgmentAnalyzer
-from autofix.analyzers.llm_judgment.security import SecurityJudgmentAnalyzer
 from autofix.dedup.cascade import DedupCascade, DedupDecision
 from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
@@ -56,76 +48,7 @@ from autofix.telemetry.correlation import (
     current_commit_sha,
     current_event_id,
 )
-
-# AC-9: analyzer registry mapping analyzer set names to their analyze callables.
-_ANALYZER_REGISTRY: dict[str, object] = {
-    "cheap": _analyze_unused,
-    "linter:eslint": _analyze_eslint,
-    "linter:golangci": _analyze_golangci,
-    "linter:ruff": _analyze_ruff,
-    "linter:mypy": _analyze_mypy,
-    "llm:code-quality": CodeQualityJudgmentAnalyzer.analyze,
-    "llm:dead-code": DeadCodeJudgmentAnalyzer.analyze,
-    "llm:performance": PerformanceJudgmentAnalyzer.analyze,
-    "llm:security": SecurityJudgmentAnalyzer.analyze,
-}
-
-
-def _reset_passthrough_analyzer_state() -> None:
-    """Clear per-scan memo dicts of every passthrough adapter.
-
-    Audit SEC-RUFF-02 / cq-002 / SEC-RUFF-02-INCOMPLETE: must run on
-    both success and exception paths so a long-running daemon does not
-    leak one memo entry per scan_id when ``run_scan`` raises. Cleanup
-    must never raise — operators see a leak eventually rather than a
-    hard failure now.
-    """
-    try:
-        from autofix.analyzers.linter_passthrough import eslint as _eslint
-        _eslint._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import golangci as _golangci
-        _golangci._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import (
-            ruff as _linter_ruff_mod,
-        )
-        _linter_ruff_mod._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.linter_passthrough import (
-            mypy as _linter_mypy_mod,
-        )
-        _linter_mypy_mod._reset_per_scan_state()
-    except Exception:
-        pass
-    try:
-        from autofix.analyzers.llm_judgment import _base as _llm_judgment_base
-        _llm_judgment_base.LLMJudgmentAnalyzer._reset_per_scan_state()
-    except Exception:
-        pass
-
-
-def _with_per_scan_cleanup(func):
-    """Decorator: wrap ``run_scan`` so per-scan analyzer memos are
-    always cleared, including on the exception path. Equivalent to a
-    function-body-wide ``try/finally`` but does not require
-    re-indenting the body."""
-    from functools import wraps
-
-    @wraps(func)
-    def _wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        finally:
-            _reset_passthrough_analyzer_state()
-
-    return _wrapper
+from autofix.analyzers._registry import _ANALYZER_REGISTRY
 
 
 def _legacy_migration_enabled(policy: dict) -> bool:
@@ -729,7 +652,6 @@ def _sidecar_query_text_for(finding: CandidateFinding) -> str:
     return base
 
 
-@_with_per_scan_cleanup
 def run_scan(
     root: Path,
     changeset: ChangeSet,
@@ -776,292 +698,294 @@ def run_scan(
         Findings and per-finding scheduling decisions; ``sarif_path`` is
         ``None`` (the CLI layer fills it in downstream).
     """
+    from autofix.analyzers._registry import _reset_passthrough_analyzer_state
     root = Path(root)
+    try:
+        def _p(msg: str) -> None:
+            if progress is not None:
+                progress(msg)
 
-    def _p(msg: str) -> None:
-        if progress is not None:
-            progress(msg)
+        # AC-9: resolve the active analyzer list based on analyzer_set parameter.
+        # When None, uses only the cheap analyzer (backward-compatible).
+        # Unknown names are logged and skipped (no exception).
+        if analyzer_set is None:
+            active_analyzers: list[object] = [_analyze_unused]
+        else:
+            active_analyzers = []
+            for name in analyzer_set:
+                mod = _ANALYZER_REGISTRY.get(name)
+                if mod is None:
+                    try:
+                        events_log.append_event(
+                            root,
+                            "AnalyzerUnknown",
+                            {"analyzer": name, "scan_id": scan_id},
+                        )
+                    except OSError:
+                        pass
+                    continue
+                active_analyzers.append(mod)
 
-    # AC-9: resolve the active analyzer list based on analyzer_set parameter.
-    # When None, uses only the cheap analyzer (backward-compatible).
-    # Unknown names are logged and skipped (no exception).
-    if analyzer_set is None:
-        active_analyzers: list[object] = [_analyze_unused]
-    else:
-        active_analyzers = []
-        for name in analyzer_set:
-            mod = _ANALYZER_REGISTRY.get(name)
-            if mod is None:
-                try:
-                    events_log.append_event(
-                        root,
-                        "AnalyzerUnknown",
-                        {"analyzer": name, "scan_id": scan_id},
-                    )
-                except OSError:
-                    pass
-                continue
-            active_analyzers.append(mod)
+        # AC #21: build the graph once if the caller didn't supply one. This
+        # is the production path — the CLI doesn't cache across invocations,
+        # and the graph is only meaningful for a single scan window anyway.
+        if graph is None:
+            _p("Building call graph...")
+            graph = CallGraph.build_from_root(root)
+        _p("Planning invalidation...")
 
-    # AC #21: build the graph once if the caller didn't supply one. This
-    # is the production path — the CLI doesn't cache across invocations,
-    # and the graph is only meaningful for a single scan window anyway.
-    if graph is None:
-        _p("Building call graph...")
-        graph = CallGraph.build_from_root(root)
-    _p("Planning invalidation...")
-
-    # AC #21: new planner signature — (graph, changeset, *, max_depth).
-    # The old 1-arg identity stub is gone; passing just ``changeset``
-    # would raise TypeError (verified by seg-4's
-    # ``test_plan_signature_replaces_stub``).
-    invalidation = _plan_invalidation(
-        graph, changeset, max_depth=DEFAULT_CALLER_DEPTH
-    )
-
-    # AC #21 / #22: emit the InvalidationComputed envelope row between
-    # ScanStarted (written by scan_command.py) and the per-file analyzer
-    # loop below. Telemetry loss is swallowed inside the helper.
-    _emit_invalidation_computed_event(
-        root,
-        scan_id=scan_id,
-        changeset=changeset,
-        invalidation=invalidation,
-        graph=graph,
-    )
-
-    resolved_scheduler = scheduler if scheduler is not None else Scheduler(root=root)
-
-    # task-012 AC 14: opt-in embedding sidecar sits between analyzer output
-    # and the dedup cascade. When the policy flag is off or absent, the
-    # sidecar instance is disabled (AC 5) and every public method is a
-    # no-op — preserving byte-identical scan output (AC 22). When enabled
-    # but deps are missing, __init__ self-disables after emitting a single
-    # EmbeddingSidecarDegraded row (AC 6).
-    effective_policy = policy if policy is not None else _load_scan_policy(root)
-    sidecar = EmbeddingSidecar(root, effective_policy)
-    sidecar_top_k, sidecar_threshold = _resolve_sidecar_recall_params(
-        effective_policy
-    )
-    if sidecar.enabled:
-        sidecar.load()
-
-    # Seg-6 (AC #31): load the persistent cluster store once per scan,
-    # emit the one-shot DedupEmbeddingTierStatus envelope, and construct
-    # the scorer + cascade that the analyzer loop below will drive. The
-    # load is non-locking (AC #22 from seg-4); a missing store on the
-    # first scan yields an empty :class:`ClusterStore` whose
-    # ``is_empty`` is True so ``compute_novelty`` resolves to 1.0 for
-    # every finding produced (AC #33).
-    cluster_store = ClusterStore.load(root)
-    _emit_dedup_tier_status_event(
-        root,
-        scan_id=scan_id,
-        available=cluster_store.embedding_tier_available,
-        reason=cluster_store.embedding_tier_reason,
-    )
-    scorer = PriorityScorer()
-    cascade = DedupCascade()
-
-    all_findings: list[CandidateFinding] = []
-    # Seg-6 (AC #31): we can no longer append to ``decisions`` inside the
-    # analyzer loop because the scheduler dispatch is deferred until
-    # after we sort the collected packets by priority (descending). We
-    # collect the per-finding quad here and build the index-aligned
-    # decisions list below, after the scheduler has been driven in
-    # priority order.
-    scored_items: list[
-        tuple[CandidateFinding, object, PriorityScore, DedupDecision]
-    ] = []
-
-    # task-20260506-001 (state-migration-legacy-to-next AC 9-13): inject
-    # the projected legacy findings into the same scoring + recall +
-    # cascade sequence used by the analyzer loop below. Gated by the
-    # ``state_migration.legacy_findings_enabled`` policy flag (default
-    # True). When the gate is off, ``load_legacy_findings`` is NEVER
-    # called — the code path is short-circuited at the helper boundary
-    # (AC 10/11). Legacy findings are appended FIRST so a subsequent
-    # analyzer finding sharing the same ``finding_id`` lands in Tier 1
-    # (exact fingerprint match) per cascade.py:82-89 (AC 13).
-    if _legacy_migration_enabled(effective_policy or {}):
-        legacy_findings = load_legacy_findings(root, log=None)
-        for finding in legacy_findings:
-            all_findings.append(finding)
-            packet = build_packet(
-                rule_id=finding.rule_id,
-                relpath=finding.path,
-                symbol_name=finding.symbol_name,
-                normalized_import=finding.normalized_import,
-                changed_slice=finding.changed_slice,
-                analyzer_note=(
-                    f"bound name {finding.symbol_name} has zero identifier "
-                    "references in file"
-                ),
-            )
-            _emit_packet_built_event(
-                root,
-                scan_id=scan_id,
-                finding=finding,
-                prompt_prefix_hash=packet.prompt_prefix_hash,
-            )
-            score = scorer.score(finding, graph, cluster_store)
-            _emit_priority_scored_event(root, scan_id=scan_id, score=score)
-            recall_hits: list[SymbolRecall] = sidecar.recall(
-                query_text=_sidecar_query_text_for(finding),
-                top_k=sidecar_top_k,
-                threshold=sidecar_threshold,
-            )
-            decision = cascade.classify(
-                finding, score, cluster_store, recall_hits=recall_hits
-            )
-            _emit_finding_deduped_event(
-                root,
-                scan_id=scan_id,
-                finding_id=finding.finding_id,
-                decision=decision,
-            )
-            scored_items.append((finding, packet, score, decision))
-
-    # AC #21: iterate invalidation.affected_files instead of
-    # changeset.paths — the planner has already unioned in every file
-    # touched transitively by the callers of the changeset's symbols.
-    affected_total = len(invalidation.affected_files)
-    _p(f"Analyzing {affected_total} file{'' if affected_total == 1 else 's'}...")
-    for file_idx, relpath in enumerate(invalidation.affected_files, start=1):
-        # Report per-file only when there are enough files to make
-        # silence look like a hang. Below 10, the milestone above is
-        # sufficient and a per-file line just adds stderr noise.
-        if affected_total >= 10 and (
-            file_idx == 1 or file_idx == affected_total or file_idx % 10 == 0
-        ):
-            _p(f"  [{file_idx}/{affected_total}] {relpath}")
-        for finding in _analyze_one_file(root, relpath, analyzers=active_analyzers):
-            all_findings.append(finding)
-            packet = build_packet(
-                rule_id=finding.rule_id,
-                relpath=finding.path,
-                symbol_name=finding.symbol_name,
-                normalized_import=finding.normalized_import,
-                changed_slice=finding.changed_slice,
-                analyzer_note=(
-                    f"bound name {finding.symbol_name} has zero identifier "
-                    "references in file"
-                ),
-            )
-            _emit_packet_built_event(
-                root,
-                scan_id=scan_id,
-                finding=finding,
-                prompt_prefix_hash=packet.prompt_prefix_hash,
-            )
-            # Seg-6 (AC #31): score first, then classify. The scorer
-            # reads cluster-store state purely to resolve novelty, so it
-            # must run before the cascade mutates the store (tier 2/3
-            # match -> update_on_match; no-match -> register_new_cluster).
-            score = scorer.score(finding, graph, cluster_store)
-            _emit_priority_scored_event(root, scan_id=scan_id, score=score)
-            # task-012 AC 14: per-finding semantic recall stage. When the
-            # sidecar is disabled, .recall() returns []; AC 15 guarantees
-            # DedupCascade.classify(recall_hits=[]) is byte-identical to
-            # the pre-task cascade call.
-            recall_hits: list[SymbolRecall] = sidecar.recall(
-                query_text=_sidecar_query_text_for(finding),
-                top_k=sidecar_top_k,
-                threshold=sidecar_threshold,
-            )
-            decision = cascade.classify(
-                finding, score, cluster_store, recall_hits=recall_hits
-            )
-            _emit_finding_deduped_event(
-                root,
-                scan_id=scan_id,
-                finding_id=finding.finding_id,
-                decision=decision,
-            )
-            scored_items.append((finding, packet, score, decision))
-
-    # task-012 AC 20: flush any accumulated incremental-update counters
-    # before the cluster store is persisted. When the sidecar is disabled
-    # this is a no-op; when enabled with zero upserts this is also a no-op
-    # (counters are zero from construction). Only a live update batch
-    # emits the single-row ``EmbeddingSidecarIncrementalUpdate`` envelope.
-    sidecar.flush_incremental_update()
-
-    # Seg-6 (AC #31): persist the cluster store exactly once per scan,
-    # AFTER every finding has been classified (so every register /
-    # update has been applied) and BEFORE scheduler dispatch. The
-    # persisted envelope is emitted unconditionally — even on a scan
-    # with zero findings — so replayers see a deterministic one-per-scan
-    # row. ``last_cache_mode`` is ``None`` on a clean atomic write and
-    # ``"fallback_concurrent_writer"`` on a flock timeout (seg-4 AC #21).
-    cluster_store.save(root)
-    _emit_cluster_store_persisted_event(
-        root,
-        scan_id=scan_id,
-        cluster_count=cluster_store.cluster_count,
-        tier3_enabled=cluster_store.embedding_tier_available,
-        cache_mode=cluster_store.last_cache_mode or "ok",
-    )
-
-    # Seg-6 (AC #31): sort the collected packets by priority DESCENDING
-    # and dispatch to the scheduler in that order so the scheduler's
-    # dedup gate honours priority precedence (the highest-priority
-    # duplicate wins the LLM budget). Ties retain traversal order by
-    # virtue of Python's stable sort.
-    scored_items.sort(key=lambda item: -item[2].priority)
-    decision_by_fp: dict[str, ScheduleDecision] = {}
-    triage_total = len(scored_items)
-    if triage_total:
-        _p(
-            f"Triaging {triage_total} finding{'' if triage_total == 1 else 's'} "
-            "with LLM scheduler..."
+        # AC #21: new planner signature — (graph, changeset, *, max_depth).
+        # The old 1-arg identity stub is gone; passing just ``changeset``
+        # would raise TypeError (verified by seg-4's
+        # ``test_plan_signature_replaces_stub``).
+        invalidation = _plan_invalidation(
+            graph, changeset, max_depth=DEFAULT_CALLER_DEPTH
         )
-    for triage_idx, (finding, packet, _score, _dedup_decision) in enumerate(
-        scored_items, start=1
-    ):
-        if triage_total >= 5:
+
+        # AC #21 / #22: emit the InvalidationComputed envelope row between
+        # ScanStarted (written by scan_command.py) and the per-file analyzer
+        # loop below. Telemetry loss is swallowed inside the helper.
+        _emit_invalidation_computed_event(
+            root,
+            scan_id=scan_id,
+            changeset=changeset,
+            invalidation=invalidation,
+            graph=graph,
+        )
+
+        resolved_scheduler = scheduler if scheduler is not None else Scheduler(root=root)
+
+        # task-012 AC 14: opt-in embedding sidecar sits between analyzer output
+        # and the dedup cascade. When the policy flag is off or absent, the
+        # sidecar instance is disabled (AC 5) and every public method is a
+        # no-op — preserving byte-identical scan output (AC 22). When enabled
+        # but deps are missing, __init__ self-disables after emitting a single
+        # EmbeddingSidecarDegraded row (AC 6).
+        effective_policy = policy if policy is not None else _load_scan_policy(root)
+        sidecar = EmbeddingSidecar(root, effective_policy)
+        sidecar_top_k, sidecar_threshold = _resolve_sidecar_recall_params(
+            effective_policy
+        )
+        if sidecar.enabled:
+            sidecar.load()
+
+        # Seg-6 (AC #31): load the persistent cluster store once per scan,
+        # emit the one-shot DedupEmbeddingTierStatus envelope, and construct
+        # the scorer + cascade that the analyzer loop below will drive. The
+        # load is non-locking (AC #22 from seg-4); a missing store on the
+        # first scan yields an empty :class:`ClusterStore` whose
+        # ``is_empty`` is True so ``compute_novelty`` resolves to 1.0 for
+        # every finding produced (AC #33).
+        cluster_store = ClusterStore.load(root)
+        _emit_dedup_tier_status_event(
+            root,
+            scan_id=scan_id,
+            available=cluster_store.embedding_tier_available,
+            reason=cluster_store.embedding_tier_reason,
+        )
+        scorer = PriorityScorer()
+        cascade = DedupCascade()
+
+        all_findings: list[CandidateFinding] = []
+        # Seg-6 (AC #31): we can no longer append to ``decisions`` inside the
+        # analyzer loop because the scheduler dispatch is deferred until
+        # after we sort the collected packets by priority (descending). We
+        # collect the per-finding quad here and build the index-aligned
+        # decisions list below, after the scheduler has been driven in
+        # priority order.
+        scored_items: list[
+            tuple[CandidateFinding, object, PriorityScore, DedupDecision]
+        ] = []
+
+        # task-20260506-001 (state-migration-legacy-to-next AC 9-13): inject
+        # the projected legacy findings into the same scoring + recall +
+        # cascade sequence used by the analyzer loop below. Gated by the
+        # ``state_migration.legacy_findings_enabled`` policy flag (default
+        # True). When the gate is off, ``load_legacy_findings`` is NEVER
+        # called — the code path is short-circuited at the helper boundary
+        # (AC 10/11). Legacy findings are appended FIRST so a subsequent
+        # analyzer finding sharing the same ``finding_id`` lands in Tier 1
+        # (exact fingerprint match) per cascade.py:82-89 (AC 13).
+        if _legacy_migration_enabled(effective_policy or {}):
+            legacy_findings = load_legacy_findings(root, log=None)
+            for finding in legacy_findings:
+                all_findings.append(finding)
+                packet = build_packet(
+                    rule_id=finding.rule_id,
+                    relpath=finding.path,
+                    symbol_name=finding.symbol_name,
+                    normalized_import=finding.normalized_import,
+                    changed_slice=finding.changed_slice,
+                    analyzer_note=(
+                        f"bound name {finding.symbol_name} has zero identifier "
+                        "references in file"
+                    ),
+                )
+                _emit_packet_built_event(
+                    root,
+                    scan_id=scan_id,
+                    finding=finding,
+                    prompt_prefix_hash=packet.prompt_prefix_hash,
+                )
+                score = scorer.score(finding, graph, cluster_store)
+                _emit_priority_scored_event(root, scan_id=scan_id, score=score)
+                recall_hits: list[SymbolRecall] = sidecar.recall(
+                    query_text=_sidecar_query_text_for(finding),
+                    top_k=sidecar_top_k,
+                    threshold=sidecar_threshold,
+                )
+                decision = cascade.classify(
+                    finding, score, cluster_store, recall_hits=recall_hits
+                )
+                _emit_finding_deduped_event(
+                    root,
+                    scan_id=scan_id,
+                    finding_id=finding.finding_id,
+                    decision=decision,
+                )
+                scored_items.append((finding, packet, score, decision))
+
+        # AC #21: iterate invalidation.affected_files instead of
+        # changeset.paths — the planner has already unioned in every file
+        # touched transitively by the callers of the changeset's symbols.
+        affected_total = len(invalidation.affected_files)
+        _p(f"Analyzing {affected_total} file{'' if affected_total == 1 else 's'}...")
+        for file_idx, relpath in enumerate(invalidation.affected_files, start=1):
+            # Report per-file only when there are enough files to make
+            # silence look like a hang. Below 10, the milestone above is
+            # sufficient and a per-file line just adds stderr noise.
+            if affected_total >= 10 and (
+                file_idx == 1 or file_idx == affected_total or file_idx % 10 == 0
+            ):
+                _p(f"  [{file_idx}/{affected_total}] {relpath}")
+            for finding in _analyze_one_file(root, relpath, analyzers=active_analyzers):
+                all_findings.append(finding)
+                packet = build_packet(
+                    rule_id=finding.rule_id,
+                    relpath=finding.path,
+                    symbol_name=finding.symbol_name,
+                    normalized_import=finding.normalized_import,
+                    changed_slice=finding.changed_slice,
+                    analyzer_note=(
+                        f"bound name {finding.symbol_name} has zero identifier "
+                        "references in file"
+                    ),
+                )
+                _emit_packet_built_event(
+                    root,
+                    scan_id=scan_id,
+                    finding=finding,
+                    prompt_prefix_hash=packet.prompt_prefix_hash,
+                )
+                # Seg-6 (AC #31): score first, then classify. The scorer
+                # reads cluster-store state purely to resolve novelty, so it
+                # must run before the cascade mutates the store (tier 2/3
+                # match -> update_on_match; no-match -> register_new_cluster).
+                score = scorer.score(finding, graph, cluster_store)
+                _emit_priority_scored_event(root, scan_id=scan_id, score=score)
+                # task-012 AC 14: per-finding semantic recall stage. When the
+                # sidecar is disabled, .recall() returns []; AC 15 guarantees
+                # DedupCascade.classify(recall_hits=[]) is byte-identical to
+                # the pre-task cascade call.
+                recall_hits: list[SymbolRecall] = sidecar.recall(
+                    query_text=_sidecar_query_text_for(finding),
+                    top_k=sidecar_top_k,
+                    threshold=sidecar_threshold,
+                )
+                decision = cascade.classify(
+                    finding, score, cluster_store, recall_hits=recall_hits
+                )
+                _emit_finding_deduped_event(
+                    root,
+                    scan_id=scan_id,
+                    finding_id=finding.finding_id,
+                    decision=decision,
+                )
+                scored_items.append((finding, packet, score, decision))
+
+        # task-012 AC 20: flush any accumulated incremental-update counters
+        # before the cluster store is persisted. When the sidecar is disabled
+        # this is a no-op; when enabled with zero upserts this is also a no-op
+        # (counters are zero from construction). Only a live update batch
+        # emits the single-row ``EmbeddingSidecarIncrementalUpdate`` envelope.
+        sidecar.flush_incremental_update()
+
+        # Seg-6 (AC #31): persist the cluster store exactly once per scan,
+        # AFTER every finding has been classified (so every register /
+        # update has been applied) and BEFORE scheduler dispatch. The
+        # persisted envelope is emitted unconditionally — even on a scan
+        # with zero findings — so replayers see a deterministic one-per-scan
+        # row. ``last_cache_mode`` is ``None`` on a clean atomic write and
+        # ``"fallback_concurrent_writer"`` on a flock timeout (seg-4 AC #21).
+        cluster_store.save(root)
+        _emit_cluster_store_persisted_event(
+            root,
+            scan_id=scan_id,
+            cluster_count=cluster_store.cluster_count,
+            tier3_enabled=cluster_store.embedding_tier_available,
+            cache_mode=cluster_store.last_cache_mode or "ok",
+        )
+
+        # Seg-6 (AC #31): sort the collected packets by priority DESCENDING
+        # and dispatch to the scheduler in that order so the scheduler's
+        # dedup gate honours priority precedence (the highest-priority
+        # duplicate wins the LLM budget). Ties retain traversal order by
+        # virtue of Python's stable sort.
+        scored_items.sort(key=lambda item: -item[2].priority)
+        decision_by_fp: dict[str, ScheduleDecision] = {}
+        triage_total = len(scored_items)
+        if triage_total:
             _p(
-                f"  [{triage_idx}/{triage_total}] {finding.path}:"
-                f"{finding.start_line} {finding.rule_id}"
+                f"Triaging {triage_total} finding{'' if triage_total == 1 else 's'} "
+                "with LLM scheduler..."
             )
-        decision_by_fp[finding.finding_id] = resolved_scheduler.schedule(packet)
+        for triage_idx, (finding, packet, _score, _dedup_decision) in enumerate(
+            scored_items, start=1
+        ):
+            if triage_total >= 5:
+                _p(
+                    f"  [{triage_idx}/{triage_total}] {finding.path}:"
+                    f"{finding.start_line} {finding.rule_id}"
+                )
+            decision_by_fp[finding.finding_id] = resolved_scheduler.schedule(packet)
 
-    # Seg-6 (AC #31): re-align the schedule decisions with
-    # ``all_findings`` (analyzer traversal order) so
-    # :attr:`ScanResult.schedule_decisions` stays index-aligned with
-    # :attr:`ScanResult.findings` as documented in the dataclass
-    # docstring. The scheduler was driven in priority order; the return
-    # value is flipped back so downstream consumers (CLI / SARIF) do not
-    # need to care about the ordering change.
-    decisions: list[ScheduleDecision] = [
-        decision_by_fp[f.finding_id] for f in all_findings
-    ]
+        # Seg-6 (AC #31): re-align the schedule decisions with
+        # ``all_findings`` (analyzer traversal order) so
+        # :attr:`ScanResult.schedule_decisions` stays index-aligned with
+        # :attr:`ScanResult.findings` as documented in the dataclass
+        # docstring. The scheduler was driven in priority order; the return
+        # value is flipped back so downstream consumers (CLI / SARIF) do not
+        # need to care about the ordering change.
+        decisions: list[ScheduleDecision] = [
+            decision_by_fp[f.finding_id] for f in all_findings
+        ]
 
-    # Seg-6 (AC #21-28): emit exactly ONE ScanExplanation row summarizing
-    # the scan. Invoked AFTER ``cluster_store.save(root)`` and AFTER the
-    # scheduler dispatch loop, BEFORE the ScanResult return — the order
-    # lets the helper read the final cluster state and the fully-resolved
-    # decision list. OSError-only is swallowed inside the helper.
-    _emit_scan_explanation_event(
-        root,
-        scan_id=scan_id,
-        invalidation=invalidation,
-        all_findings=all_findings,
-        scored_items=scored_items,
-        decisions=decisions,
-        cluster_store=cluster_store,
-    )
+        # Seg-6 (AC #21-28): emit exactly ONE ScanExplanation row summarizing
+        # the scan. Invoked AFTER ``cluster_store.save(root)`` and AFTER the
+        # scheduler dispatch loop, BEFORE the ScanResult return — the order
+        # lets the helper read the final cluster state and the fully-resolved
+        # decision list. OSError-only is swallowed inside the helper.
+        _emit_scan_explanation_event(
+            root,
+            scan_id=scan_id,
+            invalidation=invalidation,
+            all_findings=all_findings,
+            scored_items=scored_items,
+            decisions=decisions,
+            cluster_store=cluster_store,
+        )
 
-    # Audit SEC-RUFF-02 / cq-002 / SEC-RUFF-02-INCOMPLETE: per-scan
-    # memo cleanup runs from the @_with_per_scan_cleanup decorator's
-    # finally clause, so it covers BOTH the success path (this return)
-    # AND the exception path. No inline cleanup needed here.
-    return ScanResult(
-        scan_id=scan_id,
-        findings=all_findings,
-        sarif_path=None,
-        schedule_decisions=decisions,
-    )
+        return ScanResult(
+            scan_id=scan_id,
+            findings=all_findings,
+            sarif_path=None,
+            schedule_decisions=decisions,
+        )
+    finally:
+        # SEC-RUFF-02: clear per-scan passthrough analyzer memos on both the
+        # success path and any exception path so long-running daemons do not
+        # accumulate one memo entry per scan_id.
+        _reset_passthrough_analyzer_state()
 
 
 __all__ = ["ScanResult", "run_scan"]

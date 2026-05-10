@@ -3,7 +3,7 @@
 Surfaced when running ``autofix --root . --once`` with the
 aggressive budget — the ``claude`` CLI hit the scheduler's
 60-second timeout on one bundle, which propagated as
-``subprocess.TimeoutExpired`` through ``_analyze_bundle`` and
+``subprocess.TimeoutExpired`` through ``analyze_files`` and
 killed the cycle.
 
 Two-layer fix:
@@ -13,7 +13,7 @@ Two-layer fix:
    ``subprocess.TimeoutExpired`` and ``OSError`` from the
    scheduler invoke, logs an ``AnalyzerTimeout`` event once per
    scan, and returns an empty iter.
-2. :mod:`autofix.cli.cycle_runner._analyze_bundle` — last-resort
+2. :mod:`autofix.analyzers._registry.analyze_files` — last-resort
    safety net catches any ``Exception`` from the analyzer
    callable, logs to stderr, and continues to the next file.
    ``KeyboardInterrupt`` / ``SystemExit`` still propagate.
@@ -26,10 +26,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from autofix.analyzers import analyze_files
+from autofix.crawl.bundles import Bundle
 
-def _make_bundle(tmp_path: Path) -> object:
-    from autofix.crawl.bundles import Bundle
 
+def _make_bundle(tmp_path: Path) -> Bundle:
     src = tmp_path / "x.py"
     src.write_text("import os\n")
     file_paths = (src,)
@@ -43,20 +44,20 @@ def _make_bundle(tmp_path: Path) -> object:
 
 def test_analyze_bundle_swallows_timeout_expired(tmp_path: Path) -> None:
     """A registry callable that raises TimeoutExpired must not propagate."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-
     bundle = _make_bundle(tmp_path)
 
     def _raises(parse_result, symbol_table):
         raise subprocess.TimeoutExpired(cmd=["claude"], timeout=60)
 
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         {"llm:security": _raises}, clear=True,
     ):
-        findings = _analyze_bundle(
-            bundle=bundle, analyzer="llm:security",
-            root=tmp_path, commit_sha="abc",
+        findings = analyze_files(
+            bundle.file_paths,
+            analyzers=["llm:security"],
+            repo_root=tmp_path,
+            commit_sha="abc",
         )
 
     # Cycle survived; no findings produced for this file.
@@ -65,20 +66,20 @@ def test_analyze_bundle_swallows_timeout_expired(tmp_path: Path) -> None:
 
 def test_analyze_bundle_swallows_runtime_error(tmp_path: Path) -> None:
     """Any other unexpected analyzer exception is also swallowed."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-
     bundle = _make_bundle(tmp_path)
 
     def _raises(parse_result, symbol_table):
         raise RuntimeError("simulated transient failure")
 
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         {"cheap": _raises}, clear=True,
     ):
-        findings = _analyze_bundle(
-            bundle=bundle, analyzer="cheap",
-            root=tmp_path, commit_sha="abc",
+        findings = analyze_files(
+            bundle.file_paths,
+            analyzers=["cheap"],
+            repo_root=tmp_path,
+            commit_sha="abc",
         )
 
     assert findings == []
@@ -86,41 +87,41 @@ def test_analyze_bundle_swallows_runtime_error(tmp_path: Path) -> None:
 
 def test_analyze_bundle_keyboard_interrupt_propagates(tmp_path: Path) -> None:
     """KeyboardInterrupt must escape the safety-net so Ctrl-C still works."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-
     bundle = _make_bundle(tmp_path)
 
     def _kbd(parse_result, symbol_table):
         raise KeyboardInterrupt
 
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         {"cheap": _kbd}, clear=True,
     ):
         with pytest.raises(KeyboardInterrupt):
-            _analyze_bundle(
-                bundle=bundle, analyzer="cheap",
-                root=tmp_path, commit_sha="abc",
+            analyze_files(
+                bundle.file_paths,
+                analyzers=["cheap"],
+                repo_root=tmp_path,
+                commit_sha="abc",
             )
 
 
 def test_analyze_bundle_system_exit_propagates(tmp_path: Path) -> None:
     """SystemExit also escapes the safety-net (``sys.exit(N)`` must work)."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-
     bundle = _make_bundle(tmp_path)
 
     def _exit(parse_result, symbol_table):
         raise SystemExit(2)
 
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         {"cheap": _exit}, clear=True,
     ):
         with pytest.raises(SystemExit):
-            _analyze_bundle(
-                bundle=bundle, analyzer="cheap",
-                root=tmp_path, commit_sha="abc",
+            analyze_files(
+                bundle.file_paths,
+                analyzers=["cheap"],
+                repo_root=tmp_path,
+                commit_sha="abc",
             )
 
 

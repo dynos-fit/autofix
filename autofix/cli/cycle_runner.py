@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from autofix.analyzers import analyze_files
 from autofix.crawl.bundles import Bundle, expand_bundle
 from autofix.crawl.config import resolve_budget_tier
 from autofix.crawl.crawl_constants import (
@@ -210,10 +211,10 @@ def _run_crawl_once_body(
     aggregated_findings: list = []
 
     for bundle, analyzer in batch:
-        findings = _analyze_bundle(
-            bundle=bundle,
-            analyzer=analyzer,
-            root=root,
+        findings = analyze_files(
+            bundle.file_paths,
+            analyzers=[analyzer],
+            repo_root=root,
             commit_sha=current_commit_sha,
         )
 
@@ -305,64 +306,6 @@ def _sleep(seconds: int) -> None:
     time.sleep(seconds)
 
 
-def _analyze_bundle(
-    *, bundle: Any, analyzer: str, root: Path, commit_sha: str
-) -> list:
-    """Run one analyzer against every file in the bundle.
-
-    Looks up the analyzer's callable in
-    :data:`autofix.funnel.pipeline._ANALYZER_REGISTRY` and invokes
-    it once per file in the bundle (each call gets that file's
-    ``ParseResult`` + ``SymbolTable``). Returns the union of
-    findings across all files. The LLM cache from the analyzer's
-    base class deduplicates re-scans of unchanged files
-    automatically — same prompt + same commit_sha + same model
-    means a cache hit, free.
-
-    OSError / parse-failure on any single file is swallowed so a
-    bad file doesn't abort the cycle; the rest of the bundle still
-    contributes findings.
-    """
-    from autofix.funnel.pipeline import _ANALYZER_REGISTRY
-    from autofix.indexing.symbols import build_symbol_table
-    from autofix.parsing.tree_sitter import parse_file
-
-    callable_ = _ANALYZER_REGISTRY.get(analyzer)
-    if callable_ is None:
-        return []
-
-    findings: list = []
-    for path in bundle.file_paths:
-        try:
-            parse_result = parse_file(path, repo_root=root)
-        except (FileNotFoundError, PermissionError, OSError):
-            continue
-        try:
-            symbol_table = build_symbol_table(parse_result)
-        except (NotImplementedError, OSError):
-            continue
-        try:
-            result = callable_(parse_result, symbol_table)
-            if hasattr(result, "__iter__") and not isinstance(result, list):
-                findings.extend(list(result))
-            else:
-                findings.extend(result)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:  # noqa: BLE001 — last-resort safety net
-            # Any other analyzer failure (subprocess timeout, network,
-            # parse-tree edge case) is logged and skipped. A single
-            # bad file must not abort a long-running crawl cycle.
-            print(
-                f"autofix: warning: {analyzer} on {path} failed: "
-                f"{type(exc).__name__}: {exc!r}; continuing",
-                file=sys.stderr,
-                flush=True,
-            )
-            continue
-    return findings
-
-
 def _dispatch_repair_workflow(
     *,
     root: Path,
@@ -381,7 +324,7 @@ def _dispatch_repair_workflow(
     Bypasses ``run_command._run_one_cycle`` because that function
     re-runs the full SCAN/TRIAGE/PLAN/APPLY/VERIFY workflow against
     the entire repo's diff scope — wasteful when we already have
-    findings from ``_analyze_bundle``. We only need:
+    findings from ``analyze_files``. We only need:
 
     1. ``_run_fix_core(findings=...)`` — uses preloaded findings,
        skips re-scanning. Captures one recovery branch

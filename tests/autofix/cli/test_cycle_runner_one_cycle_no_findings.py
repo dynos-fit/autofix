@@ -28,7 +28,7 @@ def test_run_crawl_once_empty_ledger_no_findings(tmp_path: Path) -> None:
     # Stub the analyzer-dispatch path so this test doesn't hit the real
     # LLM. The driver should still produce ledger rows for each
     # (bundle, analyzer) it picked.
-    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze:
+    with patch("autofix.cli.cycle_runner.analyze_files") as mock_analyze:
         mock_analyze.return_value = []  # no findings
 
         rc = run_crawl_once(
@@ -51,7 +51,7 @@ def test_run_crawl_once_records_one_row_per_pair(tmp_path: Path) -> None:
 
     _make_repo(tmp_path, ["a.py", "b.py", "c.py"])
 
-    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze:
+    with patch("autofix.cli.cycle_runner.analyze_files") as mock_analyze:
         mock_analyze.return_value = []
         rc = run_crawl_once(
             root=tmp_path,
@@ -73,7 +73,7 @@ def test_preview_mode_does_not_touch_working_tree(tmp_path: Path) -> None:
 
     _make_repo(tmp_path, ["a.py"])
 
-    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze, \
+    with patch("autofix.cli.cycle_runner.analyze_files") as mock_analyze, \
          patch("autofix.cli.cycle_runner._dispatch_repair_workflow") as mock_repair:
         # Even with findings present, preview mode must not call repair.
         mock_analyze.return_value = [
@@ -100,7 +100,7 @@ def test_pr_mode_dispatches_repair_when_findings_present(tmp_path: Path) -> None
         path="a.py",
     )
 
-    with patch("autofix.cli.cycle_runner._analyze_bundle") as mock_analyze, \
+    with patch("autofix.cli.cycle_runner.analyze_files") as mock_analyze, \
          patch("autofix.cli.cycle_runner._dispatch_repair_workflow") as mock_repair:
         mock_analyze.return_value = [finding]
         mock_repair.return_value = 0
