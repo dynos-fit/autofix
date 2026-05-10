@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from autofix.llm.scheduler import AnalyzerSeamUnavailableError, Scheduler
+from autofix.llm.scheduler import LLMSeamUnavailableError, Scheduler
 from autofix.repair.coordinator import RepairTask, RepairTier
 from autofix.telemetry import events_log
 
@@ -445,7 +445,7 @@ def produce_patch(
         )
         scheduler = Scheduler(root)
         raw_response = scheduler.invoke_judgment(prompt, model=model)
-    except AnalyzerSeamUnavailableError:
+    except LLMSeamUnavailableError:
         _reject(root, finding_id, file_sha, model, "did_not_apply", cache_path, cache_key)
         return None
     except (subprocess.TimeoutExpired, OSError):
