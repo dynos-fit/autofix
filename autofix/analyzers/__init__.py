@@ -1,6 +1,9 @@
 """Analyzers subpackage.
 
-Splits by cost class: ``analyzers.cheap`` hosts O(file)
-AST/symbol-table rules that never exit the process. Expensive/global
-analyzers live in sibling subpackages introduced by later segments.
+Public surface: ``analyze_files`` (the entry point) and
+``CandidateFinding`` (the return-type dataclass).
 """
+from autofix.analyzers._registry import analyze_files
+from autofix.evidence.schema import CandidateFinding
+
+__all__ = ["analyze_files", "CandidateFinding"]

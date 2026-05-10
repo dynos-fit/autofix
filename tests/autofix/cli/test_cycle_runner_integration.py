@@ -1,10 +1,9 @@
 """Integration tests for the crawl driver's stub wiring (ARCH-016 follow-up).
 
-Exercises the real ``_analyze_bundle`` and
-``_dispatch_repair_workflow`` paths now that the stubs are wired:
+Exercises the real analyze_files and ``_dispatch_repair_workflow`` paths
+now that the stubs are wired:
 
-* ``_analyze_bundle`` invokes the funnel analyzer registry per file in
-  the bundle.
+* analyze_files invokes the funnel analyzer registry per file in the bundle.
 * ``_dispatch_repair_workflow`` invokes
   :func:`autofix.cli.run_command._run_one_cycle` with the crawl's
   resolved analyzer set and a synthesized ``args`` namespace.
@@ -14,6 +13,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from autofix.analyzers import analyze_files
+from autofix.crawl.bundles import Bundle
 
 
 
@@ -32,11 +34,8 @@ def _git_init_with_files(tmp_path: Path, files: list[str]) -> Path:
 
 
 def test_analyze_bundle_invokes_cheap_analyzer(tmp_path: Path) -> None:
-    """Bundle with cheap analyzer → ``_analyze_bundle`` invokes the
+    """Bundle with cheap analyzer → analyze_files invokes the
     cheap callable from the funnel registry per file."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-    from autofix.crawl.bundles import Bundle
-
     src = tmp_path / "x.py"
     src.write_text("import os\n# os never used\n")
     file_paths = (src,)
@@ -54,12 +53,14 @@ def test_analyze_bundle_invokes_cheap_analyzer(tmp_path: Path) -> None:
 
     fake_registry = {"cheap": fake_analyzer}
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         fake_registry, clear=True,
     ):
-        findings = _analyze_bundle(
-            bundle=bundle, analyzer="cheap",
-            root=tmp_path, commit_sha="abc",
+        findings = analyze_files(
+            bundle.file_paths,
+            analyzers=["cheap"],
+            repo_root=tmp_path,
+            commit_sha="abc",
         )
 
     fake_analyzer.assert_called_once()
@@ -67,9 +68,6 @@ def test_analyze_bundle_invokes_cheap_analyzer(tmp_path: Path) -> None:
 
 
 def test_analyze_bundle_unknown_analyzer_returns_empty(tmp_path: Path) -> None:
-    from autofix.cli.cycle_runner import _analyze_bundle
-    from autofix.crawl.bundles import Bundle
-
     src = tmp_path / "x.py"
     src.write_text("# noop\n")
     bundle = Bundle(
@@ -77,9 +75,11 @@ def test_analyze_bundle_unknown_analyzer_returns_empty(tmp_path: Path) -> None:
         total_bytes=src.stat().st_size,
         fingerprint=Bundle.compute_fingerprint((src,)),
     )
-    findings = _analyze_bundle(
-        bundle=bundle, analyzer="nonexistent",
-        root=tmp_path, commit_sha="abc",
+    findings = analyze_files(
+        bundle.file_paths,
+        analyzers=["nonexistent"],
+        repo_root=tmp_path,
+        commit_sha="abc",
     )
     assert findings == []
 
@@ -87,9 +87,6 @@ def test_analyze_bundle_unknown_analyzer_returns_empty(tmp_path: Path) -> None:
 def test_analyze_bundle_swallows_parse_failure_per_file(tmp_path: Path) -> None:
     """One bad file in a multi-file bundle doesn't abort the cycle —
     other files still contribute findings."""
-    from autofix.cli.cycle_runner import _analyze_bundle
-    from autofix.crawl.bundles import Bundle
-
     good = tmp_path / "good.py"
     good.write_text("import os\n")
     missing = tmp_path / "missing.py"  # never written → parse_file fails
@@ -102,12 +99,14 @@ def test_analyze_bundle_swallows_parse_failure_per_file(tmp_path: Path) -> None:
 
     fake_analyzer = MagicMock(return_value=[MagicMock(rule_id="cheap")])
     with patch.dict(
-        "autofix.funnel.pipeline._ANALYZER_REGISTRY",
+        "autofix.analyzers._registry._ANALYZER_REGISTRY",
         {"cheap": fake_analyzer}, clear=True,
     ):
-        findings = _analyze_bundle(
-            bundle=bundle, analyzer="cheap",
-            root=tmp_path, commit_sha="abc",
+        findings = analyze_files(
+            bundle.file_paths,
+            analyzers=["cheap"],
+            repo_root=tmp_path,
+            commit_sha="abc",
         )
 
     # The good file contributed; the missing file was swallowed silently.

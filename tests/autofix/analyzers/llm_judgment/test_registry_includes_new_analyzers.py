@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from autofix.analyzers.llm_judgment.dead_code import DeadCodeJudgmentAnalyzer
 from autofix.analyzers.llm_judgment.performance import PerformanceJudgmentAnalyzer
-from autofix.funnel.pipeline import _ANALYZER_REGISTRY
+from autofix.analyzers._registry import _ANALYZER_REGISTRY
 
 
 def test_dead_code_registered() -> None:
