@@ -84,31 +84,52 @@ For full details: [`docs/getting-started.md`](docs/getting-started.md).
 ## How the crawl works
 
 ```
-                 ┌─────────────── ledger ────────────────┐
-                 │  per (bundle, analyzer):               │
-                 │    last_scanned_at, last_commit_sha,   │
-                 │    last_finding_count, file_paths      │
-                 └───────────────┬────────────────────────┘
-                                 │
-                                 ▼
-              ┌──── picker (every cycle) ────┐
-              │  priority = freshness × relevance      │
-              │  pick top K under per-cycle budget    │
-              │  expand each into a bounded bundle    │
-              │  drop hub neighbors over saturation   │
-              └────────────────┬───────────────────────┘
+                 ┌──────────────── ledger ─────────────────┐
+                 │  append-only JSONL row per scan:         │
+                 │    ts, bundle_fingerprint, seed_path,    │
+                 │    file_paths, analyzer, last_commit_sha,│
+                 │    last_finding_count, cache_hit,        │
+                 │    event_id (+ v2 telemetry fields)      │
+                 └────────────────┬─────────────────────────┘
+                                  │
+                                  ▼
+              ┌──────── picker (every cycle) ────────┐
+              │  enumerate seed candidates (git)      │
+              │  filter via .autofixignore (optional) │
+              │  score by relevance(seed)             │
+              │  over-pick top 3K candidates          │
+              │  expand each → bounded Bundle         │
+              │    (hops/files/bytes caps;            │
+              │     drop hub neighbors over           │
+              │     saturation in the window)         │
+              │  priority = freshness × relevance     │
+              │  sort desc; take top K Bundles        │
+              └────────────────┬──────────────────────┘
                                │
                                ▼
-                  ┌─── analyze the K bundles ───┐
-                  │  → findings, cache writes  │
-                  │  → ledger updates          │
-                  └────────────────────────────┘
-                               │
-                               ▼
-                  if any findings + mode != preview:
-                  triage → plan → apply → verify
-                  (the existing run loop)
+              ┌─── cycle_runner crosses K × analyzers ───┐
+              │   K bundles × N analyzers → N·K pairs    │
+              │   analyze_files per pair → findings      │
+              │   append one ledger row per pair         │
+              │   aggregate findings across the cycle    │
+              └─────────────────┬────────────────────────┘
+                                │
+                                ▼
+                  if aggregated_findings and mode != preview:
+                  ─────────────────────────────────────────
+                    _run_fix_core(findings=..., apply=True,
+                                  auto_llm=<has llm:* analyzer>)
+                      → one recovery branch (autofix/pre-fix-snapshot-<utc>)
+                      → deterministic apply
+                      → optional LLM-patch apply
+                    apply_post_fix_policy(...)
+                      → mode=commit → branch
+                      → mode=pr     → branch + gh pr create
 ```
+
+The crawl path bypasses the long-form `autofix run` SCAN/TRIAGE/PLAN/
+APPLY/VERIFY state machine: it already has the findings, so it goes
+straight to apply + post-fix policy.
 
 Over time, the whole repo gets covered, but each cycle is bounded.
 Hot files re-visit sooner; untouched files eventually rotate in;
