@@ -134,10 +134,16 @@ Three forces shaped the architecture:
 
 ## Adding a new analyzer
 
-1. Drop a new module under `autofix/analyzers/cheap/` (or
-   `autofix/analyzers/semantic/` for index-aware analyzers).
-2. Implement `analyze(file, parse_tree, scip_index) -> Iterable[CandidateFinding]`.
-3. Register it in `autofix/funnel/pipeline.py`.
+1. Drop a new module under `autofix/analyzers/cheap/` for AST-only
+   analyzers, `autofix/analyzers/linter_passthrough/` for external-
+   linter adapters, or `autofix/analyzers/llm_judgment/` for LLM-
+   backed analyzers.
+2. Implement `analyze(parse_result: ParseResult, symbol_table: SymbolTable) -> list[CandidateFinding]`
+   (or the linter / LLM-judgment base class equivalent).
+3. Register the analyzer-set name → callable in
+   `autofix/analyzers/_registry.py::_ANALYZER_REGISTRY`. It is
+   automatically surfaced through the public `ANALYZER_REGISTRY`
+   `MappingProxyType` view exported from `autofix.analyzers`.
 4. Add a fixture-based test under `tests/autofix/analyzers/`.
 
 The funnel handles ranking, dedup, evidence-packet construction, and
@@ -150,7 +156,8 @@ LLM scheduling — your analyzer only emits raw candidate findings.
 2. The adapter is responsible for: producing SCIP-format index data
    (via Tree-sitter or an upstream binary), and registering the file
    extensions it handles.
-3. The adapter auto-registers via `autofix.languages.adapter_emission`.
+3. Self-register via a side-effect import at the bottom of
+   `autofix/languages/__init__.py` (calls `register(YourAdapter())`).
 
 `autofix/languages/python.py` is the simplest reference. `go.py` and
 `jsts.py` show the upstream-binary pattern.
@@ -195,9 +202,11 @@ entry point. For each finding it emits a `RepairTask` with a tier:
   good candidate for an LLM-generated diff. `produce_patch(task)`
   invokes the LLM with the evidence packet, parses the response
   through the unified-diff fence contract, and validates the
-  candidate diff via `git apply --check --no-unsafe-paths`.
-- **`HUMAN_REVIEW`** — anything the router can't classify. Surfaced
-  in the JSONL log with `reason="preview_only"`.
+  candidate diff via `git apply` against the working tree.
+- **`HUMAN_ONLY`** — anything the router can't classify. Surfaced in
+  the JSONL log with `reason="below_threshold"` (analyzer confidence
+  under the LLM-patch cutoff) or `reason="no_mapping"` (confidence
+  high enough but rule_id has no deterministic or LLM-patch route).
 
 The threshold (default `0.6`, lives in
 `autofix/cli/run_constants.py::LLM_PATCH_THRESHOLD`) is the priority
@@ -351,7 +360,7 @@ LLM patcher, workflow state machine, post-fix policy) is the
 | `autofix.crawl.score` | `file_freshness`, `bundle_freshness`, `relevance`, `priority` — pure scoring functions. |
 | `autofix.crawl.ledger` | `LedgerRow` + `Ledger` — append-only JSONL persistence with `O_APPEND` atomicity. |
 | `autofix.crawl.picker` | `pick_next_batch` — deterministic bundle selection per cycle. |
-| `autofix.crawl.driver` | `run_crawl_once` + `run_crawl_continuously` — loop driver with pidfile lifecycle and per-cycle exception isolation. |
+| `autofix.cli.cycle_runner` | `run_crawl_once` + `run_crawl_continuously` — loop driver with pidfile lifecycle and per-cycle exception isolation. |
 | `autofix.cli.init_command` | `autofix init` interactive wizard. |
 | `autofix.cli.status_command` | `autofix status` — reads pidfile + ledger, prints summary. |
 | `autofix.cli.main` | Top-level dispatch: bare `autofix` routes to the crawl when `--root` is provided. Layered `--help` / `--help-advanced`. |

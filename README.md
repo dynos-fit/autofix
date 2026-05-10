@@ -5,11 +5,11 @@ graph, narrates findings via an LLM, and (optionally) opens PRs.
 
 ```bash
 $ autofix init       # one-time: pick mode + budget
-$ autofix            # runs continuously, finds bugs, opens PRs
+$ autofix start      # daemonize: runs continuously in the background
 $ autofix status     # peek at what it's doing right now
 ```
 
-Three commands. That's the whole UX.
+Plus `autofix logs` to tail the daemon log and `autofix stop` to halt it.
 
 ## What it does
 
@@ -27,7 +27,7 @@ cross-file bugs that single-file scans miss.
 | **Linter passthrough** | `ruff`, `mypy`, `eslint`, `golangci-lint` — adapters that flow findings through the same pipeline |
 | **LLM judgment analyzers** | `security` (9 OWASP-style classes), `code-quality` (9 antipatterns), `dead-code` (6 categories), `performance` (11 categories) |
 | **Repair coordinator** | Routes findings to a fix tier: deterministic deletion (cheap), LLM diff (`--auto-llm`), or human review |
-| **LLM patcher** | Generates unified diffs and validates them with `git apply --check --no-unsafe-paths` before any source mutation |
+| **LLM patcher** | Generates unified diffs and validates them with `git apply` against the working tree before any source mutation |
 | **Workflow loop** | `SCANNING → TRIAGING → PLANNING → APPLYING → VERIFYING → DONE/RETRY/HUMAN_REVIEW/FAILED` (every transition recorded in `.autofix/runs/<run-id>/state.jsonl`) |
 | **Verify state** | Re-runs your tests (auto-detects pytest/jest/go-test or override via config) and re-scans to confirm fixes converged |
 | **Branch & PR** | Optional post-DONE: create `autofix/fixes-<run-id>`, commit, optionally `gh pr create` |
@@ -62,20 +62,22 @@ What should autofix do?
 Choice (default: 1):
 
 How much should it spend per day?
-  [1] Cheap        (~$0.50/day, 1 bundle/hour)
-  [2] Balanced     (~$2/day,    5 bundles/hour) (recommended)
-  [3] Aggressive   (~$10/day,   20 bundles/hour)
+  [1] Cheap        (~$0.50/day, 1 bundle/cycle, 60-min interval)
+  [2] Balanced     (~$2/day,    5 bundles/cycle, 30-min interval) (recommended)
+  [3] Aggressive   (~$10/day,   20 bundles/cycle, 5-min interval)
 Choice (default: 2):
 
 ✓ wrote .autofix/config.json
 
-$ autofix
+$ autofix start
+autofix: daemon started (PID 12345)
+$ autofix logs
 autofix: cycle picked 10 (bundle, analyzer) pairs
-... (runs in the background)
+... (tails the daemon log)
 ```
 
 Press enter on each `init` question for the recommended defaults
-(PR mode + balanced budget). Run `autofix` and walk away.
+(PR mode + balanced budget). Run `autofix start` and walk away.
 
 For full details: [`docs/getting-started.md`](docs/getting-started.md).
 
@@ -224,11 +226,13 @@ If the file is absent, behavior is unchanged.
 
 ### Debug output
 
-`autofix --root . --once --debug-crawl` (or the same flag on
-`autofix start` / `autofix --root . [--apply]`) emits per-cycle
+`autofix --root . --once --debug-crawl` (or `--debug-crawl` on the
+bare `autofix --root . [--apply]` foreground crawl) emits per-cycle
 stats on stderr — top seeds with score breakdowns, bundle byte
-distribution, budget-hit reasons, skip counts. Useful when
-tuning the optional flags above.
+distribution, budget-hit reasons, skip counts. Useful when tuning
+the optional flags above. The `autofix start` daemon does not
+forward `--debug-crawl`; use the foreground forms when you need
+the debug stream.
 
 ## Exit codes
 
