@@ -8,6 +8,8 @@ the ``analyze_files`` function that drives the outer/inner analysis loop.
 from __future__ import annotations
 
 import sys
+import types
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -40,6 +42,8 @@ _ANALYZER_REGISTRY: dict[str, object] = {
     "llm:performance": PerformanceJudgmentAnalyzer.analyze,
     "llm:security": SecurityJudgmentAnalyzer.analyze,
 }
+
+ANALYZER_REGISTRY = types.MappingProxyType(_ANALYZER_REGISTRY)
 
 
 @contextmanager
@@ -144,10 +148,13 @@ def _reset_passthrough_analyzer_state() -> None:
             pass
 
 
+reset_passthrough_state = _reset_passthrough_analyzer_state
+
+
 def analyze_files(
     files: list[Path],
     *,
-    analyzers: list[str],
+    analyzers: list[str | Callable],
     repo_root: Path,
     commit_sha: str | None = None,
     scan_id: str | None = None,
@@ -183,7 +190,8 @@ def analyze_files(
     with _bind_correlation_ctx(commit_sha, scan_id, event_id):
         try:
             unknown_names = [
-                n for n in analyzers if n not in _ANALYZER_REGISTRY
+                item for item in analyzers
+                if isinstance(item, str) and item not in _ANALYZER_REGISTRY
             ]
             if unknown_names:
                 # PROACTIVE-05: a typo'd analyzer name used to silently
@@ -194,9 +202,12 @@ def analyze_files(
                 # without grepping the events log.
                 _emit_unknown_analyzer_warning(unknown_names)
             for analyzer_name in analyzers:
-                callable_ = _ANALYZER_REGISTRY.get(analyzer_name)
-                if callable_ is None:
-                    continue
+                if isinstance(analyzer_name, str):
+                    callable_ = _ANALYZER_REGISTRY.get(analyzer_name)
+                    if callable_ is None:
+                        continue
+                else:
+                    callable_ = analyzer_name
                 for path in files:
                     try:
                         parse_result = parse_file(path, repo_root=repo_root)

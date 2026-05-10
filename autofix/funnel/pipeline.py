@@ -20,6 +20,7 @@ so the CLI can derive SARIF + human output without re-running analysis.
 from __future__ import annotations
 
 import statistics
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,7 +49,7 @@ from autofix.telemetry.correlation import (
     current_commit_sha,
     current_event_id,
 )
-from autofix.analyzers._registry import _ANALYZER_REGISTRY
+from autofix.analyzers import ANALYZER_REGISTRY
 
 
 def _legacy_migration_enabled(policy: dict) -> bool:
@@ -508,7 +509,7 @@ def _analyze_one_file(
         # Identify active analyzers for this language via registry key prefix.
         matched_analyzers = [
             callable_
-            for key, callable_ in _ANALYZER_REGISTRY.items()
+            for key, callable_ in ANALYZER_REGISTRY.items()
             if key.startswith(target_prefix) and callable_ in analyzers
         ]
         if matched_analyzers:
@@ -698,7 +699,7 @@ def run_scan(
         Findings and per-finding scheduling decisions; ``sarif_path`` is
         ``None`` (the CLI layer fills it in downstream).
     """
-    from autofix.analyzers._registry import _reset_passthrough_analyzer_state
+    from autofix.analyzers import reset_passthrough_state
     root = Path(root)
     try:
         def _p(msg: str) -> None:
@@ -714,7 +715,7 @@ def run_scan(
             active_analyzers = []
             unknown_names: list[str] = []
             for name in analyzer_set:
-                mod = _ANALYZER_REGISTRY.get(name)
+                mod = ANALYZER_REGISTRY.get(name)
                 if mod is None:
                     unknown_names.append(name)
                     try:
@@ -731,10 +732,23 @@ def run_scan(
                 # PROACTIVE-05: surface unknown analyzer names beyond the
                 # JSONL event so a typo'd CLI flag gets a stderr warning
                 # immediately rather than a silent green scan.
-                from autofix.analyzers._registry import (
-                    _emit_unknown_analyzer_warning,
-                )
-                _emit_unknown_analyzer_warning(unknown_names)
+                try:
+                    import difflib
+                    known = sorted(ANALYZER_REGISTRY.keys())
+                    for unknown in unknown_names:
+                        close = difflib.get_close_matches(unknown, known, n=3, cutoff=0.5)
+                        suggestion = (
+                            f" Did you mean: {', '.join(close)}?"
+                            if close
+                            else f" Known names: {', '.join(known)}."
+                        )
+                        print(
+                            f"autofix: warning: unknown analyzer {unknown!r}; skipped.{suggestion}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                except Exception:
+                    pass
 
         # AC #21: build the graph once if the caller didn't supply one. This
         # is the production path — the CLI doesn't cache across invocations,
@@ -995,7 +1009,7 @@ def run_scan(
         # SEC-RUFF-02: clear per-scan passthrough analyzer memos on both the
         # success path and any exception path so long-running daemons do not
         # accumulate one memo entry per scan_id.
-        _reset_passthrough_analyzer_state()
+        reset_passthrough_state()
 
 
 __all__ = ["ScanResult", "run_scan"]
