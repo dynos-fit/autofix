@@ -25,7 +25,7 @@ import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal
 
 from autofix.evidence.schema import CandidateFinding
 
@@ -104,7 +104,12 @@ def replay_mode() -> Iterator[None]:
 # -- replay() entry point ---------------------------------------------------
 
 
-def replay(scan_id: str, root: Path) -> ScanRun:
+def replay(
+    scan_id: str,
+    root: Path,
+    *,
+    run_scan_fn: Any = None,
+) -> ScanRun:
     """Re-execute the scan identified by ``scan_id`` deterministically.
 
     Parameters
@@ -115,6 +120,15 @@ def replay(scan_id: str, root: Path) -> ScanRun:
     root:
         Repository root. Must contain ``.autofix/events.jsonl``; other
         artefacts (policy file, cluster store) are read best-effort.
+    run_scan_fn:
+        Optional callable matching ``autofix.funnel.pipeline.run_scan``'s
+        signature. PROACTIVE-09: telemetry conceptually sits below funnel
+        in the dependency stack, but ``replay`` needs to call into the
+        funnel to re-execute a scan. Without this kwarg, ``replay`` does
+        a function-body import of ``autofix.funnel.pipeline.run_scan`` —
+        the established pattern for breaking the circular dependency.
+        Tests and external integrators can inject a mock here to avoid
+        triggering the funnel import path entirely.
 
     Returns
     -------
@@ -250,10 +264,20 @@ def replay(scan_id: str, root: Path) -> ScanRun:
         return _missing_anchor(scan_id)
 
     # -- Rehydrate ChangeSet and re-run pipeline (AC 40) --------------------
-    # Lazy imports avoid cycles: the pipeline transitively imports the
-    # telemetry package, and this module lives inside that package.
+    # Lazy imports avoid cycles (PROACTIVE-09): the funnel pipeline
+    # transitively imports the telemetry package, and this module
+    # lives inside that package. The function-body imports are the
+    # established Python pattern for breaking circular deps —
+    # explicitly tolerated by the workflow / analyzer / crawler
+    # subsystem-isolation tests.
+    #
+    # ``run_scan_fn`` injection (PROACTIVE-09): when a caller passes a
+    # callable for ``run_scan_fn``, the funnel import is skipped
+    # entirely. Lets tests mock the seam without dragging the full
+    # funnel module-load chain into the test process.
     from autofix.events.schema import ChangeSet
-    from autofix.funnel.pipeline import run_scan
+    if run_scan_fn is None:
+        from autofix.funnel.pipeline import run_scan as run_scan_fn  # noqa: PLW0603
 
     raw_paths = extra.get("changeset_paths") or []
     if not isinstance(raw_paths, (list, tuple)):
@@ -275,7 +299,7 @@ def replay(scan_id: str, root: Path) -> ScanRun:
 
     try:
         with replay_mode():
-            scan_result = run_scan(root, changeset, scan_id)
+            scan_result = run_scan_fn(root, changeset, scan_id)
     except Exception:
         # Any pipeline failure during replay maps to a "mismatch" verdict
         # with no reproduced findings (AC 36 "else map every failure to a
