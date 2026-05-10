@@ -19,10 +19,9 @@ from typing import Any
 
 from opentelemetry.trace import get_current_span
 
-from autofix.evidence.schema import CandidateFinding
+from autofix.evidence.schema import CandidateFinding, PriorityScore
 from autofix.dedup.simhash import compute_simhash
 from autofix.dedup.cluster_store import ClusterStore
-from autofix.ranking.priority_scorer import PriorityScore
 from autofix.telemetry.correlation import current_commit_sha, current_scan_id
 from autofix.telemetry.tracer import span
 

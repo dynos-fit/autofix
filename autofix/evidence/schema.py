@@ -138,6 +138,29 @@ CANDIDATE_FINDING_V1_FIELD_ORDER: tuple[str, ...] = (
 )
 
 
+@dataclass(slots=True, frozen=True)
+class PriorityScore:
+    """Immutable record of a single finding's composite priority score.
+
+    A per-finding scalar attached by :class:`autofix.ranking.priority_scorer.PriorityScorer`.
+    Lives in :mod:`autofix.evidence.schema` (not in
+    ``autofix.ranking``) because it is a value object — pure data
+    attached to a finding — not behavior. Two subsystems consume
+    it (ranking, dedup), and both already depend on
+    :mod:`autofix.evidence`.
+
+    ``breakdown`` carries at minimum the per-signal floats:
+
+        impact, freshness, confidence, novelty, owner_risk,
+        impact_raw_callers_count, impact_symbol_count,
+        novelty_cluster_match_state
+    """
+
+    finding_id: str
+    priority: float
+    breakdown: dict[str, float]
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "AnalyzerTrace",
@@ -145,4 +168,5 @@ __all__ = [
     "CandidateFinding",
     "EVIDENCE_V1_FIELD_ORDER",
     "CANDIDATE_FINDING_V1_FIELD_ORDER",
+    "PriorityScore",
 ]

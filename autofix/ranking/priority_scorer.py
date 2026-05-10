@@ -24,7 +24,7 @@ from typing import Any
 
 from opentelemetry.trace import get_current_span
 
-from autofix.evidence.schema import CandidateFinding
+from autofix.evidence.schema import CandidateFinding, PriorityScore
 from autofix.ranking.signals import (
     compute_confidence,
     compute_freshness,
@@ -35,20 +35,12 @@ from autofix.telemetry.correlation import current_commit_sha, current_scan_id
 from autofix.telemetry.tracer import span
 
 
-@dataclass(slots=True, frozen=True)
-class PriorityScore:
-    """AC #4: immutable record of a single finding's composite priority.
-
-    ``breakdown`` is required (per AC #6) to contain at minimum::
-
-        impact, freshness, confidence, novelty, owner_risk,
-        impact_raw_callers_count, impact_symbol_count,
-        novelty_cluster_match_state
-    """
-
-    finding_id: str
-    priority: float
-    breakdown: dict[str, float]
+# PriorityScore moved to ``autofix.evidence.schema`` (PROACTIVE-12).
+# It is a per-finding value object, and both ``ranking`` and ``dedup``
+# subsystems consume it without either owning it. Re-imported above
+# and re-exported in ``__all__`` for backward compatibility with any
+# caller that imports ``from autofix.ranking.priority_scorer import
+# PriorityScore`` directly.
 
 
 class PriorityScorer:
