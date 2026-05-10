@@ -80,9 +80,8 @@ file_freshness(row, current_commit_sha) =
     else min(1.0, age_hours / STALENESS_HORIZON_HOURS)
 
 relevance(path) =
-    0.5 * exp(-days_since_last_commit / 7)         # recency
-  + 0.3 * min(1.0, commits_in_last_30d / 10)        # churn
-  + 0.2 * min(1.0, import_fanout / 10)              # centrality
+    0.6 * exp(-days_since_last_commit / 7)         # recency
+  + 0.4 * min(1.0, commits_in_last_30d / 10)        # churn
 ```
 
 All weights / horizons / caps live in
@@ -95,9 +94,13 @@ forbids consumer modules from inlining any of them.
 
 | Subscore | Weight | Rationale |
 |---|---|---|
-| Recency | 0.5 | Most signal in "files I edited recently". |
-| Churn | 0.3 | Hot files have more bug surface; not as urgent as recency. |
-| Centrality | 0.2 | Hubs matter, but a fix to a leaf still matters. |
+| Recency | 0.6 | Most signal in "files I edited recently". |
+| Churn | 0.4 | Hot files have more bug surface; capped at 10 commits/30d. |
+
+Centrality (import-fanout) was an earlier subscore but was removed
+when supplemental scoring signals (entrypoint boost, low-value class
+penalty, oversize file penalty) became the primary structural
+relevance signal — see `docs/crawling-improvements.md`.
 
 If you want to tune them, edit `crawl_constants.py`. Adding/
 removing subscores is an ARCH-* level change.
@@ -171,7 +174,7 @@ same bundle ordering. Verified by
 
 ## The driver
 
-[`autofix/crawl/driver.py`](../autofix/crawl/driver.py) — two
+[`autofix/cli/cycle_runner.py`](../autofix/cli/cycle_runner.py) — two
 entry points:
 
 - `run_crawl_once(*, root, mode, budget, ...)` — one cycle, exit
@@ -215,12 +218,10 @@ Every numeric/string constant:
 | `MAX_BUNDLE_HOPS` | 1 | BFS depth from seed |
 | `MAX_BUNDLE_FILES` | 5 | Bundle size cap |
 | `MAX_BUNDLE_BYTES` | 50_000 | Bundle byte budget (LLM context window protection) |
-| `RELEVANCE_WEIGHT_RECENCY` | 0.5 | Subscore weight |
-| `RELEVANCE_WEIGHT_CHURN` | 0.3 | Subscore weight |
-| `RELEVANCE_WEIGHT_CENTRALITY` | 0.2 | Subscore weight |
+| `RELEVANCE_WEIGHT_RECENCY` | 0.6 | Subscore weight |
+| `RELEVANCE_WEIGHT_CHURN` | 0.4 | Subscore weight |
 | `RECENCY_DECAY_DAYS` | 7.0 | exp(-days/N) for recency |
 | `CHURN_CAP_COMMITS` | 10 | Commits/30d that fully saturate churn |
-| `CENTRALITY_CAP_FANOUT` | 10 | Inbound imports that fully saturate centrality |
 
 ## What's NOT in the crawl
 

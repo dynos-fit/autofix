@@ -104,9 +104,9 @@ part — git rejects colons in ref names). Captured BEFORE any
 git checkout autofix/pre-fix-snapshot-20260508T012345Z
 ```
 
-If you want a single branch per `--watch` cycle (one snapshot per
-batch instead of one per session), set
-`AUTOFIX_RECOVERY_BRANCH_PER_CYCLE=1`. Default is per-session.
+A new recovery branch is captured per `autofix run` invocation,
+before the first APPLYING transition. Watch sessions reuse the
+session's branch across cycles.
 
 ## Post-fix policy
 
@@ -212,7 +212,8 @@ production.
 | `--suggest` | Print LLM diffs to stdout, exit `3` |
 | `--apply` | Deterministic deletions, verify, exit `0`/`1` |
 | `--apply --auto-llm` | Deterministic + LLM patches, recovery branch, verify |
-| `--suggest --apply` | **Rejected** — `--suggest` is preview-only |
+| `--apply --suggest` | Preview-only LLM patches printed to stdout (no source mutation) |
+| `--suggest --auto-llm` | **Rejected** — mutually exclusive (`--auto-llm` requires `--apply`) |
 | `--auto-llm` (no `--apply`) | **Rejected** — `--auto-llm` requires `--apply` |
 | `--watch` (any combination) | Compatible. Validates above ONCE before any session work. |
 | `--max-retries 0` | One `APPLYING → VERIFYING` pass; no retry. |

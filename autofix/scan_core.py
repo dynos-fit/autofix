@@ -220,7 +220,7 @@ def _run_scan_core(
     # SEC-01: reject path-traversal / absolute-path scan_id before it reaches
     # the filesystem. Auto-minted ids always match the pattern; user-supplied
     # ids are validated here so a malicious --scan-id cannot escape the
-    # ``.autofix/scans-next/`` directory.
+    # ``.autofix/scans/`` directory.
     try:
         _validate_scan_id(scan_id)
     except ValueError as exc:

@@ -29,7 +29,7 @@ deletes the legacy CLI surface entirely.
 - Console script: `autofix` resolves to the new loop's
   `autofix.cli.main:main`.
 - On-disk scan output: `.autofix-next/scans/<scan-id>/` is now
-  `.autofix/scans-next/<scan-id>/`.
+  `.autofix/scans/<scan-id>/`.
 - On-disk SCIP index: `.autofix-next/state/index/` is now
   `.autofix/state/index/`.
 - On-disk embedding sidecar: `.autofix-next/state/embedding-sidecar/`
@@ -51,7 +51,7 @@ Operators with cron entries pointing at `autofix-next scan` or
 
 - `autofix-next scan --root .` → `autofix scan --root .`
 - `.autofix-next/scans/<scan-id>/findings.sarif` →
-  `.autofix/scans-next/<scan-id>/findings.sarif`
+  `.autofix/scans/<scan-id>/findings.sarif`
 - Any leftover `.autofix-next/` directory in a developer working
   tree is a runtime artifact; safe to `rm -rf` after this release.
 - `AUTOFIX_NEXT_OFFLINE` env var → `AUTOFIX_OFFLINE`

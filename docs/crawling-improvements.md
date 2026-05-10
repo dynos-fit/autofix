@@ -36,10 +36,10 @@ crawler behaves exactly as it did before.
   fields: `scan_count_for_seed`, `imported_by_count_at_scan`,
   `bundle_size_bytes`, `budget_hit_reason`. Old-format JSONL rows
   still round-trip.
-* `autofix/crawl/driver.py` — `_detect_working_tree_diff`,
-  `_pick_impact_cone_batch`, `_should_use_impact_cone` (now reads
-  `CrawlerFlags.impact_cone`); `debug_crawl: bool` plumbed through
-  `run_crawl_once` and `run_crawl_continuously`.
+* `autofix/cli/cycle_runner.py` — `_detect_working_tree_diff`,
+  `_pick_impact_cone_batch`; the impact-cone branch is gated by
+  `crawler_flags.impact_cone` in the per-cycle scheduler. `debug_crawl:
+  bool` plumbed through `run_crawl_once` and `run_crawl_continuously`.
 * `autofix/crawl/config.py` — `CrawlerFlags` frozen dataclass and
   `read_crawler_flags(root)` reading the optional `crawler` namespace.
 * `autofix/cli/main.py` — top-level `--debug-crawl` flag in the

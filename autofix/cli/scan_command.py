@@ -17,7 +17,7 @@ Pipeline (in :mod:`autofix.scan_core`):
    each via the (single) LLM seam.
 4. :func:`autofix.telemetry.sarif.emit_sarif` writes the
    deterministic SARIF 2.1.0 document under
-   ``<root>/.autofix/scans-next/<scan-id>/findings.sarif``.
+   ``<root>/.autofix/scans/<scan-id>/findings.sarif``.
 5. ``SARIFEmitted`` + ``ScanCompleted`` envelope rows are appended.
 
 Working-tree edits are ignored on purpose — the changeset is strictly
@@ -66,7 +66,7 @@ HELP_EPILOG: str = (
     "    from .autofix/events.jsonl reconstructs the full scan timeline,\n"
     "    which is the supported debugging path for CI failures.\n"
     "  * SARIF is written deterministically (sorted keys, indent=2) to\n"
-    "    .autofix/scans-next/<scan-id>/findings.sarif.\n"
+    "    .autofix/scans/<scan-id>/findings.sarif.\n"
 )
 
 

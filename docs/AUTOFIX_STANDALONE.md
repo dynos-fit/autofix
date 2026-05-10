@@ -1,76 +1,82 @@
 # Standalone Autofix
 
-`autofix` is a standalone scanner that can run from cron and use the Dynos pipeline as its repair engine.
+`autofix` is a standalone scanner that runs from cron (or any other
+scheduler) and emits findings as SARIF + JSONL telemetry. Repair is
+delegated to the same `autofix` CLI: `autofix fix --apply` for the
+deterministic tier and `autofix run --apply --auto-llm` for the
+LLM-patch tier.
 
 ## Run
 
-From the repo root:
+From a venv created by `./install.sh`:
 
 ```bash
-python3 -m autofix scan --root /path/to/target-repo
+.venv/bin/autofix scan --root /path/to/target-repo
 ```
 
-Or through the wrapper:
+Or, with `autofix` on `$PATH`:
 
 ```bash
-bin/autofix scan --root /path/to/target-repo
+autofix scan --root /path/to/target-repo
 ```
 
-To install a user-local wrapper:
-
-```bash
-./install.sh
-```
+The console entry point is declared in `pyproject.toml`
+(`[project.scripts] autofix = "autofix.cli.main:main"`); `./install.sh`
+sets it up inside the chosen venv.
 
 The target repo should have:
 
 - `git`
-- `gh` configured for the target repository
-- `claude` installed if you want automatic fixes
+- `gh` configured for the target repository (only required for
+  PR-creating runs)
+- `claude` installed if you want automatic LLM-backed fixes
 
-If `claude` is unavailable, scans can still run, but automatic code fixes will fail closed.
-
-For debugger-friendly scans without side effects:
-
-```bash
-python3 -m autofix scan --root /path/to/target-repo --dry-run
-```
-
-`--dry-run` still scans, deduplicates, classifies, and routes findings, but it does not open real issues or PRs.
+If `claude` is unavailable, scans still run end-to-end — only the
+LLM-patch tier of repair is unavailable.
 
 ## Cron
 
-Example: run every hour and append logs.
+Example: run a scan every hour and append logs.
 
 ```cron
 0 * * * * cd /path/to/autofix-standalone && /path/to/autofix-standalone/.venv/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
 ```
 
-Example: run every 15 minutes with explicit runtime directories for the target repo.
+Example: run every 15 minutes with explicit runtime directories for the
+target repo.
 
 ```cron
 */15 * * * * cd /path/to/autofix-standalone && AUTOFIX_RUNTIME_DIR=/path/to/target-repo/.autofix AUTOFIX_PERSISTENT_DIR=/path/to/target-repo/.autofix /path/to/autofix-standalone/.venv/bin/autofix scan --root /path/to/target-repo >> /var/log/autofix.log 2>&1
 ```
 
+For a long-running daemon (instead of cron), use `autofix start` —
+it daemonizes `autofix --root <p>` via `subprocess.Popen` with
+`start_new_session=True` and writes a pidfile at `.autofix/crawl.pid`.
+
 ## Behavior
 
-When cron fires:
+When the scan fires:
 
-1. `autofix` scans the target codebase.
-2. Safe findings are routed to the Dynos execution backend.
-3. The backend invokes the Dynos pipeline through shell commands, including `/dynos-work:start`.
-4. Verified changes are pushed and opened as PRs.
-5. Higher-risk or non-fixable findings open issues instead.
+1. `autofix` derives a git-diff-scoped changeset (default
+   `HEAD~1..HEAD`; override with `--diff-range` or use `--full-sweep`).
+2. The funnel parses + scores + dedups + ranks findings.
+3. SARIF is written to `<root>/.autofix/scans/<scan-id>/findings.sarif`.
+4. Envelope rows are appended to `.autofix/events.jsonl`.
+5. Findings are kept on disk; repair is a separate explicit pass via
+   `autofix fix --apply` (deterministic deletions) or
+   `autofix run --apply --auto-llm` (deterministic + LLM patches with
+   verify and retry).
 
 ## Storage
 
-By default `autofix` uses:
+`autofix/platform.py::runtime_state_dir(root)` resolves to (in order):
 
-- target repo `.autofix/` if it exists
-- otherwise target repo `.dynos/` if it exists
-- otherwise target repo `.autofix/`
+- the value of `AUTOFIX_RUNTIME_DIR` if set
+- `<root>/.autofix/` if it exists
+- otherwise `<root>/.dynos/` if it exists
+- otherwise `<root>/.autofix/` (the default)
 
-You can override that with:
+You can override with:
 
 - `AUTOFIX_RUNTIME_DIR`
 - `AUTOFIX_PERSISTENT_DIR`
@@ -97,4 +103,3 @@ Historical state snapshots live under:
 Historical per-scan artifacts live under:
 
 - `.autofix/scans/<scan-id>/`
-

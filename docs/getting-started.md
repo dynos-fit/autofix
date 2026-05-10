@@ -5,11 +5,12 @@ commands — that's the whole UX.
 
 ```bash
 $ autofix init       # one-time: pick mode + budget
-$ autofix            # runs continuously, finds bugs, opens PRs
+$ autofix start      # daemonize: runs continuously in the background
 $ autofix status     # peek at what it's doing right now
 ```
 
-That's it.
+Plus `autofix logs` to tail the daemon log and `autofix stop` to halt
+it.
 
 ## Install
 
@@ -41,9 +42,9 @@ What should autofix do?
 Choice (default: 1):
 
 How much should it spend per day?
-  [1] Cheap        (~$0.50/day, 1 bundle/hour)
-  [2] Balanced     (~$2/day,    5 bundles/hour) (recommended)
-  [3] Aggressive   (~$10/day,   20 bundles/hour)
+  [1] Cheap        (~$0.50/day, 1 bundle/cycle, 60-min interval)
+  [2] Balanced     (~$2/day,    5 bundles/cycle, 30-min interval) (recommended)
+  [3] Aggressive   (~$10/day,   20 bundles/cycle, 5-min interval)
 Choice (default: 2):
 
 Repository root (default: /your/repo):
@@ -56,25 +57,29 @@ PR mode + balanced budget — that's what most people want.
 ## Run it
 
 ```bash
-$ autofix
+$ autofix start
+autofix: daemon started (PID 12345)
+$ autofix logs
 autofix: cycle picked 10 (bundle, analyzer) pairs
-... (runs in the background, waking every 30 minutes)
+... (tails the daemon log; the daemon wakes on the configured interval)
 ```
 
-`autofix` (no flags) reads `.autofix/config.json` and runs
-continuously. Hit Ctrl-C to stop.
+`autofix start` reads `.autofix/config.json` and runs the crawl as a
+detached background process. Run `autofix stop` to halt it.
 
-If you want to validate the loop before letting it run autonomously:
+If you want to validate the loop before letting it run autonomously,
+use the foreground forms (which require `--root`):
 
 ```bash
-$ autofix --once     # one cycle, then exit
+$ autofix --root . --once     # one cycle in the foreground, then exit
+$ autofix --root .            # continuous crawl in the foreground (Ctrl-C to stop)
 ```
 
 If you set up `init` with `preview` mode but want to apply this
-once:
+once (foreground form):
 
 ```bash
-$ autofix --apply    # overrides config preview → commit for this run
+$ autofix --root . --apply    # overrides config preview → commit for this run
 ```
 
 ## Check on it
