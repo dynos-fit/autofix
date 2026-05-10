@@ -1,6 +1,6 @@
-"""Tests for ``autofix.llm.triage`` and ``autofix.llm.report_writer``.
+"""Tests for ``autofix.llm.triage``.
 
-Covers acceptance criteria 23, 24, 25, 26, 27, 29, 30, 31 from
+Covers acceptance criteria 23, 24, 25, 26, 27, 29, 31 from
 task-20260417-008:
 
   AC 23 — ``resolve_template(prompts_dir, rule_id, tier, legacy_override)``
@@ -18,10 +18,12 @@ task-20260417-008:
           (non-existent) path; the caller raises ``FileNotFoundError``.
   AC 29 — ``autofix/llm/prompts/unused-import_intra-file__large.md``
           exists, non-empty UTF-8.
-  AC 30 — ``report_writer.write(packet, result) -> ReportRecord`` with
-          ``ReportRecord`` dataclass defined in the same module.
-  AC 31 — neither ``triage.py`` nor ``report_writer.py`` contains the
-          substrings ``run_prompt`` or ``claude``.
+  AC 31 — ``triage.py`` does not contain the substrings ``run_prompt``
+          or ``claude``.
+
+AC 30 (and the report_writer.py / ReportRecord coverage tied to it)
+was removed when the unused report_writer module was deleted —
+PROACTIVE-06 from the proactive meta-audit.
 """
 
 from __future__ import annotations
@@ -31,7 +33,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRIAGE_PATH = REPO_ROOT / "autofix" / "llm" / "triage.py"
-REPORT_PATH = REPO_ROOT / "autofix" / "llm" / "report_writer.py"
 PROMPTS_DIR = REPO_ROOT / "autofix" / "llm" / "prompts"
 LARGE_TEMPLATE = PROMPTS_DIR / "unused-import_intra-file__large.md"
 
@@ -239,87 +240,3 @@ def test_large_tier_template_exists_and_is_nonempty_utf8():
         f"large-tier template must be non-empty: {LARGE_TEMPLATE}"
     )
 
-
-# ---------------------------------------------------------------------------
-# AC 30 — report_writer.write / ReportRecord dataclass.
-# ---------------------------------------------------------------------------
-
-
-def test_report_writer_write_signature_and_returns_record():
-    """AC 30: ``write(packet, result) -> ReportRecord`` with dataclass return."""
-    import dataclasses
-
-    from autofix.evidence.builder import build_packet
-    from autofix.llm.report_writer import ReportRecord, write
-    from autofix.llm_backend import LLMResult
-
-    packet = build_packet(
-        rule_id="unused-import.intra-file",
-        relpath="x.py",
-        symbol_name="os",
-        normalized_import="import os",
-        changed_slice="import os\n",
-        analyzer_note="note",
-    )
-    result = LLMResult(
-        returncode=0,
-        stdout='{"decision":"confirmed","reason":"ok"}',
-        stderr="",
-    )
-
-    record = write(packet, result)
-    assert isinstance(record, ReportRecord), (
-        f"write() must return a ReportRecord dataclass: got {type(record).__name__}"
-    )
-    assert dataclasses.is_dataclass(record), (
-        "ReportRecord must be a dataclass"
-    )
-
-
-def test_report_writer_write_is_pure_on_bad_json_stdout():
-    """AC 30: non-JSON stdout does NOT raise; returns a record with unknown decision."""
-    from autofix.evidence.builder import build_packet
-    from autofix.llm.report_writer import ReportRecord, write
-    from autofix.llm_backend import LLMResult
-
-    packet = build_packet(
-        rule_id="unused-import.intra-file",
-        relpath="y.py",
-        symbol_name="sys",
-        normalized_import="import sys",
-        changed_slice="import sys\n",
-        analyzer_note="note",
-    )
-    result = LLMResult(returncode=0, stdout="not valid json", stderr="")
-
-    record = write(packet, result)  # must NOT raise
-    assert isinstance(record, ReportRecord)
-
-
-def test_report_writer_py_has_no_run_prompt_or_claude():
-    """AC 31: ``report_writer.py`` contains neither ``run_prompt`` nor ``claude``."""
-    assert REPORT_PATH.is_file(), (
-        f"report_writer.py must exist at {REPORT_PATH}"
-    )
-    contents = REPORT_PATH.read_text(encoding="utf-8")
-    assert "run_prompt" not in contents, (
-        "report_writer.py must not contain the substring 'run_prompt'"
-    )
-    assert "claude" not in contents, (
-        "report_writer.py must not contain the substring 'claude'"
-    )
-
-
-def test_report_writer_py_does_not_import_autofix_llm_backend_or_subprocess():
-    """AC 30: ``report_writer.py`` does not import ``autofix.llm_backend`` or ``subprocess``."""
-    contents = REPORT_PATH.read_text(encoding="utf-8")
-    assert "autofix.llm_backend" not in contents, (
-        "report_writer.py must not import from autofix.llm_backend"
-    )
-    assert "import subprocess" not in contents, (
-        "report_writer.py must not import subprocess"
-    )
-    for banned in ("urllib.request", "httpx", "requests"):
-        assert banned not in contents, (
-            f"report_writer.py must not reference HTTP client {banned!r}"
-        )
