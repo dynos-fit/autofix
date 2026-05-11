@@ -15,7 +15,7 @@ def test_bare_autofix_no_root_prints_help(
 
     rc = main(["autofix"])
     out = capsys.readouterr().out
-    # Must include at least one of the dumb-user-help anchors.
+    # Must include at least one of the quick-start help anchors.
     assert (
         "init" in out.lower()
         or "status" in out.lower()

@@ -3,7 +3,7 @@
 Bare ``autofix`` is the **default** operator-facing command: when
 called with ``--root <path>`` (and no explicit subcommand), it
 dispatches to the continuous-crawl driver. Layered help: bare
-``autofix --help`` prints the dumb-user 6-line summary;
+``autofix --help`` prints the quick-start 6-line summary;
 ``autofix --help-advanced`` lists every subcommand and flag.
 
 The existing subcommands (``scan``, ``fix``, ``run``, ``replay``,
@@ -56,7 +56,7 @@ _TOP_LEVEL_SUBCOMMANDS: tuple[str, ...] = (
 ) + _ARGPARSE_SUBCOMMANDS
 
 
-_DUMB_USER_HELP = """\
+_QUICKSTART_HELP = """\
 autofix — find and fix bugs in your code
 
   autofix init         Set up autofix for this repo (one-time)
@@ -257,8 +257,8 @@ def _dispatch_bare_crawl(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     if args.root is None:
-        # No subcommand and no --root → print the dumb-user help.
-        print(_DUMB_USER_HELP)
+        # No subcommand and no --root → print the quick-start help.
+        print(_QUICKSTART_HELP)
         return 0
 
     config = read_config(args.root)
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` and dispatch.
 
     Routing:
-    * ``autofix --help`` (or no args) → dumb-user help, exit 0.
+    * ``autofix --help`` (or no args) → quick-start help, exit 0.
     * ``autofix --help-advanced`` → full subcommand + flag reference.
     * ``autofix init`` / ``status`` / ``start`` / ``stop`` / ``logs``
       → top-level daemon commands.
@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Layered help — handle BEFORE argparse sees the args.
     if not argv or argv == ["--help"] or argv == ["-h"]:
-        print(_DUMB_USER_HELP)
+        print(_QUICKSTART_HELP)
         return 0
     if argv[0] == "--help-advanced":
         print(_build_advanced_help())
@@ -338,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
         runner = getattr(args, "_runner", None)
         if runner is None:
-            print(_DUMB_USER_HELP)
+            print(_QUICKSTART_HELP)
             return 0
         return int(runner(args))
 
@@ -347,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     runner = getattr(args, "_runner", None)
     if runner is None:
-        print(_DUMB_USER_HELP)
+        print(_QUICKSTART_HELP)
         return 0
     return int(runner(args))
 

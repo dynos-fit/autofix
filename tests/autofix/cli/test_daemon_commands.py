@@ -416,7 +416,7 @@ def test_main_dispatches_logs(tmp_path: Path) -> None:
     assert captured["lines"] == 100
 
 
-def test_dumb_user_help_lists_new_commands(
+def test_quickstart_help_lists_new_commands(
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     """The bare ``autofix`` help must list start / stop / logs so
