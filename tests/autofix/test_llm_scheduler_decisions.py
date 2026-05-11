@@ -479,10 +479,8 @@ def test_new_event_names_contains_llmcallgated_and_has_not_grown():
 
     assert "LLMCallGated" in NEW_EVENT_NAMES
 
-    # Frozen set of event names through task-012. New decisions still ride
-    # on the existing LLMCallGated event; no new LLM-gate names. The three
-    # EmbeddingSidecar* names were added by task-012 AC 17/18 — pinned
-    # here so any further growth is explicit.
+    # Frozen set of event names. New decisions still ride on the existing
+    # LLMCallGated event; no new LLM-gate names.
     expected_baseline = {
         "ScanStarted",
         "SymbolIndexed",
@@ -493,21 +491,22 @@ def test_new_event_names_contains_llmcallgated_and_has_not_grown():
         "InvalidationComputed",
         "PriorityScored",
         "FindingDeduped",
-        "DedupEmbeddingTierStatus",
         "ClusterStorePersisted",
         "AdapterRegistered",
         "AdapterPrecisionUnavailable",
         "LanguageShardPersisted",
-        "ScanExplanation",  # added by task-009 (telemetry-replay-service AC 20)
-        "TracerProviderConfigurationFailed",  # added by task-010 seg-6 (tracer structured-telemetry fallback)
-        "EmbeddingSidecarColdRebuild",  # added by task-012 AC 17
-        "EmbeddingSidecarIncrementalUpdate",  # added by task-012 AC 17
-        "EmbeddingSidecarDegraded",  # added by task-012 AC 18
+        "ScanExplanation",
+        "TracerProviderConfigurationFailed",
         # added by task-20260506-005 (ARCH-001) — linter-passthrough analyzer events
         "AnalyzerUnavailable",
         "AnalyzerTimeout",
         "AnalyzerError",
         "AnalyzerUnknown",
+        "AnalyzerSkipped",
+        "LLMPatchInvoked",
+        "LLMPatchProduced",
+        "LLMPatchRejected",
+        "LLMPatchBudgetExceeded",
     }
     assert set(NEW_EVENT_NAMES) == expected_baseline, (
         f"NEW_EVENT_NAMES must match the task-012 baseline: "

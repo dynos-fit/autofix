@@ -6,7 +6,6 @@
 # Usage:
 #   ./install.sh                      # base install (scan, replay, export-sarif, policy)
 #   ./install.sh --with-watch         # + Watchman-backed watcher (needs `watchman` binary)
-#   ./install.sh --with-dedup         # + sentence-transformers / hnswlib semantic dedup
 #   ./install.sh --with-jsts          # + tree-sitter-typescript adapter
 #   ./install.sh --with-go            # + tree-sitter-go adapter
 #   ./install.sh --with-otlp          # + OpenTelemetry OTLP exporter
@@ -15,7 +14,7 @@
 #   ./install.sh --venv .venv-autofix # use a different venv path (default: .venv)
 #   ./install.sh --no-venv            # install into the current Python env
 #
-# Combine flags freely, e.g. `./install.sh --with-watch --with-dedup --dev`.
+# Combine flags freely, e.g. `./install.sh --with-watch --with-jsts --dev`.
 
 set -euo pipefail
 
@@ -29,12 +28,11 @@ EXTRAS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-watch)  EXTRAS+=("watch") ;;
-    --with-dedup)  EXTRAS+=("dedup") ;;
     --with-jsts)   EXTRAS+=("jsts") ;;
     --with-go)     EXTRAS+=("go") ;;
     --with-otlp)   EXTRAS+=("telemetry-otlp") ;;
     --dev)         EXTRAS+=("test") ;;
-    --all)         EXTRAS+=("watch" "dedup" "jsts" "go" "telemetry-otlp") ;;
+    --all)         EXTRAS+=("watch" "jsts" "go" "telemetry-otlp") ;;
     --venv)        VENV_PATH="$2"; shift ;;
     --no-venv)     USE_VENV=0 ;;
     -h|--help)

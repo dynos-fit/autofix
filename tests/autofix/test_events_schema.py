@@ -39,12 +39,7 @@ def test_all_subpackages_have_init() -> None:
 
 
 def test_new_event_names_are_exact_set() -> None:
-    """task-006 AC #34 + task-010 AC #19-20 + task-012 AC 28 +
-    task-20260506-005 AC-5/6/7/9: NEW_EVENT_NAMES is exactly the
-    23-camelCase set after the language-adapter extensions, the
-    task-010 tracer-provider-failure event, the task-012 embedding
-    sidecar events, and the linter-passthrough adapter events
-    (Unavailable / Timeout / Error / Unknown)."""
+    """NEW_EVENT_NAMES is exactly the documented camelCase set."""
     from autofix.events import schema as events_schema
 
     expected = frozenset(
@@ -58,21 +53,22 @@ def test_new_event_names_are_exact_set() -> None:
             "InvalidationComputed",
             "PriorityScored",
             "FindingDeduped",
-            "DedupEmbeddingTierStatus",
             "ClusterStorePersisted",
             "AdapterRegistered",
             "AdapterPrecisionUnavailable",
             "LanguageShardPersisted",
             "ScanExplanation",
             "TracerProviderConfigurationFailed",
-            "EmbeddingSidecarColdRebuild",
-            "EmbeddingSidecarIncrementalUpdate",
-            "EmbeddingSidecarDegraded",
             # task-20260506-005 (ARCH-001): linter-passthrough adapter events.
             "AnalyzerUnavailable",
             "AnalyzerTimeout",
             "AnalyzerError",
             "AnalyzerUnknown",
+            "AnalyzerSkipped",
+            "LLMPatchInvoked",
+            "LLMPatchProduced",
+            "LLMPatchRejected",
+            "LLMPatchBudgetExceeded",
         }
     )
     assert hasattr(events_schema, "NEW_EVENT_NAMES"), (
@@ -83,17 +79,13 @@ def test_new_event_names_are_exact_set() -> None:
 
 
 def test_new_event_names_includes_invalidation_computed() -> None:
-    """task-006 AC #35 + task-009 AC #20 + task-010 seg-6 + task-012 AC 28
-    + task-20260506-005 AC-5/6/7/9: ``InvalidationComputed`` is still in
-    ``NEW_EVENT_NAMES`` and the set has exactly 23 names after the
-    language-adapter extension (11 + 3) + ``ScanExplanation`` (task-009)
-    + ``TracerProviderConfigurationFailed`` (task-010) + three
-    task-012 embedding-sidecar events + four ARCH-001 linter-passthrough
-    analyzer events."""
+    """``InvalidationComputed`` is still in ``NEW_EVENT_NAMES`` and the
+    set has exactly 24 names after removing the 4 sentence-transformer
+    envelope types."""
     from autofix.events import schema as events_schema
 
     assert "InvalidationComputed" in events_schema.NEW_EVENT_NAMES
-    assert len(events_schema.NEW_EVENT_NAMES) == 23
+    assert len(events_schema.NEW_EVENT_NAMES) == 24
 
 
 def test_changeset_gains_is_fresh_instance_field() -> None:

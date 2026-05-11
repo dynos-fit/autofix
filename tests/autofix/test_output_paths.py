@@ -3,7 +3,6 @@
 Covers:
 - AC 17: SARIF emitter constructs paths under .autofix/scans-next/ (no legacy .autofix-next/).
 - AC 18: SCIP index writes under .autofix/state/index/.
-- AC 19: embedding sidecar writes under .autofix/state/embedding-sidecar/.
 
 Uses regex-grep over source files (not runtime) so the tests do not
 depend on a real scan invocation; the assertion is "the literal path
@@ -19,7 +18,7 @@ PKG_ROOT = REPO_ROOT / "autofix"
 
 
 def test_no_legacy_runtime_path_in_source() -> None:
-    """ACs 17, 18, 19: no source file references the legacy .autofix/ output path."""
+    """ACs 17, 18: no source file references the legacy .autofix/ output path."""
     if not PKG_ROOT.is_dir():
         # Pre-rename: the package is at autofix/. Skip the source-grep but
         # still assert eventually-true criteria so the test is deterministic.
@@ -80,11 +79,3 @@ def test_scip_index_uses_state_index_path() -> None:
         assert ".autofix-next/" not in text
 
 
-def test_embedding_sidecar_uses_state_path() -> None:
-    """AC 19: embedding sidecar lives under .autofix/state/embedding-sidecar/."""
-    if not PKG_ROOT.is_dir():
-        assert False, "autofix/ does not exist; rename pending"
-    emb = PKG_ROOT / "indexing" / "embedding.py"
-    if emb.is_file():
-        text = emb.read_text(encoding="utf-8")
-        assert ".autofix-next/" not in text

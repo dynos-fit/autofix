@@ -32,7 +32,6 @@ from autofix.dedup.cluster_store import ClusterStore
 from autofix.evidence.builder import build_packet
 from autofix.evidence.schema import CandidateFinding, PriorityScore
 from autofix.events.schema import ChangeSet
-from autofix.indexing.embedding import EmbeddingSidecar, SymbolRecall
 from autofix.indexing.symbols import build_symbol_table
 from autofix.invalidation.call_graph import CallGraph
 from autofix.invalidation.planner import (
@@ -227,41 +226,11 @@ def _emit_finding_deduped_event(
         pass
 
 
-def _emit_dedup_tier_status_event(
-    root: Path,
-    *,
-    scan_id: str,
-    available: bool,
-    reason: str,
-) -> None:
-    """Append one ``DedupEmbeddingTierStatus`` envelope row per scan (AC #31).
-
-    Emitted exactly once per :func:`run_scan` invocation regardless of
-    whether any findings are produced. The ``reason`` is one of the
-    sentinel strings returned by
-    :func:`autofix.dedup.embedding.probe_embedding_tier`
-    (``"available"``, ``"deps_missing"``,
-    ``"model_cache_missing_offline"``).
-    """
-    payload = {
-        "event_type": "DedupEmbeddingTierStatus",
-        "repo_id": root.name,
-        "scan_id": scan_id,
-        "available": available,
-        "reason": reason,
-    }
-    try:
-        events_log.append_event(root, "DedupEmbeddingTierStatus", payload)
-    except OSError:
-        pass
-
-
 def _emit_cluster_store_persisted_event(
     root: Path,
     *,
     scan_id: str,
     cluster_count: int,
-    tier3_enabled: bool,
     cache_mode: str,
 ) -> None:
     """Append one ``ClusterStorePersisted`` envelope row per scan (AC #31).
@@ -276,7 +245,6 @@ def _emit_cluster_store_persisted_event(
         "repo_id": root.name,
         "scan_id": scan_id,
         "cluster_count": cluster_count,
-        "tier3_enabled": tier3_enabled,
         "cache_mode": cache_mode,
     }
     try:
@@ -558,11 +526,9 @@ _POLICY_MAX_BYTES: int = 1 << 20  # 1 MiB cap (task-012 SEC-002).
 def _load_scan_policy(root: Path) -> dict | None:
     """Decode ``<root>/.autofix/autofix-policy.json`` if present.
 
-    task-012 AC 21/22. Used only as a fallback when the caller did not
-    pass ``policy=`` explicitly (e.g. the CLI entry point). Returns
-    ``None`` for any IO / JSON failure so the scan degrades to "no
-    policy = sidecar disabled" — the same behavior as running with an
-    empty policy file.
+    Used only as a fallback when the caller did not pass ``policy=``
+    explicitly (e.g. the CLI entry point). Returns ``None`` for any IO /
+    JSON failure so the scan degrades to an empty-policy run.
 
     Security hardening (task-012 SEC-001/002/003):
 
@@ -611,46 +577,6 @@ def _load_scan_policy(root: Path) -> dict | None:
     if not isinstance(decoded, dict):
         return None
     return decoded
-
-
-def _resolve_sidecar_recall_params(
-    policy: dict | None,
-) -> tuple[int, float]:
-    """Resolve (top_k, similarity_threshold) for the sidecar recall stage.
-
-    task-012 AC 21. Missing keys degrade to the documented defaults:
-    ``top_k=5``, ``similarity_threshold=0.75``. Invalid types are also
-    treated as missing so operator typos do not break the scan.
-    """
-    top_k = 5
-    threshold = 0.75
-    if isinstance(policy, dict):
-        index_cfg = policy.get("index")
-        if isinstance(index_cfg, dict):
-            sidecar_cfg = index_cfg.get("embedding_sidecar")
-            if isinstance(sidecar_cfg, dict):
-                raw_k = sidecar_cfg.get("top_k")
-                if isinstance(raw_k, int) and raw_k > 0:
-                    top_k = raw_k
-                raw_t = sidecar_cfg.get("similarity_threshold")
-                if isinstance(raw_t, (int, float)) and 0.0 <= float(raw_t) <= 1.0:
-                    threshold = float(raw_t)
-    return top_k, threshold
-
-
-def _sidecar_query_text_for(finding: CandidateFinding) -> str:
-    """Build the sidecar-recall query text for a finding (AC 14).
-
-    Prefers ``f"{language}::{symbol_name} {signature}"`` but falls back to
-    ``f"{language}::{symbol_name}"`` when the finding lacks ``signature``.
-    """
-    language = getattr(finding, "language", None) or "python"
-    symbol_name = getattr(finding, "symbol_name", "") or ""
-    signature = getattr(finding, "signature", "") or ""
-    base = f"{language}::{symbol_name}".strip()
-    if signature:
-        return f"{base} {signature}"
-    return base
 
 
 def run_scan(
@@ -779,34 +705,16 @@ def run_scan(
 
         resolved_scheduler = scheduler if scheduler is not None else Scheduler(root=root)
 
-        # task-012 AC 14: opt-in embedding sidecar sits between analyzer output
-        # and the dedup cascade. When the policy flag is off or absent, the
-        # sidecar instance is disabled (AC 5) and every public method is a
-        # no-op — preserving byte-identical scan output (AC 22). When enabled
-        # but deps are missing, __init__ self-disables after emitting a single
-        # EmbeddingSidecarDegraded row (AC 6).
         effective_policy = policy if policy is not None else _load_scan_policy(root)
-        sidecar = EmbeddingSidecar(root, effective_policy)
-        sidecar_top_k, sidecar_threshold = _resolve_sidecar_recall_params(
-            effective_policy
-        )
-        if sidecar.enabled:
-            sidecar.load()
 
-        # Seg-6 (AC #31): load the persistent cluster store once per scan,
-        # emit the one-shot DedupEmbeddingTierStatus envelope, and construct
-        # the scorer + cascade that the analyzer loop below will drive. The
-        # load is non-locking (AC #22 from seg-4); a missing store on the
-        # first scan yields an empty :class:`ClusterStore` whose
-        # ``is_empty`` is True so ``compute_novelty`` resolves to 1.0 for
-        # every finding produced (AC #33).
+        # Seg-6 (AC #31): load the persistent cluster store once per scan
+        # and construct the scorer + cascade that the analyzer loop below
+        # will drive. The load is non-locking (AC #22 from seg-4); a
+        # missing store on the first scan yields an empty
+        # :class:`ClusterStore` whose ``is_empty`` is True so
+        # ``compute_novelty`` resolves to 1.0 for every finding produced
+        # (AC #33).
         cluster_store = ClusterStore.load(root)
-        _emit_dedup_tier_status_event(
-            root,
-            scan_id=scan_id,
-            available=cluster_store.embedding_tier_available,
-            reason=cluster_store.embedding_tier_reason,
-        )
         scorer = PriorityScorer()
         cascade = DedupCascade()
 
@@ -822,8 +730,8 @@ def run_scan(
         ] = []
 
         # task-20260506-001 (state-migration-legacy-to-next AC 9-13): inject
-        # the projected legacy findings into the same scoring + recall +
-        # cascade sequence used by the analyzer loop below. Gated by the
+        # the projected legacy findings into the same scoring + cascade
+        # sequence used by the analyzer loop below. Gated by the
         # ``state_migration.legacy_findings_enabled`` policy flag (default
         # True). When the gate is off, ``load_legacy_findings`` is NEVER
         # called — the code path is short-circuited at the helper boundary
@@ -853,14 +761,7 @@ def run_scan(
                 )
                 score = scorer.score(finding, graph, cluster_store)
                 _emit_priority_scored_event(root, scan_id=scan_id, score=score)
-                recall_hits: list[SymbolRecall] = sidecar.recall(
-                    query_text=_sidecar_query_text_for(finding),
-                    top_k=sidecar_top_k,
-                    threshold=sidecar_threshold,
-                )
-                decision = cascade.classify(
-                    finding, score, cluster_store, recall_hits=recall_hits
-                )
+                decision = cascade.classify(finding, score, cluster_store)
                 _emit_finding_deduped_event(
                     root,
                     scan_id=scan_id,
@@ -903,22 +804,11 @@ def run_scan(
                 )
                 # Seg-6 (AC #31): score first, then classify. The scorer
                 # reads cluster-store state purely to resolve novelty, so it
-                # must run before the cascade mutates the store (tier 2/3
+                # must run before the cascade mutates the store (tier 2
                 # match -> update_on_match; no-match -> register_new_cluster).
                 score = scorer.score(finding, graph, cluster_store)
                 _emit_priority_scored_event(root, scan_id=scan_id, score=score)
-                # task-012 AC 14: per-finding semantic recall stage. When the
-                # sidecar is disabled, .recall() returns []; AC 15 guarantees
-                # DedupCascade.classify(recall_hits=[]) is byte-identical to
-                # the pre-task cascade call.
-                recall_hits: list[SymbolRecall] = sidecar.recall(
-                    query_text=_sidecar_query_text_for(finding),
-                    top_k=sidecar_top_k,
-                    threshold=sidecar_threshold,
-                )
-                decision = cascade.classify(
-                    finding, score, cluster_store, recall_hits=recall_hits
-                )
+                decision = cascade.classify(finding, score, cluster_store)
                 _emit_finding_deduped_event(
                     root,
                     scan_id=scan_id,
@@ -926,13 +816,6 @@ def run_scan(
                     decision=decision,
                 )
                 scored_items.append((finding, packet, score, decision))
-
-        # task-012 AC 20: flush any accumulated incremental-update counters
-        # before the cluster store is persisted. When the sidecar is disabled
-        # this is a no-op; when enabled with zero upserts this is also a no-op
-        # (counters are zero from construction). Only a live update batch
-        # emits the single-row ``EmbeddingSidecarIncrementalUpdate`` envelope.
-        sidecar.flush_incremental_update()
 
         # Seg-6 (AC #31): persist the cluster store exactly once per scan,
         # AFTER every finding has been classified (so every register /
@@ -946,7 +829,6 @@ def run_scan(
             root,
             scan_id=scan_id,
             cluster_count=cluster_store.cluster_count,
-            tier3_enabled=cluster_store.embedding_tier_available,
             cache_mode=cluster_store.last_cache_mode or "ok",
         )
 

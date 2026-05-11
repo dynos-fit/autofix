@@ -32,8 +32,6 @@ deletes the legacy CLI surface entirely.
   `.autofix/scans/<scan-id>/`.
 - On-disk SCIP index: `.autofix-next/state/index/` is now
   `.autofix/state/index/`.
-- On-disk embedding sidecar: `.autofix-next/state/embedding-sidecar/`
-  is now `.autofix/state/embedding-sidecar/`.
 - The locked seams (`agent_loop.py`, `llm_backend.py`, `llm_io/`)
   are relocated into `autofix/` at the top level. The benchmark
   adapter at `benchmarks/agent_bench/autofix_adapter.py` was
