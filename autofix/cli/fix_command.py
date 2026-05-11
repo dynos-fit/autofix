@@ -140,9 +140,8 @@ _TEMPFILE_SUFFIX = ".autofix-tmp"
 _MAX_FINDINGS_PER_RUN = 50_000
 
 
-# Policy literal threaded into ``run_scan`` (AC-7). Embedding sidecar is
-# disabled so a fix run never produces a SARIF or sidecar artefact;
-# legacy state migration is disabled so the scan stays read-only.
+# Policy literal threaded into ``run_scan`` (AC-7). Legacy state
+# migration is disabled so the scan stays read-only.
 def _fix_policy() -> dict:
     """Return the policy dict ``run_scan`` is invoked with under ``fix``.
 
@@ -150,7 +149,6 @@ def _fix_policy() -> dict:
     is one-edit and the test contract pins the exact shape.
     """
     return {
-        "index": {"embedding_sidecar": {"enabled": False}},
         "state_migration": {"legacy_findings_enabled": False},
     }
 

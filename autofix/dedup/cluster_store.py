@@ -1,4 +1,4 @@
-"""Persistent three-tier dedup cluster state (AC #3 / #20 / #21 / #22 /
+"""Persistent two-tier dedup cluster state (AC #3 / #20 / #21 / #22 /
 #23 / #24 / #25 / #34 / #35).
 
 :class:`ClusterStore` persists the set of dedup clusters under
@@ -9,13 +9,11 @@ On-disk layout::
 
     <root>/.autofix/state/
         clusters.json           # authoritative cluster record
-        clusters.hnswlib.idx    # ANN cache when tier-3 active (optional)
         .clusters-lock          # zero-byte flock target (writers only)
 
 Atomic-rename discipline
 ------------------------
-Every write that touches ``clusters.json`` (and ``clusters.hnswlib.idx``)
-uses a strict 4-step sequence:
+Every write that touches ``clusters.json`` uses a strict 4-step sequence:
 
 1. Write ``<path>.tmp`` and ``flush`` it.
 2. ``fsync`` the tmp file's descriptor.
@@ -61,13 +59,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from autofix.dedup.embedding import (
-    EMBEDDING_DIM,
-    EMBEDDING_MODEL_NAME,
-    HNSWIndex,
-    cosine_similarity,
-    probe_embedding_tier,
-)
 from autofix.dedup.simhash import hamming_distance
 from autofix.evidence.schema import CandidateFinding
 
@@ -77,20 +68,13 @@ from autofix.evidence.schema import CandidateFinding
 
 SCHEMA_VERSION: str = "clusters_v1"
 CLUSTERS_FILENAME: str = "clusters.json"
-HNSW_FILENAME: str = "clusters.hnswlib.idx"
 LOCK_FILENAME: str = ".clusters-lock"
 STATE_DIRNAME: Path = Path(".autofix") / "state"
 
-# Retry-with-backoff parameters for flock. Mirrors
-# ``autofix.indexing.scip_index`` verbatim — total budget 30 s;
-# initial delay 50 ms doubling each attempt up to a 1 s cap (AC #21).
 LOCK_TIMEOUT_SECONDS: float = 30.0
 LOCK_INITIAL_BACKOFF: float = 0.05
 LOCK_MAX_BACKOFF: float = 1.0
 
-# Signal string written to ``self.last_cache_mode`` when flock acquisition
-# times out. The pipeline reads this to populate the
-# ``cache_mode`` field on the ``ClusterStorePersisted`` telemetry row.
 CACHE_MODE_FALLBACK: str = "fallback_concurrent_writer"
 
 
@@ -103,9 +87,7 @@ CACHE_MODE_FALLBACK: str = "fallback_concurrent_writer"
 class Cluster:
     """A single dedup cluster record.
 
-    ``simhash_signature`` is a full 64-bit unsigned integer;
-    ``embedding_centroid`` is ``None`` when the tier-3 embedding stack
-    was inactive for this cluster's members.
+    ``simhash_signature`` is a full 64-bit unsigned integer.
 
     ``first_seen`` / ``last_seen`` are ISO-8601 UTC strings; the
     :meth:`ClusterStore.register_new_cluster` / :meth:`update_on_match`
@@ -116,7 +98,6 @@ class Cluster:
     canonical_fingerprint: str
     member_fingerprints: list[str]
     simhash_signature: int  # 64-bit unsigned
-    embedding_centroid: list[float] | None
     first_seen: str  # ISO-8601 UTC
     last_seen: str  # ISO-8601 UTC
     occurrence_count: int
@@ -128,7 +109,7 @@ class Cluster:
 
 
 class ClusterStore:
-    """Persistent 3-tier dedup cluster state.
+    """Persistent 2-tier dedup cluster state.
 
     Mirrors :class:`autofix.indexing.scip_index.SCIPIndex`'s 4-step
     atomic-rename + 30 s flock discipline.
@@ -141,8 +122,8 @@ class ClusterStore:
       ``self.last_cache_mode`` on fallback; never raises.
     * :meth:`register_new_cluster` — create a new cluster from a finding.
     * :meth:`update_on_match` — merge a matched finding into a cluster.
-    * :meth:`find_by_fingerprint` / :meth:`find_by_simhash` /
-      :meth:`find_by_embedding` — cascading lookup tiers.
+    * :meth:`find_by_fingerprint` / :meth:`find_by_simhash` —
+      cascading lookup tiers.
     """
 
     def __init__(self) -> None:
@@ -152,15 +133,6 @@ class ClusterStore:
         # Exposed signal for seg-7's pipeline telemetry. ``None`` until
         # an operation yields a non-default cache mode.
         self.last_cache_mode: str | None = None
-        # Embedding tier capability probe (AC #25) — cached at init so
-        # callers can read it without re-probing. ``probe_embedding_tier``
-        # is non-raising; ImportError at module load is already reduced to
-        # ``(False, "deps_missing")`` inside ``embedding.py``.
-        available, reason = probe_embedding_tier()
-        self.embedding_tier_available: bool = available
-        self.embedding_tier_reason: str = reason
-        # Lazily built on first save/load when the tier is active.
-        self._hnsw: HNSWIndex | None = None
 
     # ------------------------------------------------------------------
     # Public query API
@@ -199,28 +171,6 @@ class ClusterStore:
                 return c
         return None
 
-    def find_by_embedding(
-        self, vec: list[float], min_similarity: float = 0.85
-    ) -> Cluster | None:
-        """Tier-3 lookup: nearest cluster by cosine similarity on centroid.
-
-        Uses a linear scan over ``embedding_centroid``; the HNSW ANN
-        cache is used as a serialization accelerator but is not on the
-        lookup hot path (small cluster counts per repo). Returns
-        ``None`` when no cluster meets ``min_similarity``.
-        """
-
-        best: tuple[Cluster | None, float] = (None, -1.0)
-        for c in self._clusters:
-            if c.embedding_centroid is None:
-                continue
-            sim = cosine_similarity(c.embedding_centroid, vec)
-            if sim > best[1]:
-                best = (c, sim)
-        if best[0] is not None and best[1] >= min_similarity:
-            return best[0]
-        return None
-
     # ------------------------------------------------------------------
     # Public mutation API
     # ------------------------------------------------------------------
@@ -229,7 +179,6 @@ class ClusterStore:
         self,
         finding: CandidateFinding,
         simhash: int,
-        embedding: list[float] | None,
     ) -> str:
         """Create a fresh cluster seeded by ``finding`` and return its id.
 
@@ -246,9 +195,6 @@ class ClusterStore:
             canonical_fingerprint=finding.finding_id,
             member_fingerprints=[finding.finding_id],
             simhash_signature=int(simhash) & ((1 << 64) - 1),
-            embedding_centroid=(
-                list(embedding) if embedding is not None else None
-            ),
             first_seen=now,
             last_seen=now,
             occurrence_count=1,
@@ -262,40 +208,17 @@ class ClusterStore:
         cluster: Cluster,
         finding: CandidateFinding,
         simhash: int,
-        embedding: list[float] | None,
     ) -> None:
         """Merge ``finding`` into an existing ``cluster``.
 
-        AC #35: incremental centroid update using the PRE-match
-        ``occurrence_count`` ``n``::
-
-            new_centroid = (old_centroid * n + new_embedding) / (n + 1)
-
-        No full re-embedding of members is performed. SimHash is
-        invariant across the member set by design (we keep the original
-        cluster signature); only the centroid drifts. ``last_seen`` is
-        refreshed and ``occurrence_count`` increments by one.
+        SimHash is invariant across the member set by design (we keep
+        the original cluster signature). ``last_seen`` is refreshed
+        and ``occurrence_count`` increments by one.
         """
 
-        n = cluster.occurrence_count
-        if embedding is not None and cluster.embedding_centroid is not None:
-            old = cluster.embedding_centroid
-            if len(old) != len(embedding):
-                # Mismatched dimensions — preserve the existing centroid
-                # and skip the incremental update rather than corrupt
-                # the record.
-                pass
-            else:
-                cluster.embedding_centroid = [
-                    (o * n + v) / (n + 1) for o, v in zip(old, embedding)
-                ]
-        elif embedding is not None and cluster.embedding_centroid is None:
-            # First embedding we've ever seen for this cluster; adopt it
-            # directly (n == 0 for embedding purposes).
-            cluster.embedding_centroid = list(embedding)
         cluster.member_fingerprints.append(finding.finding_id)
         cluster.last_seen = datetime.now(timezone.utc).isoformat()
-        cluster.occurrence_count = n + 1
+        cluster.occurrence_count += 1
         self._fp_index[finding.finding_id] = cluster
 
     # ------------------------------------------------------------------
@@ -305,10 +228,8 @@ class ClusterStore:
     def save(self, root: Path) -> None:
         """Persist the cluster set under ``root`` (AC #20 / #21 / #24).
 
-        Writes ``clusters.json`` and — when the embedding tier is active
-        and an HNSW index is in-memory — ``clusters.hnswlib.idx``, both
-        through the 4-step atomic-rename discipline and all under the
-        ``.clusters-lock`` flock.
+        Writes ``clusters.json`` through the 4-step atomic-rename
+        discipline under the ``.clusters-lock`` flock.
 
         On :class:`BlockingIOError` after the 30 s flock window, sets
         ``self.last_cache_mode = CACHE_MODE_FALLBACK`` and returns
@@ -320,9 +241,6 @@ class ClusterStore:
         try:
             state_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
-            # We can't even create the state directory (permission,
-            # read-only FS, etc.). Fall back silently — the caller
-            # already has a valid in-memory state.
             self.last_cache_mode = CACHE_MODE_FALLBACK
             return
 
@@ -340,18 +258,7 @@ class ClusterStore:
                 self._atomic_write_json(
                     state_dir / CLUSTERS_FILENAME, payload
                 )
-                if payload["embedding_tier_used"] and self._hnsw is not None:
-                    try:
-                        self._atomic_write_hnsw(state_dir / HNSW_FILENAME)
-                    except OSError:
-                        # Best-effort ANN cache write — JSON is already
-                        # durable, so on failure we leave the previous
-                        # idx file alone and continue. A subsequent load
-                        # will either reuse the stale idx or rebuild it
-                        # in-memory from centroids.
-                        pass
         except BlockingIOError:
-            # 30 s flock timeout — documented fallback path (AC #21).
             self.last_cache_mode = CACHE_MODE_FALLBACK
             return
 
@@ -396,12 +303,6 @@ class ClusterStore:
                     if isinstance(sig_raw, str)
                     else int(sig_raw)
                 )
-                centroid_raw = entry.get("embedding_centroid")
-                centroid = (
-                    [float(x) for x in centroid_raw]
-                    if centroid_raw is not None
-                    else None
-                )
                 c = Cluster(
                     cluster_id=str(entry["cluster_id"]),
                     canonical_fingerprint=str(entry["canonical_fingerprint"]),
@@ -409,56 +310,15 @@ class ClusterStore:
                         str(m) for m in entry["member_fingerprints"]
                     ],
                     simhash_signature=sig & ((1 << 64) - 1),
-                    embedding_centroid=centroid,
                     first_seen=str(entry["first_seen"]),
                     last_seen=str(entry["last_seen"]),
                     occurrence_count=int(entry["occurrence_count"]),
                 )
             except (KeyError, TypeError, ValueError):
-                # Skip malformed entries rather than rejecting the
-                # whole file — partial data is more useful than no data.
                 continue
             store._clusters.append(c)
             for fp in c.member_fingerprints:
                 store._fp_index[fp] = c
-
-        # Best-effort hnswlib index load; on failure, keep JSON state
-        # and allow ClusterStore to continue operating without the ANN
-        # cache (the linear-scan fallback in ``find_by_embedding`` is
-        # correct at small cluster counts).
-        hnsw_path = state_dir / HNSW_FILENAME
-        if (
-            hnsw_path.is_file()
-            and store.embedding_tier_available
-            and bool(data.get("embedding_tier_used"))
-        ):
-            max_elems = max(10000, len(store._clusters) * 2)
-            try:
-                store._hnsw = HNSWIndex(
-                    dim=EMBEDDING_DIM, max_elements=max_elems
-                )
-                store._hnsw.load(hnsw_path, max_elements=max_elems)
-            except Exception:
-                # Corrupt idx with intact JSON — rebuild in-memory from
-                # centroids so the next save produces a clean cache.
-                try:
-                    store._hnsw = HNSWIndex(
-                        dim=EMBEDDING_DIM, max_elements=max_elems
-                    )
-                    vectors = [
-                        c.embedding_centroid
-                        for c in store._clusters
-                        if c.embedding_centroid is not None
-                    ]
-                    cids = [
-                        c.cluster_id
-                        for c in store._clusters
-                        if c.embedding_centroid is not None
-                    ]
-                    if vectors:
-                        store._hnsw.add_items(vectors, cids)
-                except Exception:
-                    store._hnsw = None
         return store
 
     # ------------------------------------------------------------------
@@ -468,14 +328,9 @@ class ClusterStore:
     def _to_dict(self) -> dict:
         """Produce the canonical on-disk dict shape (AC #23)."""
 
-        tier_used = any(
-            c.embedding_centroid is not None for c in self._clusters
-        )
         return {
             "schema_version": SCHEMA_VERSION,
             "built_at": _utc_iso8601_now(),
-            "embedding_tier_used": tier_used,
-            "embedding_model": EMBEDDING_MODEL_NAME if tier_used else "",
             "clusters": [
                 {
                     "cluster_id": c.cluster_id,
@@ -483,11 +338,6 @@ class ClusterStore:
                     "member_fingerprints": list(c.member_fingerprints),
                     "simhash_signature": format(
                         c.simhash_signature & ((1 << 64) - 1), "016x"
-                    ),
-                    "embedding_centroid": (
-                        list(c.embedding_centroid)
-                        if c.embedding_centroid is not None
-                        else None
                     ),
                     "first_seen": c.first_seen,
                     "last_seen": c.last_seen,
@@ -517,10 +367,6 @@ class ClusterStore:
         verbatim — duplication is deliberate (design-decisions §12).
         """
 
-        # Open the lockfile — we explicitly open rather than rely on a
-        # cached descriptor so each acquire / release cycle is
-        # self-contained and there's no risk of leaking descriptors
-        # across threads / processes.
         fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
         try:
             deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
@@ -530,7 +376,6 @@ class ClusterStore:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    # Standard contention path — retry until deadline.
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(
@@ -538,9 +383,6 @@ class ClusterStore:
                     )
                     backoff = min(backoff * 2, LOCK_MAX_BACKOFF)
                 except OSError as exc:
-                    # POSIX sometimes surfaces EWOULDBLOCK/EAGAIN as
-                    # ``OSError`` rather than ``BlockingIOError``. Treat
-                    # them as equivalent for lock-contention purposes.
                     if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                         if time.monotonic() >= deadline:
                             raise BlockingIOError(
@@ -561,8 +403,6 @@ class ClusterStore:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 except OSError:
-                    # Best-effort unlock; the descriptor close below
-                    # implicitly releases any held lock anyway.
                     pass
         finally:
             try:
@@ -590,18 +430,10 @@ class ClusterStore:
         """
 
         tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
-        # Use an explicit ``JSONEncoder`` rather than the top-level
-        # convenience wrapper — the grep-based allow-list in
-        # ``tests/autofix/test_evidence_builder.py`` (AC #17,
-        # task-002) names only pre-task-004 output modules, and
-        # cluster_store is kept off that list (its JSON is persistent
-        # output, not a hash input).
         data = json.JSONEncoder(sort_keys=True, indent=2).encode(obj).encode(
             "utf-8"
         )
 
-        # Step 1 + 2: write + fsync the tmp file. Open with O_TRUNC so a
-        # leftover tmp from a prior crashed write is cleanly replaced.
         fd = os.open(
             str(tmp_path),
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
@@ -622,54 +454,10 @@ class ClusterStore:
 
         parent_dir = final_path.parent
 
-        # Step 3: fsync parent directory so the new tmp entry is durable.
         self._fsync_directory(parent_dir)
 
-        # Step 4: atomic rename.
         os.replace(str(tmp_path), str(final_path))
 
-        # Step 5: fsync parent directory again so the renamed entry is
-        # durable. This is the belt-and-braces guarantee AC #20 asks for.
-        self._fsync_directory(parent_dir)
-
-    def _atomic_write_hnsw(self, final_path: Path) -> None:
-        """Atomically replace ``final_path`` with the in-memory HNSW index
-        (AC #24).
-
-        Mirrors :meth:`_atomic_write_json` but delegates serialization
-        to :meth:`HNSWIndex.save`, which writes binary via hnswlib's
-        native format. The 4-step discipline is identical: write tmp,
-        fsync parent, replace, fsync parent again.
-        """
-
-        if self._hnsw is None:
-            return
-        tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
-
-        # Remove stale tmp from any prior crashed write so hnswlib's
-        # save_index gets a clean target path.
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-
-        # Delegate binary write to hnswlib. We can't control the file
-        # descriptor here (hnswlib opens / closes internally), so we
-        # rely on the subsequent parent-dir fsync to make the tmp entry
-        # durable. This matches how the JSON path works after ``os.write``.
-        self._hnsw.save(tmp_path)
-
-        parent_dir = final_path.parent
-
-        # Step 3: fsync parent directory so the new tmp entry is durable.
-        self._fsync_directory(parent_dir)
-
-        # Step 4: atomic rename.
-        os.replace(str(tmp_path), str(final_path))
-
-        # Step 5: fsync parent directory again so the renamed entry is
-        # durable.
         self._fsync_directory(parent_dir)
 
     @staticmethod
@@ -706,12 +494,7 @@ class ClusterStore:
 
 
 def _utc_iso8601_now() -> str:
-    """Return the current UTC time as an ISO-8601 string (AC #23).
-
-    Uses :meth:`datetime.isoformat` on a timezone-aware UTC
-    :class:`datetime` so the suffix is ``+00:00`` — the AC accepts any
-    ISO-8601 UTC form.
-    """
+    """Return the current UTC time as an ISO-8601 string (AC #23)."""
 
     return datetime.now(timezone.utc).isoformat()
 
@@ -721,7 +504,6 @@ __all__ = [
     "CLUSTERS_FILENAME",
     "Cluster",
     "ClusterStore",
-    "HNSW_FILENAME",
     "LOCK_FILENAME",
     "LOCK_TIMEOUT_SECONDS",
     "SCHEMA_VERSION",

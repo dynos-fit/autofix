@@ -30,11 +30,10 @@ Layer 3: Deterministic analyzers
     ▼
 Layer 4: Ranking + triage
     │  Priority scorer assigns 0-1 priority per finding.
-    │  Three-tier dedup:
+    │  Two-tier dedup:
     │    - Tier 1: exact fingerprint (sha256 of normalized path +
     │              rule + symbol + AST hash)
     │    - Tier 2: SimHash (rough syntactic similarity, Hamming ≤ 3)
-    │    - Tier 3: embedding cosine (semantic similarity ≥ 0.85)
     │  Suppression engine drops findings matching policy globs.
     │  Evidence packet builder freezes the LLM input.
     ▼

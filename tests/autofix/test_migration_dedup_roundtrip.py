@@ -77,13 +77,12 @@ def test_dedup_cascade_round_trip_tier1_match(tmp_path):
 
     # --- Build a fresh cluster store and cascade ---
     store = ClusterStore()
-    store.embedding_tier_available = False  # keep tier-3 out of play
 
     cascade = DedupCascade()
 
     # First call: legacy finding → registers a new cluster (tier=0)
     legacy_score = _score_for(legacy_cf, store)
-    first_decision = cascade.classify(legacy_cf, legacy_score, store, recall_hits=[])
+    first_decision = cascade.classify(legacy_cf, legacy_score, store)
 
     assert first_decision.tier == 0, (
         f"Legacy finding should create a new cluster (tier=0), got tier={first_decision.tier}"
@@ -106,9 +105,7 @@ def test_dedup_cascade_round_trip_tier1_match(tmp_path):
 
     # Second call: new finding with same finding_id → must hit Tier-1
     new_score = _score_for(new_analyzer_finding, store)
-    second_decision = cascade.classify(
-        new_analyzer_finding, new_score, store, recall_hits=[]
-    )
+    second_decision = cascade.classify(new_analyzer_finding, new_score, store)
 
     assert second_decision.tier == 1, (
         f"Expected Tier-1 exact-fingerprint match (tier=1), got tier={second_decision.tier}"

@@ -180,7 +180,6 @@ class TestPolicyValidate:
                 "llm_tiered": True,
                 "state_migration": {"legacy_findings_enabled": True},
                 "min_priority_for_llm_triage": 3,
-                "index": {"embedding_sidecar": {}},
             },
         )
         parser = argparse.ArgumentParser()

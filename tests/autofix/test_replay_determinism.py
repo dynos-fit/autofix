@@ -33,8 +33,8 @@ LOCKED_GLOBS_STRICT: list[str] = [
     ".autofix/autofix-policy.json",
     "benchmarks/agent_bench/**",
 ]
-# task-20260506-003: state/index/, state/clusters.json, state/embedding-sidecar/
-# now live alongside the legacy snapshot files. The locked surface contract
+# task-20260506-003: state/index/ and state/clusters.json now live
+# alongside the legacy snapshot files. The locked surface contract
 # narrows to the legacy snapshot file only.
 LOCKED_GLOBS_STATE: list[str] = [
     ".autofix/state/current/findings.json",
