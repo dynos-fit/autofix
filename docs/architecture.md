@@ -356,6 +356,7 @@ LLM patcher, workflow state machine, post-fix policy) is the
 |---|---|
 | `autofix.crawl.crawl_constants` | Pinned defaults (horizons, caps, weights, budget tiers, mode/budget enums). Side-effect-free. |
 | `autofix.crawl.config` | Read/write `.autofix/config.json`. Resolves budget tier names to dicts. |
+| `autofix.crawl.contracts` | `GitLogAdapter` + `CallGraphAdapter` `runtime_checkable` Protocols. The two adapter contracts an external integrator implements to reuse the crawler in another project. See [`docs/crawling.md`](crawling.md#using-the-crawler-standalone). |
 | `autofix.crawl.bundles` | `Bundle` dataclass + `expand_bundle` (BFS bounded by 3 caps + hub saturation). |
 | `autofix.crawl.score` | `file_freshness`, `bundle_freshness`, `relevance`, `priority` — pure scoring functions. |
 | `autofix.crawl.ledger` | `LedgerRow` + `Ledger` — append-only JSONL persistence with `O_APPEND` atomicity. |

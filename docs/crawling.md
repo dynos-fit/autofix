@@ -276,6 +276,128 @@ a multi-line stats breakdown (bundles built, byte-size distribution,
 top seeds, budget-hit counts, drop counts) to stderr. `--quiet`
 overrides `--debug-crawl`. Default off.
 
+## Using the crawler standalone
+
+`autofix/crawl/` is designed as a reusable subsystem — it has no
+imports of any other `autofix.X` subsystem (an architectural guard
+test, `tests/autofix/crawl/test_crawl_subsystem_isolation.py`,
+pins this boundary). Anything `autofix.cli.cycle_runner` does on
+top of the crawler is the *consumer*'s responsibility, not the
+crawler's.
+
+The public surface lives in `autofix/crawl/__init__.py::__all__`:
+
+- `Bundle`, `expand_bundle` — bundle construction (BFS over your
+  call-graph adapter, bounded by hops / files / bytes).
+- `pick_next_batch` — the deterministic per-cycle selection
+  algorithm.
+- `Ledger`, `LedgerRow` — append-only JSONL persistence for
+  cache-hit / hub-saturation accounting.
+- `file_freshness`, `bundle_freshness`, `relevance`, `priority` —
+  pure scoring functions.
+- `GitLogAdapter`, `CallGraphAdapter` — the two Protocol contracts
+  you implement.
+
+### The two adapter Protocols
+
+Defined in [`autofix/crawl/contracts.py`](../autofix/crawl/contracts.py).
+Both are `runtime_checkable` (`isinstance(obj, GitLogAdapter)`
+verifies attribute presence — note that runtime `isinstance` on
+a Protocol does NOT verify method signatures; see PEP 544).
+
+```python
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+@runtime_checkable
+class GitLogAdapter(Protocol):
+    def list_candidate_files(self) -> list[str]: ...
+    def days_since_last_commit(self, path: str) -> int: ...
+    def commits_in_last_30_days(self, path: str) -> int: ...
+
+@runtime_checkable
+class CallGraphAdapter(Protocol):
+    def neighbors_of(self, path: Path) -> list[Path]: ...
+```
+
+The picker uses `GitLogAdapter` to score candidate seed paths via
+`relevance(...)` (recency 0.6 + churn 0.4). `expand_bundle` uses
+`CallGraphAdapter` to walk one BFS step from each seed (callers ∪
+callees, deduped). Centrality was deliberately removed from the
+contract (PR #93) because it required language-specific
+import-graph walking; heavily-depended-on files float to the top
+via churn instead.
+
+### Reference implementations
+
+- [`autofix/cli/cycle_runner.py::_GitLogAdapter`](../autofix/cli/cycle_runner.py)
+  — git-subprocess-backed with a stdlib-only fallback (`Path.rglob`
+  + `stat().st_mtime`) for non-git trees.
+- [`autofix/crawl/_call_graph_adapter.py::CallGraphPathAdapter`](../autofix/crawl/_call_graph_adapter.py)
+  — wraps the project's symbol-level
+  `autofix.invalidation.call_graph.CallGraph` as a path-level adapter.
+
+External adapters can substitute either without other code changes.
+
+### Minimum viable integrator
+
+The smallest standalone use of the crawler — picks bundles from a
+non-git directory, with a no-op call graph (each bundle degenerates
+to a singleton seed). Replace the adapters with real
+implementations when you have git + a call-graph index.
+
+```python
+from pathlib import Path
+from autofix.crawl import (
+    Ledger, pick_next_batch,
+    GitLogAdapter, CallGraphAdapter,
+)
+
+
+class StubGitLog:
+    """Stdlib-only fallback — enumerate every file under root."""
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def list_candidate_files(self) -> list[str]:
+        return sorted(
+            p.relative_to(self.root).as_posix()
+            for p in self.root.rglob("*")
+            if p.is_file()
+        )
+
+    def days_since_last_commit(self, path: str) -> int:
+        return 0  # all files treated as freshly modified
+
+    def commits_in_last_30_days(self, path: str) -> int:
+        return 0  # no churn signal
+
+
+class NoOpCallGraph:
+    """Returns no neighbors → bundles degenerate to singleton seeds."""
+    def neighbors_of(self, path: Path) -> list[Path]:
+        return []
+
+
+root = Path("/path/to/your/repo")
+ledger = Ledger(root=root)  # writes to .autofix/crawl-ledger.jsonl
+bundles = pick_next_batch(
+    root=root,
+    ledger=ledger,
+    current_commit_sha="HEAD",  # any string; used only for ledger keys
+    git_log=StubGitLog(root),
+    call_graph=NoOpCallGraph(),
+    bundles_per_cycle=5,
+)
+
+for b in bundles:
+    print(b.seed_path, "->", [f.as_posix() for f in b.file_paths])
+```
+
+`pick_next_batch` is analyzer-agnostic — it returns `Bundle`
+objects only. What you do with each bundle (run analyzers, ship
+to an LLM, write to a log) is your consumer's job.
+
 ## See also
 
 - [`getting-started.md`](getting-started.md) — dumb-user guide
