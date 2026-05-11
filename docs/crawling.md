@@ -113,7 +113,7 @@ BUDGET_BALANCED   = {bundles_per_cycle: 5,  interval: 30m, analyzers: cheap+secu
 BUDGET_AGGRESSIVE = {bundles_per_cycle: 20, interval: 5m,  analyzers: cheap+all 4 LLM analyzers}
 ```
 
-The dumb-user `autofix init` wizard maps these to one of three
+The `autofix init` wizard maps these to one of three
 menu choices ("How much should it spend per day?"). Tier
 defaults are documented in
 [`crawl_constants.py`](../autofix/crawl/crawl_constants.py)
@@ -400,7 +400,7 @@ to an LLM, write to a log) is your consumer's job.
 
 ## See also
 
-- [`getting-started.md`](getting-started.md) — dumb-user guide
+- [`getting-started.md`](getting-started.md) — quick-start guide
 - [`architecture.md`](architecture.md) — how the funnel + run loop
   + crawl fit together
 - [`workflow.md`](workflow.md) — the `autofix run` workflow loop

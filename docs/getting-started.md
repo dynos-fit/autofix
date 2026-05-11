@@ -136,7 +136,7 @@ real spend is 30-50% of the worst case.
 
 ## Power-user reference
 
-The dumb-user surface is intentionally tiny. If you want fine
+The default surface is intentionally tiny. If you want fine
 control:
 
 - `autofix --help-advanced` — full subcommand + flag reference
@@ -154,8 +154,8 @@ control:
   seeds, score breakdowns, bundle stats) to stderr; useful when
   tuning
 
-But for the dumb-user path you don't need any of that. `init`,
-`autofix`, `status`. Three commands. Done.
+But for the quick-start path you don't need any of that. `init`,
+`autofix start`, `autofix status`. Done.
 
 ## Troubleshooting
 

@@ -140,7 +140,7 @@ Architecture deep-dive: [`docs/crawling.md`](docs/crawling.md).
 
 ## Power-user reference
 
-The dumb-user surface is intentionally tiny. If you want fine
+The default surface is intentionally tiny. If you want fine
 control, the existing one-shot subcommands are still there and
 unchanged:
 
@@ -322,7 +322,7 @@ for the Protocol shapes and a minimal integrator example.
 
 ## Documentation
 
-- [`docs/getting-started.md`](docs/getting-started.md) — dumb-user guide
+- [`docs/getting-started.md`](docs/getting-started.md) — quick-start guide
 - [`docs/crawling.md`](docs/crawling.md) — crawl architecture, scoring, tunables
 - [`docs/workflow.md`](docs/workflow.md) — run-loop state machine, post-fix policy
 - [`docs/architecture.md`](docs/architecture.md) — internals: 5-layer funnel, SCIP, SARIF, replay
