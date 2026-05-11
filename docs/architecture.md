@@ -20,7 +20,6 @@ Layer 1: Event ingress
 Layer 2: Incremental code intelligence
     │  Tree-sitter parses each changed file.
     │  SCIP index records symbols + references (per-language).
-    │  Embedding sidecar (optional) stores per-symbol vectors.
     │  Call graph tracks who calls what.
     ▼
 Layer 3: Deterministic analyzers

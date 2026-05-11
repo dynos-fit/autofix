@@ -168,10 +168,10 @@ def test_finding_ids_byte_identical_across_runs(scan_repo: Path) -> None:
     ids_a = sorted(r["partialFingerprints"]["autofixNext/v1"] for r in findings_a)
 
     # Clear the output dir between runs so the second run regenerates it.
-    # task-20260506-003: new-loop outputs now live under .autofix/scans-next/
-    # and .autofix/state/{index,embedding-sidecar}. Clear those between runs;
-    # leave .autofix/events.jsonl and .autofix/autofix-policy.json alone.
-    for sub in ("scans-next", "state/index", "state/embedding-sidecar"):
+    # task-20260506-003: new-loop outputs live under .autofix/scans-next/
+    # and .autofix/state/index/. Clear those between runs; leave
+    # .autofix/events.jsonl and .autofix/autofix-policy.json alone.
+    for sub in ("scans-next", "state/index"):
         shutil.rmtree(scan_repo / ".autofix" / sub, ignore_errors=True)
 
     rc_b = _run_scan_in_subprocess(scan_repo)
@@ -205,10 +205,10 @@ def test_prompt_prefix_hashes_byte_identical_across_runs(scan_repo: Path) -> Non
 
     # Clear outputs between runs; events.jsonl stays append-only so we track
     # the new suffix for the second run.
-    # task-20260506-003: new-loop outputs now live under .autofix/scans-next/
-    # and .autofix/state/{index,embedding-sidecar}. Clear those between runs;
-    # leave .autofix/events.jsonl and .autofix/autofix-policy.json alone.
-    for sub in ("scans-next", "state/index", "state/embedding-sidecar"):
+    # task-20260506-003: new-loop outputs live under .autofix/scans-next/
+    # and .autofix/state/index/. Clear those between runs; leave
+    # .autofix/events.jsonl and .autofix/autofix-policy.json alone.
+    for sub in ("scans-next", "state/index"):
         shutil.rmtree(scan_repo / ".autofix" / sub, ignore_errors=True)
     mid_len = len(events_path.read_bytes())
 
